@@ -1,0 +1,7 @@
+id=hotspot_network_control
+name=Hotspot Network Control
+version=v5.0.0-alpha.2
+versionCode=50501
+author=Claude (Anthropic AI)
+description=Android 热点带宽/延迟/黑白名单管理 · v5.0 BPF/PPE/NSS offload 抽象层 + alpha.2 上行限速 ColorOS 修复 · WebUI 可视化控制 · 支持 KernelSU / SukiSU / Magisk. 详细更新记录见 CHANGELOG.md.
+minKernelSU=11485

@@ -1,0 +1,746 @@
+#!/system/bin/sh
+
+# v3.5.0 alpha-0: PATH 健壮性,见 service.sh
+[ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
+# watchdog.sh — 规则完整性守护
+#
+# 【v3.4.1 核心修复】
+#  v3.4.0 用 `ip monitor link route` 监听 netlink 事件，每次有
+#  网络事件就触发 full_restore（拆掉整个 tc 树重建）。但 ip monitor
+#  对 ARP 状态变化（REACHABLE/STALE/DELAY）、v6 RA、移动数据路由更新、
+#  VPN 状态变化都会触发，结果在真机上每 10 秒就 full_restore 一次，
+#  每次重建有 100-500ms 的"无限速"窗口，TCP 在窗口里被打断。
+#  真机日志显示一次会话产生 158 次 RESTORE。
+#
+#  v3.4.1 修复：
+#   1. 完全删除 ip monitor 事件触发，只靠 60s 周期 health check
+#   2. iface 检测加 5 分钟缓存，避免 wlan0/wlan2 跳变误触发 restore
+#   3. INTERVAL_RECOVERY 从 10s 改为 30s，避免连续重建
+#   4. full_restore 前先确认 iface 有效，避免在错误接口上跑 init_tc
+#
+# 功耗优化：
+#  1. 周期检查：60s 一次（Doze 时 180s）
+#  2. 健康检查缓存 5s，避免重复 iptables 调用
+#  3. Doze 模式暂停主动检查
+
+HNC_DIR=${HNC_DIR:-/data/local/hnc}
+RULES_FILE=$HNC_DIR/data/rules.json
+LOG=$HNC_DIR/logs/watchdog.log
+RUN=$HNC_DIR/run
+
+INTERVAL_NORMAL=60     # 规则正常时检查间隔
+INTERVAL_RECOVERY=30   # v3.4.1：恢复后加密检查间隔（旧值 10s 太激进）
+INTERVAL_DOZE=180      # Doze 模式
+
+log() {
+    [ -d "$(dirname "$LOG")" ] || mkdir -p "$(dirname "$LOG")" 2>/dev/null
+    echo "[$(TZ=Asia/Shanghai date '+%H:%M:%S')] [WDG] $1" >> "$LOG" 2>/dev/null || true
+}
+
+# v4.0 Patch 1.6: [ERROR] 前缀便于 grep 故障排查
+# log "foo" 普通事件 / log_error "foo" 真实错误 / log_info 已经被 log 占用就不另加
+log_error() {
+    [ -d "$(dirname "$LOG")" ] || mkdir -p "$(dirname "$LOG")" 2>/dev/null
+    echo "[$(TZ=Asia/Shanghai date '+%H:%M:%S')] [WDG] [ERROR] $1" >> "$LOG" 2>/dev/null || true
+}
+
+# v4.0 Patch 1.6 心跳 + 轮转的最后时间
+# 每 5 分钟至少打一行 "alive" log(即使啥都没发生也有证据 watchdog 活着)
+# 每次主循环也顺便调用一次 log_rotate,防止任何 log 涨爆
+LAST_HEARTBEAT=0
+LAST_LOG_ROTATE=0
+HEARTBEAT_INTERVAL=300    # 5 分钟
+LOG_ROTATE_INTERVAL=300   # 5 分钟看一次(粒度足够,开销低)
+
+heartbeat() {
+    local now; now=$(date +%s)
+    if [ $((now - LAST_HEARTBEAT)) -ge $HEARTBEAT_INTERVAL ]; then
+        local state; state=$(cat "$STATE_FILE" 2>/dev/null || echo "?")
+        local httpd="down"
+        if [ -s "$RUN/httpd.pid" ] && kill -0 "$(cat "$RUN/httpd.pid")" 2>/dev/null; then
+            httpd="ok"
+        fi
+        log "alive state=$state httpd=$httpd"
+        LAST_HEARTBEAT=$now
+    fi
+}
+
+rotate_logs_periodic() {
+    local now; now=$(date +%s)
+    if [ $((now - LAST_LOG_ROTATE)) -ge $LOG_ROTATE_INTERVAL ]; then
+        sh "$HNC_DIR/bin/log_rotate.sh" check 2>/dev/null || true
+        LAST_LOG_ROTATE=$now
+    fi
+}
+
+# v4.0 Patch 1.6 意外退出 trap: watchdog 不应该正常退出,退出就是 bug
+# TERM/INT 是模块关闭(正常),设 flag 让 EXIT trap 知道是正常退出
+WDG_CLEAN_EXIT=0
+trap 'WDG_CLEAN_EXIT=1; log "received signal, shutting down"; exit 0' TERM INT
+trap '[ "$WDG_CLEAN_EXIT" = "1" ] || log_error "watchdog EXITED unexpectedly (last_state=$(cat $STATE_FILE 2>/dev/null || echo ?))"' EXIT
+
+# v3.4.1：iface 缓存。device_detect.sh iface 在 wlan0/wlan2 之间反复
+# 横跳是 v3.4.0 watchdog 误触发 restore 的主要诱因。这里加 5 分钟缓存
+# 完全屏蔽抖动。
+IFACE_CACHE_TS=0
+IFACE_CACHE_VAL=""
+get_iface() {
+    local now; now=$(date +%s)
+    if [ -n "$IFACE_CACHE_VAL" ] && [ "$IFACE_CACHE_VAL" != "wlan0" ] \
+       && [ $((now - IFACE_CACHE_TS)) -lt 300 ]; then
+        echo "$IFACE_CACHE_VAL"
+        return
+    fi
+    local v; v=$(sh "$HNC_DIR/bin/device_detect.sh" iface 2>/dev/null)
+    # 只缓存有效结果（非空 + 非 wlan0）
+    if [ -n "$v" ] && [ "$v" != "wlan0" ]; then
+        IFACE_CACHE_VAL="$v"
+        IFACE_CACHE_TS=$now
+    fi
+    echo "$v"
+}
+
+# ── 轻量健康检查（缓存 5s 结果）────────────────────────────
+_HEALTH_TS=0
+_HEALTH_RC=0
+check_health() {
+    local now=$(date +%s)
+    [ $((now - _HEALTH_TS)) -lt 5 ] && return $_HEALTH_RC
+
+    local rc=0
+    local iface=$(get_iface)
+
+    # 0. iface 必须有效
+    [ -z "$iface" ] && rc=1
+
+    # 1. TC 根 qdisc 是否为 HTB
+    # 注意: 不同 iproute2 版本输出词序不同:
+    #   老版: qdisc htb 1: dev wlan2 root refcnt ...   (root 在后)
+    #   新版: qdisc htb 1: root refcnt ...              (root 在前, Android 16 / ColorOS)
+    # 不要用 "root.*htb" 这样的有序正则,会导致新版永远匹配失败进 full_restore 死循环。
+    # 要求: 某一行同时包含 "htb" 和 "root"(不限词序)
+    # v4.0.0-patch1.3: 区分"命令失败"和"内容缺失":
+    #   tc qdisc show 正常情况下永远 rc=0(即使 iface 不存在也返回空 + rc=0)
+    #   所以这里只看内容。命令本身失败场景极少,不特殊处理
+    if [ $rc -eq 0 ]; then
+        tc qdisc show dev "$iface" 2>/dev/null | grep "htb" | grep -q "root" || rc=1
+    fi
+
+    # 2+3. iptables 链检查
+    # v4.0.0-patch1.3 重要:
+    #   a) 加 -w 2 等 xtables 锁(最多 2s),避免并发占锁时静默失败返回空
+    #   b) 区分"命令失败(rc>=2)"和"规则缺失(命令 rc=0 但内容缺)":
+    #      - iptables rc=2 = bad parameter (链不存在等"真丢失")
+    #      - iptables rc=4 = resource problem (锁抢不到等临时故障)
+    #      - iptables rc=0 + grep rc=1 = 规则真丢了
+    #      只有 "真丢失" 才应该触发 RESTORE;临时故障 return 2 让主循环 skip 本轮
+    #   c) HNC_MARK 链空是合法状态(用户没限速时),用 -S | rc 判断链存在性,
+    #      不看链内规则数量
+
+    # 2. HNC_MARK 链存在性
+    if [ $rc -eq 0 ]; then
+        iptables -w 2 -t mangle -S HNC_MARK >/dev/null 2>&1
+        local ipt_rc=$?
+        if [ $ipt_rc -eq 2 ]; then
+            rc=1  # 链真丢了
+        elif [ $ipt_rc -ne 0 ]; then
+            # 锁抢不到等临时故障,不 RESTORE,跳过本轮
+            _HEALTH_TS=$now
+            _HEALTH_RC=2
+            return 2
+        fi
+    fi
+
+    # 3. HNC_RESTORE 链必须有 CONNMARK 规则(这个链不允许空,空了就是丢失)
+    if [ $rc -eq 0 ]; then
+        local restore_dump
+        restore_dump=$(iptables -w 2 -t mangle -S HNC_RESTORE 2>/dev/null)
+        local ipt_rc=$?
+        if [ $ipt_rc -eq 2 ]; then
+            rc=1  # 链真丢了
+        elif [ $ipt_rc -ne 0 ]; then
+            # 临时故障,跳过本轮
+            _HEALTH_TS=$now
+            _HEALTH_RC=2
+            return 2
+        else
+            echo "$restore_dump" | grep -q 'CONNMARK' || rc=1
+        fi
+    fi
+
+    _HEALTH_TS=$now
+    _HEALTH_RC=$rc
+    return $rc
+}
+
+# ── 完整恢复 ─────────────────────────────────────────────────
+full_restore() {
+    local reason=$1
+    log "RESTORE triggered: $reason"
+    # rc3.1.13.2 修 P1 (review §2): cleanup rules mode 后用户通常正在重配,
+    # 600s 内 skip restore. 之前 watchdog 60s 内就把规则全恢复, 用户白清.
+    local marker="$HNC_DIR/run/cleanup_rules.marker"
+    if [ -f "$marker" ]; then
+        local mts; mts=$(cat "$marker" 2>/dev/null)
+        local now; now=$(date +%s 2>/dev/null) || now=0
+        if [ -n "$mts" ] && [ -n "$now" ] && [ $((now - mts)) -lt 600 ]; then
+            log "RESTORE skipped: cleanup_rules marker active ($((now - mts))s ago, suppress 600s)"
+            return 0
+        fi
+        # marker 过期, 删掉
+        rm -f "$marker" 2>/dev/null
+    fi
+    local iface=$(get_iface)
+    if [ -z "$iface" ]; then
+        log "RESTORE skipped: no valid iface"
+        return 1
+    fi
+
+    sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
+    local tc_init_rc=$?
+    # rc3.1.33 修 #1: 跟 do_full_init 对称, tc init 失败时不跑 restore + 不刷
+    # _HEALTH_TS, 让下轮 health check 重新触发完整 RESTORE 路径. 之前会写
+    # "RESTORE complete" 但实际半装配, _HEALTH_TS=0 强制下轮再 restore →
+    # 死循环刷 RESTORE 占满 watchdog.log + 永远恢复不了.
+    if [ $tc_init_rc -ne 0 ]; then
+        log_error "full_restore: tc init failed (rc=$tc_init_rc), skip restore (will retry next probe)"
+        return $tc_init_rc
+    fi
+    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+    _HEALTH_TS=0
+    _HEALTH_RC=1
+    log "RESTORE complete"
+}
+
+# ── 子服务存活检查 ──────────────────────────────────────────
+# v3.5.0 P2-4: 防重启风暴 — 60 秒内同一服务最多重启 1 次
+# 之前如果 hotspotd 启动后立刻 crash,会被无限重启,日志疯涨
+# v3.5.0 P1-2:hotspotd 启动参数从 --daemon 改成 -d(hotspotd 实际只识别 -d)
+HOTSPOTD_LAST_RESTART=0
+DETECT_LAST_RESTART=0
+RESTART_COOLDOWN=60  # 秒
+
+check_services() {
+    local restarted=0
+    local now; now=$(date +%s 2>/dev/null) || now=0
+
+    # ═══════════════════════════════════════════════════════════
+    # v3.5.2 P0-A 修复:优先级检查架构
+    # ═══════════════════════════════════════════════════════════
+    # 之前:两个独立的 if 检查 hotspotd.pid 和 detect.pid,都独立触发重启。
+    # 问题:detect.pid 和 hotspotd.pid 可能存同一个 PID(service.sh 的
+    #      旧逻辑),hotspotd 崩溃后 watchdog 两个 if 都触发 → 同时启动
+    #      C daemon + shell fallback → 并发写 devices.json.tmp → JSON 破损。
+    # 修复:改成优先级架构:
+    #      1) 先检查 hotspotd.pid,如果文件存在且进程活着 → OK,skip detect 检查
+    #      2) hotspotd.pid 文件存在但进程死了 → 重启 hotspotd
+    #      3) hotspotd.pid 文件不存在 → 说明当前是 shell fallback 模式,检查 detect.pid
+    # 这保证在任何一个时刻,watchdog 只关心一个进程,不会"双重复活"。
+    # ═══════════════════════════════════════════════════════════
+    # v4.0.0-patch1.5 重要修正: httpd 拉起逻辑已从本函数移出到 ensure_httpd_running,
+    # 主循环单独调用。之前 hotspotd 健康就 return 0,httpd 永远不被拉起是 bug。
+
+    local hpid; hpid=$(cat "$RUN/hotspotd.pid" 2>/dev/null)
+    if [ -n "$hpid" ]; then
+        # hotspotd 路径
+        if kill -0 "$hpid" 2>/dev/null; then
+            return 0
+        fi
+        # hotspotd 死了,尝试重启
+        if [ -x "$HNC_DIR/bin/hotspotd" ]; then
+            local since=$((now - HOTSPOTD_LAST_RESTART))
+            if [ $since -lt $RESTART_COOLDOWN ]; then
+                log "hotspotd dead but in cooldown (${since}s < ${RESTART_COOLDOWN}s),skip"
+                return 0
+            fi
+            log "hotspotd dead, restarting (last=${HOTSPOTD_LAST_RESTART})..."
+            local spawnlock="$RUN/daemon.spawn"
+            if ! mkdir "$spawnlock" 2>/dev/null; then
+                log "daemon spawn lock held, skip this round"
+                return 0
+            fi
+            "$HNC_DIR/bin/hotspotd" -d >> "$HNC_DIR/logs/hotspotd.log" 2>&1 &
+            sleep 1
+            rmdir "$spawnlock" 2>/dev/null
+            HOTSPOTD_LAST_RESTART=$now
+            restarted=1
+        else
+            rm -f "$RUN/hotspotd.pid"
+            log "hotspotd binary missing, cleared stale pid file"
+        fi
+        return $restarted
+    fi
+
+    # hotspotd.pid 不存在:shell fallback 模式,检查 detect.pid
+    local det_pid; det_pid=$(cat "$RUN/detect.pid" 2>/dev/null)
+    if [ -n "$det_pid" ] && ! kill -0 "$det_pid" 2>/dev/null; then
+        local since=$((now - DETECT_LAST_RESTART))
+        if [ $since -lt $RESTART_COOLDOWN ]; then
+            log "Detector dead but in cooldown (${since}s),skip"
+        else
+            log "Detector dead, restarting..."
+            local spawnlock="$RUN/daemon.spawn"
+            if mkdir "$spawnlock" 2>/dev/null; then
+                sh "$HNC_DIR/bin/device_detect.sh" daemon >> "$HNC_DIR/logs/detect.log" 2>&1 &
+                echo $! > "$RUN/detect.pid"
+                sleep 1
+                rmdir "$spawnlock" 2>/dev/null
+                DETECT_LAST_RESTART=$now
+                restarted=1
+            fi
+        fi
+    fi
+
+    return $restarted
+}
+
+# ── v4.0.0-patch1.5 ensure_httpd_running ─────────────────────
+# 独立函数,主循环在 PENDING→ACTIVE 转移后 / ACTIVE 稳态每轮调用。
+# 从 check_services 抽出,因为之前嵌在里面会被 "hotspotd 健康 return 0"
+# 提前退出,导致 httpd 永远不被拉起(真机事故 #3)。
+#
+# 行为:
+#   1. httpd.pid 进程死了 → 清 pid 文件,准备重拉
+#   2. httpd.wanted marker 存在 + 进程没跑 → 用当前 iface + IP 拉
+#   3. 校验 iface + IP + RFC1918(跟 patch1.4 的四层校验一致)
+ensure_httpd_running() {
+    local wpid; wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
+    if [ -n "$wpid" ] && ! kill -0 "$wpid" 2>/dev/null; then
+        log "httpd dead (was PID $wpid), removing pid file"
+        rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
+        wpid=""
+    fi
+
+    # 不需要拉?退出
+    [ ! -f "$RUN/httpd.wanted" ] && return 0
+    [ -n "$wpid" ] && return 0   # 已经在跑
+
+    local httpd_bin="$HNC_DIR/daemon/hnc_httpd/hnc_httpd"
+    [ -x "$httpd_bin" ] || {
+        log "httpd launch failed: binary missing at $httpd_bin"
+        return 1
+    }
+
+    # v5.0: 检查 remote_enabled 决定是否绑热点 IP
+    # loopback 段永远开 (本机 WebUI 需要)
+    local remote_on
+    remote_on=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
+        "$HNC_DIR/data/rules.json" 2>/dev/null | awk -F: '{print $2}' | tr -d ' ')
+
+    if [ "$remote_on" = "true" ]; then
+        # rc3.1.6: 改绑 0.0.0.0 · 原因: ColorOS tether iface 主机 IP 和 gateway IP 不同
+        # (主机 .67, gateway .1), 单独绑 .67 则连接设备访问 .1 会 ADDRESS_UNREACHABLE.
+        # 0.0.0.0 监听所有接口, .1/.67/任何 IP 都能连. 已有 PIN+cookie 双层鉴权.
+        # 仍然写实际 httpd_bind_ip marker 用当前 iface 的 IP (drift 检测用).
+        local probe_out httpd_iface httpd_ip
+        probe_out=$(probe_valid_hotspot) || {
+            log "httpd launch deferred (remote_on): no valid hotspot yet. starting loopback-only for now."
+            "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
+                >> "$HNC_DIR/logs/httpd.log" 2>&1 &
+            echo $! > "$RUN/httpd.pid"
+            echo "loopback-only" > "$RUN/httpd_bind_ip"
+            log "httpd launched (PID=$(cat "$RUN/httpd.pid"), loopback-only · 等热点就绪会重启)"
+            return 0
+        }
+        httpd_iface=$(echo "$probe_out" | awk '{print $1}')
+        httpd_ip=$(echo "$probe_out" | awk '{print $2}')
+        log "starting httpd on 0.0.0.0:8443 (all ifaces) + loopback:8444 (hotspot iface=$httpd_iface ip=$httpd_ip)"
+        "$httpd_bin" -bind 0.0.0.0 -port 8443 -loopback-port 8444 \
+            -hnc-dir "$HNC_DIR" -http-port 8080 \
+            >> "$HNC_DIR/logs/httpd.log" 2>&1 &
+        echo $! > "$RUN/httpd.pid"
+        echo "$httpd_ip" > "$RUN/httpd_bind_ip"
+        log "httpd launched (PID=$(cat "$RUN/httpd.pid"), bound=0.0.0.0:8443 · hotspot ip=$httpd_ip)"
+    else
+        # 仅 loopback, 不需要热点 IP
+        log "starting httpd loopback-only on 127.0.0.1:8444"
+        "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
+            >> "$HNC_DIR/logs/httpd.log" 2>&1 &
+        echo $! > "$RUN/httpd.pid"
+        echo "loopback-only" > "$RUN/httpd_bind_ip"
+        log "httpd launched (PID=$(cat "$RUN/httpd.pid"), loopback-only)"
+    fi
+}
+
+# ── v4.0.0-patch1.4 httpd IP 漂移检测 ────────────────────────────
+# 场景: httpd 启动时绑 IP=A, 后来热点重启 / IP 续租失败 / tethering 切换
+#       iface IP 变成 B, 但 httpd 还在绑 A 上面。TCP 握手从 B 打到 A
+#       被 Linux 拒,变成 ERR_CONNECTION_REFUSED。
+# 对策: 每次健康检查对比 $RUN/httpd_bind_ip 和 当前 iface IP。
+#       不等 → pkill httpd,下一轮 ensure_httpd_running 会用新 IP 拉起。
+check_httpd_bind_drift() {
+    [ -f "$RUN/httpd.pid" ]      || return 0
+    [ -f "$RUN/httpd_bind_ip" ]  || return 0
+    local wpid bound_ip current_iface current_ip
+    wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
+    [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null || return 0
+    bound_ip=$(cat "$RUN/httpd_bind_ip" 2>/dev/null)
+    [ -z "$bound_ip" ] && return 0
+
+    current_iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface 2>/dev/null)
+    # 热点 down 或 bootstrap 期不做 drift check(避免误杀)
+    [ -z "$current_iface" ] && return 0
+    [ "$current_iface" = "wlan0" ] && return 0
+
+    current_ip=$(ip -4 addr show "$current_iface" 2>/dev/null | \
+        awk '/inet /{split($2,a,"/");print a[1];exit}')
+    [ -z "$current_ip" ] && return 0
+
+    if [ "$current_ip" != "$bound_ip" ]; then
+        # rc3.1.1 修: bound_ip="loopback-only" 是占位符, 不是真 IP 漂移.
+        # 只在 remote_enabled=true 且 httpd 真绑到热点 IP 时才需要 relaunch.
+        # 之前每 60s 杀 httpd 一次 (观察到: hotspotd/watchdog 活, hnc_httpd 反复被杀)
+        if [ "$bound_ip" = "loopback-only" ]; then
+            local remote_on
+            remote_on=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
+                "$HNC_DIR/data/rules.json" 2>/dev/null | awk -F: '{print $2}' | tr -d ' ')
+            # loopback-only + remote_enabled=false → 正常状态, 不杀
+            [ "$remote_on" != "true" ] && return 0
+            # loopback-only + remote_enabled=true → 热点就绪了, 杀让它绑热点 IP
+            log "httpd bind upgrade: loopback-only -> $current_ip (remote_enabled=true), relaunch"
+        else
+            log "httpd bind IP drift: $bound_ip -> $current_ip on $current_iface, killing for relaunch"
+        fi
+        kill -9 "$wpid" 2>/dev/null
+        rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
+        # 下轮 ensure_httpd_running 会用 current_ip 拉起
+    fi
+}
+
+# ── Doze 检测 ────────────────────────────────────────────────
+is_doze() {
+    cmd power get-idle-mode 2>/dev/null | grep -qiE "^(deep|light)$" && return 0
+    local lvl
+    lvl=$(dumpsys battery 2>/dev/null | awk '/^[[:space:]]*level:/{print $2; exit}')
+    [ -n "$lvl" ] && [ "$lvl" -lt 5 ] 2>/dev/null && return 0
+    return 1
+}
+
+# ═══ v4.0.0-patch1.5 Defer Init 状态机 ══════════════════════════════
+# 见设计文档(Gemini 确认的方案):
+#   PENDING   → 还没探到有效热点,什么都不做
+#   ACTIVE:X  → 已在 iface X 上挂了规则 + httpd 跑着
+#   迁移      → X 消失 or 变成 Y 时 cleanup X + init Y
+#
+# 状态保存在 $RUN/hnc_state,值是 "PENDING" 或 "ACTIVE:<iface>"。
+# 重启 watchdog 时读这个文件恢复状态(避免重启就重挂规则)。
+
+STATE_FILE="$RUN/hnc_state"
+
+# probe_valid_hotspot: 严格探测当前是否有合法热点接口
+# 成功: stdout 输出 "<iface> <ip>", 返回 0
+# 失败: 无输出,返回 1
+# 5 道校验:探到 → 非空 → 非 wlan0 → 有 IPv4 → IPv4 是 RFC1918 私网
+probe_valid_hotspot() {
+    local iface ip
+    iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface 2>/dev/null)
+    [ -z "$iface" ]        && return 1
+    [ "$iface" = "wlan0" ] && return 1   # 第二道防线
+    ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+    [ -z "$ip" ] && return 1
+    case "$ip" in
+        10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) ;;
+        *) return 1 ;;
+    esac
+    echo "$iface $ip"
+    return 0
+}
+
+# do_full_init: PENDING → ACTIVE:<iface>
+# 场景: 从来没 init 过(开机) or 刚刚热点重开。
+# 做: iptables init + tc init on iface + tc restore + v6 sync + 必要时拉 httpd
+# rc3.1.32: tc init 如果失败 (root htb add 冷启时序 bug 重试 3 次仍失败),
+# 不推进 STATE 到 ACTIVE, 保持 PENDING 让下一轮 probe 重新触发 do_full_init.
+# 典型场景: watchdog 启动过早撞上 wlan2 kernel 切换, 再等 1 轮 (60s) 通常就能成功.
+do_full_init() {
+    local iface=$1 ip=$2
+    log "STATE PENDING -> ACTIVE:$iface (ip=$ip), running first-time init"
+    sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
+    local tc_init_rc=$?
+    if [ $tc_init_rc -ne 0 ]; then
+        log_error "do_full_init: tc_manager init failed (rc=$tc_init_rc), STATE stays PENDING, will retry next probe"
+        # 清掉可能残留的半装配 (iptables chain 可能已建, 下次 init 会自己幂等处理)
+        # STATE_FILE 不写, 维持 PENDING, 下轮 probe 重新入 do_full_init 分支
+        return $tc_init_rc
+    fi
+    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
+    # 写 rules.json.hotspot_iface,给 WebUI 显示
+    sh "$HNC_DIR/bin/json_set.sh" top hotspot_iface "$iface" >> "$LOG" 2>&1
+    # 转移前必须先清健康检查缓存,不然下一轮 check_health 用旧数据
+    _HEALTH_TS=0
+    echo "ACTIVE:$iface" > "$STATE_FILE"
+    log "STATE entered ACTIVE:$iface"
+
+    # rc3.1.31 Bug B gap 修复 · 冷启动 do_full_init 可能跑在客户端连上热点前,
+    # 此时 devices.json 是空的 → restore_rules 拿不到 live IP 走了 rules.json 的
+    # stale fallback → tc u32 filter 装到了旧 IP → Mi-10 新 IP 流量不 match.
+    # 15s 后再跑一次 restore, 给 hotspotd 写 devices.json 的时间, get_current_ip
+    # 能拿到真实 IP. restore_rules 幂等 (prio=100+mark_id 每 MAC 唯一, del-before-add,
+    # IP 无变化则 no-op 只重复建 filter ~<50ms).
+    # subshell 独立, 即便 watchdog 退出也自然降级 (STATE 被 reset 则 case 不匹配).
+    (
+        sleep 15
+        cur_state=$(cat "$STATE_FILE" 2>/dev/null)
+        case "$cur_state" in
+            ACTIVE:*)
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WDG] delayed re-restore fired (+15s post-init) to refresh stale IPs" >> "$LOG"
+                sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+                ;;
+        esac
+    ) &
+}
+
+# do_migrate: ACTIVE:<old_iface> → ACTIVE:<new_iface>
+# 场景: 热点接口换了(WiFi 热点 → USB tethering 等)
+# 做: cleanup 旧 + init 新 + 杀 httpd 等下轮重拉绑新 IP
+do_migrate() {
+    local old=$1 new=$2 new_ip=$3
+    log "STATE ACTIVE:$old -> ACTIVE:$new (ip=$new_ip), migrating"
+    sh "$HNC_DIR/bin/tc_manager.sh" cleanup "$old" >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/tc_manager.sh" init "$new" >> "$LOG" 2>&1
+    local tc_init_rc=$?
+    # rc3.1.33 修 #1: 跟 do_full_init 对称, tc init 失败时回退到 PENDING.
+    # 之前继续写 ACTIVE:$new 但 tc 实际没装, watchdog 永远不会重 init →
+    # 伪 ACTIVE 状态卡死.
+    if [ $tc_init_rc -ne 0 ]; then
+        log_error "do_migrate: tc init failed on $new (rc=$tc_init_rc), reverting to PENDING"
+        echo "PENDING" > "$STATE_FILE"
+        _HEALTH_TS=0
+        return $tc_init_rc
+    fi
+    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
+    sh "$HNC_DIR/bin/json_set.sh" top hotspot_iface "$new" >> "$LOG" 2>&1
+    # 杀 httpd 让下轮 ensure_httpd_running 拿新 IP 重绑
+    local wpid; wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
+    if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null; then
+        kill -9 "$wpid" 2>/dev/null
+        log "killed old httpd PID=$wpid for rebind"
+    fi
+    rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
+    _HEALTH_TS=0
+    echo "ACTIVE:$new" > "$STATE_FILE"
+    log "STATE entered ACTIVE:$new"
+}
+
+# ── 主循环 v4.0.0-patch1.5: Defer Init 状态机 ────────────────
+log "=== Watchdog v4.0.0-patch1.5 started (PID=$$) ==="
+echo $$ > "$RUN/watchdog.pid"
+
+# v3.4.1: 彻底删除 ip monitor 事件监听
+# v1.5: 状态机驱动。初始从 $STATE_FILE 读,崩溃重启时能恢复
+INITIAL_STATE=$(cat "$STATE_FILE" 2>/dev/null)
+if [ -z "$INITIAL_STATE" ]; then
+    INITIAL_STATE="PENDING"
+    echo "PENDING" > "$STATE_FILE"
+fi
+log "initial state: $INITIAL_STATE"
+
+RESTORE_COUNT=0
+INTERVAL=$INTERVAL_NORMAL
+RECOVERY_ROUNDS=0
+LAST_V6_SYNC=0
+LAST_STATS_SAMPLE=0
+STATS_INTERVAL=300
+# RESTORE 速率限制(只在 ACTIVE 状态生效)
+RESTORE_WINDOW_START=0
+RESTORE_WINDOW_COUNT=0
+RESTORE_WINDOW_MAX=3
+RESTORE_WINDOW_SEC=300
+RESTORE_WINDOW_SEC_MAX=3600
+RESTORE_CONSEC_WINDOWS=0
+LAST_PASSIVE_EXIT_TS=0
+PASSIVE_MODE=0
+PASSIVE_LOGGED=0
+PASSIVE_MARKER="$RUN/watchdog_passive.marker"
+
+# 探测节流: PENDING 状态下每 10 秒探一次(为了快速启动);
+# ACTIVE 状态每 60 秒(稳态)。避免 PENDING 状态 60 秒才试一次,
+# 开机后 1 分钟以上热点才能被使用。
+PROBE_INTERVAL_PENDING=10
+PROBE_INTERVAL_ACTIVE=60
+
+# rc3.1.5 修: 进 main loop 前立即 ensure httpd_running, 不等第一次 sleep 完.
+# 之前 watchdog 启动后要先 sleep 60-120s 才第一次 ensure httpd, 导致用户点 toggle
+# 经常撞上"启动窗口"失败 (curl 8444 connection refused).
+# 这个修法让 httpd 在 watchdog 启动后 ~1s 内就上线.
+log "bootstrap: ensure httpd before loop entry"
+ensure_httpd_running 2>/dev/null || log "bootstrap: ensure_httpd_running failed (will retry in loop)"
+
+while true; do
+    # 读当前状态(每轮读,因为 do_full_init / do_migrate 会改文件)
+    STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "PENDING")
+
+    # rc3.1: service.wanted marker 逻辑已移除 · watchdog 在 cleanup.sh 杀进程
+    # 阶段就已经死了, 这段永远执行不到. restart 改由 cleanup.sh 末尾直接 fork.
+
+    # rc3.1.30 · 首轮跳过 sleep, 立即跑 dispatch.
+    # 配合 post-fs-data.sh 清 hnc_state, 重启后 watchdog 启动即 probe + do_full_init
+    # 不用等 10s (PROBE_INTERVAL_PENDING). 用户开热点后连上客户端立即有规则 · 不会
+    # 出现"前 10s 无限速"的窗口.
+    if [ "${FIRST_ROUND:-1}" = "1" ]; then
+        FIRST_ROUND=0
+    else
+        # 根据状态决定 sleep 时长
+        case "$STATE" in
+            PENDING) sleep $PROBE_INTERVAL_PENDING ;;
+            ACTIVE:*) sleep $INTERVAL ;;
+            *) log "WARN: unknown state '$STATE', resetting to PENDING"
+               echo "PENDING" > "$STATE_FILE"
+               STATE="PENDING"
+               sleep $PROBE_INTERVAL_PENDING ;;
+        esac
+    fi
+
+    # Doze 模式: 降频并跳过主动动作
+    if is_doze; then
+        INTERVAL=$INTERVAL_DOZE
+        continue
+    fi
+
+    # ═══ 状态机 dispatch ═══════════════════════════════════════
+    case "$STATE" in
+
+    PENDING)
+        # 没初始化过,探测热点
+        # rc3.1.31 隐患 3 诊断: 记 probe 耗时. reviewer 提醒如果 probe 本身 >3s,
+        # FIRST_ROUND=1 立刻 probe 的效果就被抵消了. 真机 probe_valid_hotspot 只
+        # 调 device_detect.sh iface (读文件 + 少量命令) 预期 <100ms. 若 probe.ms
+        # 持续 >1000ms 需单独优化.
+        _probe_t0=$(date +%s%N 2>/dev/null)
+        probe_out=$(probe_valid_hotspot)
+        probe_rc=$?
+        _probe_t1=$(date +%s%N 2>/dev/null)
+        if [ -n "$_probe_t0" ] && [ -n "$_probe_t1" ]; then
+            _probe_ms=$(( (_probe_t1 - _probe_t0) / 1000000 ))
+            [ "$_probe_ms" -gt 500 ] && log "probe_valid_hotspot slow: ${_probe_ms}ms (rc=$probe_rc)"
+        fi
+        if [ $probe_rc -eq 0 ]; then
+            new_iface=$(echo "$probe_out" | awk '{print $1}')
+            new_ip=$(echo "$probe_out" | awk '{print $2}')
+            do_full_init "$new_iface" "$new_ip"
+            # init 后同轮不做 check_health(规则刚挂,health 缓存无意义)
+            ensure_httpd_running
+        fi
+        # 没探到就继续等,什么都不做
+        ;;
+
+    ACTIVE:*)
+        active_iface="${STATE#ACTIVE:}"
+
+        # 探测当前热点状态
+        probe_out=$(probe_valid_hotspot)
+        probe_rc=$?
+
+        if [ $probe_rc -ne 0 ]; then
+            # 热点关了/消失了: 保持 ACTIVE 状态(用户可能只是临时关),
+            # 不做 migrate(不知道迁移到哪),也不 full_restore(规则挂的
+            # iface 已经 down, 没意义)。下轮再探。
+            # 不 log(避免每 60s 刷屏),除非这是第一次发现
+            continue
+        fi
+
+        new_iface=$(echo "$probe_out" | awk '{print $1}')
+        new_ip=$(echo "$probe_out" | awk '{print $2}')
+
+        # iface 变了 → 迁移
+        if [ "$new_iface" != "$active_iface" ]; then
+            do_migrate "$active_iface" "$new_iface" "$new_ip"
+            ensure_httpd_running
+            continue
+        fi
+
+        # 稳态: 健康检查 + httpd 维护
+        check_health
+        health_rc=$?
+
+        if [ $health_rc -eq 2 ]; then
+            # 临时故障(xtables busy),跳过本轮
+            INTERVAL=$INTERVAL_NORMAL
+        elif [ $health_rc -ne 0 ]; then
+            # 规则丢了: 走速率限制 → full_restore
+            NOW_RL=$(date +%s)
+            CUR_WINDOW_SEC=$RESTORE_WINDOW_SEC
+            if [ $RESTORE_CONSEC_WINDOWS -gt 0 ]; then
+                CUR_WINDOW_SEC=$((RESTORE_WINDOW_SEC * (1 << RESTORE_CONSEC_WINDOWS)))
+                [ $CUR_WINDOW_SEC -gt $RESTORE_WINDOW_SEC_MAX ] && CUR_WINDOW_SEC=$RESTORE_WINDOW_SEC_MAX
+            fi
+            if [ $((NOW_RL - RESTORE_WINDOW_START)) -ge $CUR_WINDOW_SEC ]; then
+                RESTORE_WINDOW_START=$NOW_RL
+                RESTORE_WINDOW_COUNT=0
+                if [ $PASSIVE_MODE -eq 1 ]; then
+                    if [ $((NOW_RL - LAST_PASSIVE_EXIT_TS)) -lt $((RESTORE_WINDOW_SEC * 2)) ]; then
+                        RESTORE_CONSEC_WINDOWS=$((RESTORE_CONSEC_WINDOWS + 1))
+                        log "exiting passive but re-triggering soon (consec=$RESTORE_CONSEC_WINDOWS)"
+                    else
+                        RESTORE_CONSEC_WINDOWS=0
+                    fi
+                    log "exiting passive mode"
+                    PASSIVE_MODE=0
+                    PASSIVE_LOGGED=0
+                    LAST_PASSIVE_EXIT_TS=$NOW_RL
+                    rm -f "$PASSIVE_MARKER" 2>/dev/null
+                fi
+            fi
+            if [ $PASSIVE_MODE -eq 1 ]; then
+                if [ $PASSIVE_LOGGED -eq 0 ]; then
+                    log "health_fail in passive mode, skipping restore"
+                    PASSIVE_LOGGED=1
+                fi
+                INTERVAL=$INTERVAL_NORMAL
+            else
+                RESTORE_WINDOW_COUNT=$((RESTORE_WINDOW_COUNT+1))
+                RESTORE_COUNT=$((RESTORE_COUNT+1))
+                full_restore "health_fail (total=$RESTORE_COUNT, window=$RESTORE_WINDOW_COUNT/$RESTORE_WINDOW_MAX, win_sec=$CUR_WINDOW_SEC)"
+                if [ $RESTORE_WINDOW_COUNT -ge $RESTORE_WINDOW_MAX ]; then
+                    log "RESTORE window limit hit, entering passive mode"
+                    PASSIVE_MODE=1
+                    touch "$PASSIVE_MARKER" 2>/dev/null
+                fi
+                INTERVAL=$INTERVAL_RECOVERY
+                RECOVERY_ROUNDS=3
+            fi
+        else
+            # health 正常
+            if [ "$RECOVERY_ROUNDS" -gt 0 ]; then
+                RECOVERY_ROUNDS=$((RECOVERY_ROUNDS-1))
+                [ "$RECOVERY_ROUNDS" -eq 0 ] && INTERVAL=$INTERVAL_NORMAL
+            else
+                INTERVAL=$INTERVAL_NORMAL
+            fi
+        fi
+
+        # v6 同步(每 60s 兜底一次)
+        NOW=$(date +%s)
+        if [ $((NOW - LAST_V6_SYNC)) -ge 60 ]; then
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            LAST_V6_SYNC=$NOW
+        fi
+
+        # 流量统计采样
+        if [ $((NOW - LAST_STATS_SAMPLE)) -ge $STATS_INTERVAL ]; then
+            sh "$HNC_DIR/bin/stats_sample.sh" >> "$LOG" 2>&1 || true
+            LAST_STATS_SAMPLE=$NOW
+        fi
+
+        # httpd IP 漂移检测
+        check_httpd_bind_drift
+
+        # httpd 保活(拉起新进程)
+        ensure_httpd_running
+        ;;
+    esac
+
+    # 子服务存活检查(hotspotd / device detect, 跟状态无关)
+    check_services
+
+    # v4.0 Patch 1.6 稳定性卫生
+    heartbeat
+    rotate_logs_periodic
+
+done
+
+# trap EXIT 会 fire 如果执行到这里(不应发生)
