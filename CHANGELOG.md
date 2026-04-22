@@ -1,3 +1,92 @@
+## 🚀 v5.0.0-alpha.4 BPF upstream 反查 (P0-C) · 2026-04-22
+
+**主题**: alpha.3 真机暴露的根因修复 — primary_upstream 在 daemon 里探不到。
+
+### 真机现象 (Ling RMX5010 装 alpha.3 后)
+
+```
+/data/local/hnc/bin/hnc_ipc OFFLOAD_STATUS
+→ "primary_upstream_ifindex":0
+  "primary_upstream_ifname":""
+  "limited_device_count":6           ← rebuild 成功了
+  "disabled_upstream_ifindex":[]    ← 但 primary 空, 写不下 BPF limit
+```
+
+BPF limit_map 里:
+```
+32: 0                    ← wlan2 (downstream), 被写 0 正常
+22: 18446744073709551615 ← rmnet_data2 (真实上游 ifindex 22), U64_MAX = 没关 BPF offload!
+```
+
+所以下行流量走 BPF fast path 跳过 HNC HTB, 限速失效。
+
+### 根因: alpha.2 upstream.c Tier 1/2 在真机不工作
+
+- **Tier 1 (ip route get 8.8.8.8)**: 用户开 Clash/WireGuard 时返回 tun0, 不是物理
+  上游. 且 hotspotd daemon SELinux 上下文可能不允许 popen("ip ..."),
+  shell (uid=0 shell context) 能跑不代表 daemon 能跑
+- **Tier 2 (/proc/net/route)**: 按理能找到 rmnet_data2, 但实测也失败了 —
+  可能 daemon 读 /proc/net/route 有 SELinux 限制 (非 system file context)
+
+### 修复 (upstream.c + upstream.h)
+
+**新增 Tier 3: BPF upstream4_map 反查** (~120 行)
+- 打开 `/sys/fs/bpf/tethering/map_offload_tether_upstream4_map`
+- `BPF_MAP_GET_NEXT_KEY(NULL)` 取第一条 entry, `BPF_MAP_LOOKUP_ELEM` 读 value
+- AOSP `TetherUpstream4Value.oif` 字段 (前 4 bytes LE u32) = upstream ifindex
+- `if_indextoname(oif)` 转 ifname
+
+**为什么 Tier 3 最可靠**:
+1. 同一 SELinux 上下文 — hotspotd 本身已经在读 limit_map/stats_map/error_map,
+   访问 upstream4_map 不会被挡
+2. 绝对准确 — BPF tethering 本身用这 ifindex 做 offload, 跟 framework 认知一致
+3. 自动过滤 VPN — tun/wg 不在 tethering BPF 里 (framework 只给 physical upstream 建 entry)
+
+**Tier 1 加 VPN 过滤**:
+- iface 名以 tun/tap/ppp/wg/gre/ipsec 开头 → 跳过继续
+- 若只有 VPN 可查到, Tier 1 返 -1, 回落 Tier 3 (其实 Tier 3 是先行, 已解决)
+
+**优先级重排**: Tier 3 → Tier 1 → Tier 2
+- alpha.2 原顺序: Tier 1 → Tier 2 (Tier 3 未实现)
+- alpha.4 新顺序: BPF 先行 (最准), ip route 次之, /proc/net/route 兜底
+
+### 代码改动
+
+```
+daemon/hotspotd/upstream.c:  +~120 lines (Tier 3 + VPN filter)
+daemon/hotspotd/upstream.h:  +6 lines (Tier 3 声明)
+module.prop:                 v5.0.0-alpha.3 → v5.0.0-alpha.4 (50502 → 50503)
+```
+
+### 真机验证目标
+
+alpha.4 装后重启 + 开热点 + Mi-10 连上 → speedtest 直接双向 1 MB/s:
+- `hnc_ipc OFFLOAD_STATUS` 期望:
+  - `primary_upstream_ifname:"rmnet_data2"` (或当前真实上游)
+  - `primary_upstream_ifindex:22` (或对应 ifindex)
+  - `disabled_upstream_count:1`
+  - `disabled_upstream_ifindex:[22]`
+- BPF limit_map 期望:
+  - `22: 0` ← **关键变化**, alpha.4 的核心成就
+
+### 已知限制
+
+- Tier 3 要求 tethering BPF upstream4_map 已经有数据 (即已经有流量经过 offload).
+  冷启动后 0-5s 可能 map 空, Tier 3 失败 → 回落 Tier 1/2. Framework 开始
+  转发几个包后 map 就填上, 下次 refresh 就 OK
+- Qualcomm 之外的 SoC (MTK/Exynos) 可能没有同路径 BPF map, Tier 3 失败
+  回落 Tier 1/2, 等于 alpha.2 行为, 不影响其他机型
+
+### 向后兼容
+
+- 无 tethering BPF 的机型 (ROM 没装或 adapter=null) → Tier 3 open 失败, 回落
+  Tier 1/2, 等效 alpha.2
+- 即使 BPF 反查成功但得到的 ifindex 跟用户认知不符 (比如 USB 网络) →
+  Tier 3 返的就是 framework 正在 offload 的 ifindex, 跟 HNC disable_upstream
+  写的是同一个, 必然命中
+
+---
+
 ## 🚀 v5.0.0-alpha.3 重启即用 (P0-B + P1) · 2026-04-22
 
 **主题**: 修 alpha.2 真机暴露的两大遗留问题。配合 alpha.2 已埋的 upstream.c,

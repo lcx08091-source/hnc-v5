@@ -1,4 +1,7 @@
-/* upstream.c — HNC v5.0 alpha.2 上游 ifindex 探测实现
+/* upstream.c — HNC v5.0 上游 ifindex 探测实现
+ *
+ * alpha.2: Tier 1 (ip route) + Tier 2 (/proc/net/route)
+ * alpha.4 P0-C: + Tier 3 BPF upstream4_map 反查, 且 Tier 3 优先
  *
  * SPDX-License-Identifier: GPL-2.0
  */
@@ -12,8 +15,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <linux/bpf.h>
 
 #include <net/if.h>
 
@@ -59,6 +67,20 @@ int upstream_detect_via_ip_route(int *ifindex_out,
             i++;
         }
         if (i == 0) continue;
+
+        /* alpha.4: 过滤 VPN / tunnel 接口
+         * 用户开 Clash / WireGuard / OpenVPN 时 ip route get 会返回 tun0/wg0
+         * 这些不是物理上游, BPF upstream4_map 里没这 ifindex, disable 无效
+         * 跳过继续 (但 popen 实际只返回一条, 所以这里会导致 Tier 1 返 -1, 触发 Tier 2/3) */
+        if (strncmp(iface, "tun",  3) == 0 ||
+            strncmp(iface, "tap",  3) == 0 ||
+            strncmp(iface, "ppp",  3) == 0 ||
+            strncmp(iface, "wg",   2) == 0 ||
+            strncmp(iface, "gre",  3) == 0 ||
+            strncmp(iface, "ipsec",5) == 0) {
+            fprintf(stderr, "[upstream] Tier1: skipping VPN iface '%s'\n", iface);
+            continue;
+        }
 
         unsigned int idx = if_nametoindex(iface);
         if (idx == 0) continue;
@@ -144,19 +166,149 @@ int upstream_detect_via_proc_route(int *ifindex_out,
 }
 
 /* ══════════════════════════════════════════════════════════
- * 入口
+ * Tier 3: BPF upstream4_map 反查 (alpha.4 P0-C)
+ *
+ * 原理:
+ *   ColorOS 有 BPF tethering. 当有流量经过 HNC, upstream4_map 已被 Android
+ *   framework 填满 (flow → upstream info). 每条 value[0] 就是真实物理上游
+ *   ifindex.
+ *
+ * 为什么 Tier 3 要先行 (优先于 Tier 1/2):
+ *   1. 最准确: BPF map 里就是 framework 认定的物理上游, 跟 HTB offload 用的是
+ *      同一个 ifindex, 写 limit 必然命中
+ *   2. 最可靠: hotspotd 本身已经打开 BPF (adapter_bpf), 同一 SELinux 上下文下
+ *      读另一个 map 不会被挡; 而 popen("ip ...") 在 daemon domain 下
+ *      可能被阻挡
+ *   3. 免 VPN 干扰: tun0/wg0 不会出现在 tethering BPF map 里 (framework 只
+ *      给 physical upstream 建 entry)
+ *
+ * 实现:
+ *   - 打开 /sys/fs/bpf/tethering/map_offload_tether_upstream4_map
+ *   - 用 BPF_MAP_GET_NEXT_KEY 枚举 (key=NULL → first)
+ *   - 读 value, value[0] = upstream ifindex (AOSP TetherUpstream4Value struct)
+ *   - if_indextoname 转 ifname
+ *
+ * Value 结构 (AOSP packages/modules/Connectivity/Tethering/bpf_progs/offload.h):
+ *   struct TetherUpstream4Value {
+ *       __u32 oif;           ← value[0], 本函数要的
+ *       struct ethhdr macHeader;
+ *       __u16 pmtu;
+ *       ...
+ *   };
+ *   只要前 4 字节 u32, 不需完整 struct 对齐
+ * ══════════════════════════════════════════════════════════ */
+
+#define BPF_UPSTREAM4_MAP  "/sys/fs/bpf/tethering/map_offload_tether_upstream4_map"
+
+static long _sys_bpf(enum bpf_cmd cmd, union bpf_attr *attr, unsigned int size)
+{
+    return syscall(__NR_bpf, cmd, attr, size);
+}
+
+int upstream_detect_via_bpf(int *ifindex_out,
+                             char *ifname_out,
+                             size_t ifname_size)
+{
+    if (!ifindex_out || !ifname_out || ifname_size < 2) return -1;
+
+    /* 打开 upstream4_map */
+    union bpf_attr oattr;
+    memset(&oattr, 0, sizeof(oattr));
+    oattr.pathname = (uint64_t)(uintptr_t)BPF_UPSTREAM4_MAP;
+    long fd = _sys_bpf(BPF_OBJ_GET, &oattr, sizeof(oattr));
+    if (fd < 0) {
+        /* map 不存在 (ROM 没 tethering BPF) 或无权限 */
+        fprintf(stderr, "[upstream] Tier3: open %s failed: %s\n",
+                BPF_UPSTREAM4_MAP, strerror(errno));
+        return -1;
+    }
+
+    /* key/value 尺寸不确定 (不同 ROM struct 略有差异), 用充足 buffer
+     * 真实 TetherUpstream4Key ≈ 40 bytes, Value ≈ 24 bytes, 预留到 128 */
+    unsigned char key[128];
+    unsigned char value[128];
+    memset(key, 0, sizeof(key));
+    memset(value, 0, sizeof(value));
+
+    /* 枚举第一个 key */
+    union bpf_attr nattr;
+    memset(&nattr, 0, sizeof(nattr));
+    nattr.map_fd   = (uint32_t)fd;
+    nattr.key      = 0;                   /* NULL = 取第一个 */
+    nattr.next_key = (uint64_t)(uintptr_t)key;
+    int rc = (int)_sys_bpf(BPF_MAP_GET_NEXT_KEY, &nattr, sizeof(nattr));
+    if (rc < 0) {
+        /* map 空 (还没流量经过 tethering BPF) 或 EOF */
+        if (errno != ENOENT) {
+            fprintf(stderr, "[upstream] Tier3: get_next_key failed: %s\n",
+                    strerror(errno));
+        } else {
+            fprintf(stderr, "[upstream] Tier3: upstream4_map empty (no BPF offload flows yet)\n");
+        }
+        close(fd);
+        return -1;
+    }
+
+    /* 用这个 key lookup value */
+    union bpf_attr lattr;
+    memset(&lattr, 0, sizeof(lattr));
+    lattr.map_fd = (uint32_t)fd;
+    lattr.key    = (uint64_t)(uintptr_t)key;
+    lattr.value  = (uint64_t)(uintptr_t)value;
+    rc = (int)_sys_bpf(BPF_MAP_LOOKUP_ELEM, &lattr, sizeof(lattr));
+    close(fd);
+    if (rc < 0) {
+        fprintf(stderr, "[upstream] Tier3: lookup_elem failed: %s\n",
+                strerror(errno));
+        return -1;
+    }
+
+    /* value[0..3] = oif (upstream ifindex), little-endian */
+    uint32_t oif = (uint32_t)value[0]
+                 | ((uint32_t)value[1] << 8)
+                 | ((uint32_t)value[2] << 16)
+                 | ((uint32_t)value[3] << 24);
+    if (oif == 0 || oif > 65535) {
+        fprintf(stderr, "[upstream] Tier3: bogus oif=%u, skip\n", oif);
+        return -1;
+    }
+
+    char name[IFNAMSIZ] = {0};
+    if (if_indextoname(oif, name) == NULL) {
+        fprintf(stderr, "[upstream] Tier3: if_indextoname(%u) failed\n", oif);
+        return -1;
+    }
+
+    *ifindex_out = (int)oif;
+    snprintf(ifname_out, ifname_size, "%s", name);
+    fprintf(stderr, "[upstream] Tier3: found %s (ifindex=%d) via BPF upstream4_map\n",
+            name, (int)oif);
+    return 0;
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 入口: 优先级 Tier 3 > Tier 1 > Tier 2 (alpha.4)
+ *
+ * alpha.2 原顺序 Tier 1 → Tier 2. alpha.4 真机发现 Tier 1 在 VPN 场景下
+ * 会返回 tun0 造成错配, 且 daemon SELinux 上下文可能阻挡 popen("ip").
+ * BPF 反查最可靠, 提到最前.
  * ══════════════════════════════════════════════════════════ */
 
 int upstream_detect_primary(int *ifindex_out,
                              char *ifname_out,
                              size_t ifname_size)
 {
+    /* Tier 3: BPF 反查 (最准, 最可靠) */
+    if (upstream_detect_via_bpf(ifindex_out, ifname_out, ifname_size) == 0) {
+        return 0;
+    }
+    /* Tier 1: ip route get (已过滤 VPN) */
     if (upstream_detect_via_ip_route(ifindex_out, ifname_out, ifname_size) == 0) {
         return 0;
     }
+    /* Tier 2: /proc/net/route 启发式 (上面都失败才走) */
     if (upstream_detect_via_proc_route(ifindex_out, ifname_out, ifname_size) == 0) {
         return 0;
     }
-    /* Tier 3 (BPF upstream4_map 反查) 留 alpha.3 */
     return -1;
 }

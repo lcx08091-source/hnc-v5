@@ -66,4 +66,11 @@ int upstream_detect_via_proc_route(int *ifindex_out,
                                     char *ifname_out,
                                     size_t ifname_size);
 
+/* alpha.4 P0-C: Tier 3 BPF upstream4_map 反查
+ * 直接从 tethering BPF map 读取 oif (upstream ifindex)
+ * 比 popen("ip") 更可靠 (daemon SELinux 下 popen 可能被挡), 也免 VPN 干扰 */
+int upstream_detect_via_bpf(int *ifindex_out,
+                             char *ifname_out,
+                             size_t ifname_size);
+
 #endif /* HNC_UPSTREAM_H */
