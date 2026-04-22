@@ -226,34 +226,54 @@ int upstream_detect_via_bpf(int *ifindex_out,
     /* key/value 尺寸不确定 (不同 ROM struct 略有差异), 用充足 buffer
      * 真实 TetherUpstream4Key ≈ 40 bytes, Value ≈ 24 bytes, 预留到 128 */
     unsigned char key[128];
+    unsigned char next_key[128];
     unsigned char value[128];
     memset(key, 0, sizeof(key));
+    memset(next_key, 0, sizeof(next_key));
     memset(value, 0, sizeof(value));
 
-    /* 枚举第一个 key */
+    /* 枚举第一个 key
+     * beta.2 修: Linux 5.x+ 内核下 attr.key = NULL 可能被当作
+     * "key 在 map 末尾" 返回 ENOENT (即使 map 非空). 6.6.102 实测真机命中.
+     * 改用全零 key 作为种子: kernel 找第一个 > key 的, 如果 map 里没有全零
+     * key (正常情况, 因为真实 key 是 flow 5-tuple), 就返回第一条.
+     *
+     * 某些 kernel 版本还要求 attr.key != 0 才有效, 我们直接传 key buffer 的
+     * 指针, kernel 读到全零 key 会正常处理. */
     union bpf_attr nattr;
     memset(&nattr, 0, sizeof(nattr));
     nattr.map_fd   = (uint32_t)fd;
-    nattr.key      = 0;                   /* NULL = 取第一个 */
-    nattr.next_key = (uint64_t)(uintptr_t)key;
+    nattr.key      = (uint64_t)(uintptr_t)key;       /* 全零种子, 不是 NULL */
+    nattr.next_key = (uint64_t)(uintptr_t)next_key;
     int rc = (int)_sys_bpf(BPF_MAP_GET_NEXT_KEY, &nattr, sizeof(nattr));
     if (rc < 0) {
-        /* map 空 (还没流量经过 tethering BPF) 或 EOF */
+        /* 两种失败都合法: kernel 真空 (ENOENT) / 全零 key 恰好命中 map 末尾 */
         if (errno != ENOENT) {
             fprintf(stderr, "[upstream] Tier3: get_next_key failed: %s\n",
                     strerror(errno));
-        } else {
-            fprintf(stderr, "[upstream] Tier3: upstream4_map empty (no BPF offload flows yet)\n");
+            close(fd);
+            return -1;
         }
-        close(fd);
-        return -1;
+        /* ENOENT: 可能 map 真空, 也可能全零 key 恰好 >= 所有真实 key.
+         * 退一步: 再试 attr.key = NULL (老语义) */
+        memset(&nattr, 0, sizeof(nattr));
+        nattr.map_fd   = (uint32_t)fd;
+        nattr.key      = 0;                           /* NULL = 老语义 */
+        nattr.next_key = (uint64_t)(uintptr_t)next_key;
+        rc = (int)_sys_bpf(BPF_MAP_GET_NEXT_KEY, &nattr, sizeof(nattr));
+        if (rc < 0) {
+            fprintf(stderr, "[upstream] Tier3: upstream4_map empty or unreachable (errno=%s)\n",
+                    strerror(errno));
+            close(fd);
+            return -1;
+        }
     }
 
-    /* 用这个 key lookup value */
+    /* 用 next_key lookup value */
     union bpf_attr lattr;
     memset(&lattr, 0, sizeof(lattr));
     lattr.map_fd = (uint32_t)fd;
-    lattr.key    = (uint64_t)(uintptr_t)key;
+    lattr.key    = (uint64_t)(uintptr_t)next_key;    /* beta.2: 用 next_key */
     lattr.value  = (uint64_t)(uintptr_t)value;
     rc = (int)_sys_bpf(BPF_MAP_LOOKUP_ELEM, &lattr, sizeof(lattr));
     close(fd);
@@ -287,19 +307,147 @@ int upstream_detect_via_bpf(int *ifindex_out,
 }
 
 /* ══════════════════════════════════════════════════════════
- * 入口: 优先级 Tier 3 > Tier 1 > Tier 2 (alpha.4)
+ * Tier 4: BPF limit_map 反查 (beta.2 新增, 兜底 Tier 3)
  *
- * alpha.2 原顺序 Tier 1 → Tier 2. alpha.4 真机发现 Tier 1 在 VPN 场景下
- * 会返回 tun0 造成错配, 且 daemon SELinux 上下文可能阻挡 popen("ip").
- * BPF 反查最可靠, 提到最前.
+ * 原理:
+ *   Android tethering framework 主动在 limit_map 里给每个 active upstream
+ *   ifindex 写 U64_MAX 分配无限额度. 这是个 { u32 ifindex → u64 limit } 的
+ *   简单 map, struct 不会变.
+ *
+ *   遍历 limit_map 所有 key (ifindex), 跳过已知 downstream (wlan2 ifindex
+ *   一般是 31/32, 通过 hotspot iface 名反查), 第一个非 downstream ifindex
+ *   就是 upstream.
+ *
+ * 为什么放 Tier 3 之后做兜底 (而不是直接取代 Tier 3):
+ *   - limit_map 也可能包含已关闭的上游 (value=0, framework 暂未清理)
+ *   - Tier 3 直接查 upstream4_map 更精确 (只含 active flow)
+ *   - Tier 4 兜底适合 Tier 3 get_next_key 在新 kernel 下语义不兼容时
+ *
+ * 性能: 遍历少数几个 entry, 纯 BPF syscall, <1ms
+ * ══════════════════════════════════════════════════════════ */
+
+#define BPF_LIMIT_MAP_PATH  "/sys/fs/bpf/tethering/map_offload_tether_limit_map"
+
+int upstream_detect_via_limit_map(int *ifindex_out,
+                                   char *ifname_out,
+                                   size_t ifname_size)
+{
+    if (!ifindex_out || !ifname_out || ifname_size < 2) return -1;
+
+    union bpf_attr oattr;
+    memset(&oattr, 0, sizeof(oattr));
+    oattr.pathname = (uint64_t)(uintptr_t)BPF_LIMIT_MAP_PATH;
+    long fd = _sys_bpf(BPF_OBJ_GET, &oattr, sizeof(oattr));
+    if (fd < 0) {
+        fprintf(stderr, "[upstream] Tier4: open %s failed: %s\n",
+                BPF_LIMIT_MAP_PATH, strerror(errno));
+        return -1;
+    }
+
+    /* 遍历 limit_map, 收集所有 ifindex
+     * limit_map key 是 u32 ifindex, value 是 u64 limit
+     * 最多 16 个上游 (够覆盖 rmnet_data0..5, wlan0/1/2, eth0, tun0 等) */
+    uint32_t ifindexes[16];
+    int count = 0;
+
+    uint32_t prev_key = 0;
+    uint32_t next_key = 0;
+    int first = 1;
+
+    while (count < 16) {
+        union bpf_attr nattr;
+        memset(&nattr, 0, sizeof(nattr));
+        nattr.map_fd   = (uint32_t)fd;
+        nattr.next_key = (uint64_t)(uintptr_t)&next_key;
+        if (first) {
+            /* 首次用全零 key (不是 NULL), 兼容新老 kernel 语义 */
+            uint32_t zero = 0;
+            nattr.key = (uint64_t)(uintptr_t)&zero;
+        } else {
+            nattr.key = (uint64_t)(uintptr_t)&prev_key;
+        }
+
+        int rc = (int)_sys_bpf(BPF_MAP_GET_NEXT_KEY, &nattr, sizeof(nattr));
+        if (rc < 0) {
+            if (first && errno == ENOENT) {
+                /* 全零 key 失败, 试 NULL (老 kernel 语义) */
+                memset(&nattr, 0, sizeof(nattr));
+                nattr.map_fd   = (uint32_t)fd;
+                nattr.key      = 0;
+                nattr.next_key = (uint64_t)(uintptr_t)&next_key;
+                rc = (int)_sys_bpf(BPF_MAP_GET_NEXT_KEY, &nattr, sizeof(nattr));
+            }
+            if (rc < 0) break;   /* 真的没了 */
+        }
+
+        ifindexes[count++] = next_key;
+        prev_key = next_key;
+        first = 0;
+    }
+    close(fd);
+
+    if (count == 0) {
+        fprintf(stderr, "[upstream] Tier4: limit_map empty\n");
+        return -1;
+    }
+
+    /* 拿到 hotspot downstream ifindex (要跳过它) */
+    unsigned wlan2_idx = if_nametoindex("wlan2");
+    unsigned ap0_idx   = if_nametoindex("ap0");       /* 少数 ROM */
+    unsigned swlan0_idx = if_nametoindex("swlan0");
+
+    /* 找第一个非 downstream 的 ifindex */
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = ifindexes[i];
+        if (idx == 0) continue;
+        if (wlan2_idx && idx == wlan2_idx) continue;
+        if (ap0_idx && idx == ap0_idx) continue;
+        if (swlan0_idx && idx == swlan0_idx) continue;
+
+        char name[IFNAMSIZ] = {0};
+        if (if_indextoname(idx, name) == NULL) continue;
+
+        /* 再次检查是不是 downstream/VPN (按名字)
+         * 防 wlan2_idx 没查到但 idx 确实是 wlan2 的奇怪 case */
+        if (strncmp(name, "wlan2",  5) == 0) continue;
+        if (strncmp(name, "tun",    3) == 0) continue;
+        if (strncmp(name, "tap",    3) == 0) continue;
+        if (strncmp(name, "wg",     2) == 0) continue;
+        if (strncmp(name, "ppp",    3) == 0) continue;
+        if (strncmp(name, "ap",     2) == 0) continue;
+        if (strncmp(name, "swlan",  5) == 0) continue;
+        if (strncmp(name, "lo",     2) == 0) continue;
+
+        *ifindex_out = (int)idx;
+        snprintf(ifname_out, ifname_size, "%s", name);
+        fprintf(stderr, "[upstream] Tier4: found %s (ifindex=%u) via BPF limit_map\n",
+                name, idx);
+        return 0;
+    }
+
+    fprintf(stderr, "[upstream] Tier4: limit_map scanned %d entries, no viable upstream\n",
+            count);
+    return -1;
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 入口: 优先级 Tier 3 > Tier 4 > Tier 1 > Tier 2 (beta.2)
+ *
+ * beta.2 真机 RMX5010 6.6.102 发现 Tier 3 的 BPF_MAP_GET_NEXT_KEY 在新
+ * kernel 上对 NULL key 语义不兼容, 总返回 ENOENT (即使 map 非空). 加
+ * Tier 4 作为 BPF 层兜底, 从 limit_map (schema 稳定的 u32→u64 map) 反推.
  * ══════════════════════════════════════════════════════════ */
 
 int upstream_detect_primary(int *ifindex_out,
                              char *ifname_out,
                              size_t ifname_size)
 {
-    /* Tier 3: BPF 反查 (最准, 最可靠) */
+    /* Tier 3: BPF upstream4_map 反查 (最准) */
     if (upstream_detect_via_bpf(ifindex_out, ifname_out, ifname_size) == 0) {
+        return 0;
+    }
+    /* Tier 4: BPF limit_map 反查 (schema 稳定, 兼容性最好) */
+    if (upstream_detect_via_limit_map(ifindex_out, ifname_out, ifname_size) == 0) {
         return 0;
     }
     /* Tier 1: ip route get (已过滤 VPN) */
