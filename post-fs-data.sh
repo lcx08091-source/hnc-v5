@@ -61,6 +61,20 @@ if [ -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" ]; then
     chmod 755 $HNC_DIR/daemon/hnc_httpd/hnc_httpd 2>/dev/null
 fi
 
+# v5.0.0-beta.4: 部署 BPF LSM Limit Map Guard object
+# hotspotd 启动时从 /data/local/hnc/bpf/hnc_limit_map_guard.bpf.o 加载,
+# 然后 BPF_PROG_LOAD + attach 到 lsm/bpf hook, 拦截 framework 对
+# limit_map 的覆盖写, 真正关闭 BPF tethering offload fast path.
+#
+# 部署失败/缺文件不致命: scheduler 内 hnc_lsm_init 会 graceful 降级,
+# 走 beta.3 的"周期重探 + adapter disable_upstream + 接受 framework 覆盖"
+# 路径, 业务正常但失去精准防御。
+if [ -f "$MODDIR/bpf/hnc_limit_map_guard.bpf.o" ]; then
+    mkdir -p $HNC_DIR/bpf
+    cp -f $MODDIR/bpf/hnc_limit_map_guard.bpf.o $HNC_DIR/bpf/ 2>/dev/null || true
+    chmod 644 $HNC_DIR/bpf/hnc_limit_map_guard.bpf.o 2>/dev/null
+fi
+
 chmod 755 $HNC_DIR/bin/*.sh
 # v5.0 beta.1 修: 单独 chmod 所有无后缀二进制
 # post-fs-data.sh 原来只 chmod *.sh, 但 bin/ 下的 C 二进制 (hotspotd / hnc_ipc /

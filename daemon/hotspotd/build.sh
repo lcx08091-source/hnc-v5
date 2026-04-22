@@ -18,9 +18,11 @@ ARCH=${1:-arm64}
 # v3.8.4: 新增 mdns_worker.c,异步 mDNS worker(需要 -pthread 链接 libpthread)。
 # v5.0: 新增 platform.c / scheduler.c / offload/ 抽象层 (BPF tether offload)。
 # v5.0 alpha.2: 新增 upstream.c (策略路由感知的上游探测)。
+# v5.0.0-beta.4: 新增 lsm/hnc_lsm_loader.c (BPF LSM Limit Map Guard)。
 SRCS="hotspotd.c hnc_helpers.c hostname_cache.c oui_override.c mdns_worker.c \
       platform.c scheduler.c upstream.c \
-      offload/adapter.c offload/adapter_null.c offload/adapter_bpf.c"
+      offload/adapter.c offload/adapter_null.c offload/adapter_bpf.c \
+      lsm/hnc_lsm_loader.c"
 OUTDIR=prebuilt/${ARCH}
 OUT=${OUTDIR}/hotspotd
 
@@ -91,6 +93,42 @@ if [ -d tools ]; then
         chmod 755 "$BINDIR/hnc_ipc"
         echo "[build] Copied tools/hnc_ipc to $BINDIR/hnc_ipc"
     fi
+fi
+
+# ── v5.0.0-beta.4: 编译 BPF LSM Limit Map Guard ─────────────────
+# 需要 host 上有 clang (with bpf target) 和 ColorOS 16 dump 的 vmlinux.h
+# (位于 daemon/hotspotd/lsm/vmlinux.h, 一次性 commit, OS 大版本升级时
+# 重新 dump)
+#
+# 输出: ../../bpf/hnc_limit_map_guard.bpf.o  (打进 zip 部署到
+#        /data/local/hnc/bpf/ 由 hotspotd 加载)
+echo ""
+echo "=== v5.0.0-beta.4 BPF LSM build ==="
+if [ -f lsm/vmlinux.h ] && [ -f lsm/hnc_limit_map_guard.bpf.c ]; then
+    BPFCC="${BPFCC:-clang}"
+    if ! command -v "$BPFCC" >/dev/null 2>&1; then
+        echo "[build] WARN: $BPFCC not found, skip BPF compile"
+    else
+        BPF_OUT_DIR=../../bpf
+        mkdir -p "$BPF_OUT_DIR"
+        "$BPFCC" -O2 -g \
+            -target bpf \
+            -D__TARGET_ARCH_arm64 \
+            -Ilsm \
+            -c lsm/hnc_limit_map_guard.bpf.c \
+            -o "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" || {
+            echo "[build] WARN: BPF compile failed (LSM guard will not load on device)"
+        }
+        if [ -f "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" ]; then
+            # strip debug 信息减小 .o (BTF 必须保留, 不能 -strip-all)
+            llvm-strip -g "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" 2>/dev/null \
+              || strip -g "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" 2>/dev/null \
+              || true
+            echo "[build] BPF LSM object: $(ls -lh "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" | awk '{print $5}')"
+        fi
+    fi
+else
+    echo "[build] skip BPF: lsm/vmlinux.h or lsm/hnc_limit_map_guard.bpf.c missing"
 fi
 
 # ── 在 HOST Linux 上快速测试编译（功能测试用，非 Android）──────
