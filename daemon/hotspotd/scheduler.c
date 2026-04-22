@@ -460,6 +460,46 @@ static void *worker_main(void *arg)
         sched.worker_refresh_requested = 0;
         pthread_mutex_unlock(&sched.worker_lock);
 
+        /* beta.3: 周期性重探 primary upstream (cold-start race fix)
+         *
+         * 历史 bug (beta.1 / beta.2):
+         *   refresh_primary_upstream_locked() 只在 3 个时机调用:
+         *     1. hnc_scheduler_init() 启动一次
+         *     2. rebuild_from_rules() 当 limited_count > 0 时
+         *     3. notify_device_limit_changed() 在 0->>0 转换时
+         *   一旦冷启动踩到 "BPF upstream4_map 还空" 窗口 (热点刚开/客户端还
+         *   没流量), Tier3/Tier4 都 fail → primary_upstream_ifindex=0 永久
+         *   保持. 之后 limited_count 持续 >0 不会再触发 0->>0,worker 60s
+         *   只跑 refresh_active 不重探, 系统永远停留在 "fallback disable_global"
+         *   状态. 实测 RMX5010 ColorOS 16 上 init 时机比 BPF map 填充早,
+         *   100% 命中此 race.
+         *
+         * 修复:
+         *   每个 worker 周期(60s)都重探一次. 状态变化时 (探到新 upstream
+         *   或上游切换) 自动 re-trigger adapter 操作,与 0->>0 路径等价.
+         *   纯 BPF 反查, 性能开销 < 1ms, 无副作用. */
+        pthread_mutex_lock(&sched.lock);
+        int prev_ifindex = sched.primary_upstream_ifindex;
+        refresh_primary_upstream_locked();
+        int now_ifindex = sched.primary_upstream_ifindex;
+        /* 关键: 之前没探到 (=0) 现在探到了, 且当前有限速设备 → 立即触发
+         * disable. 否则即便探到上游, adapter 状态还停留在
+         * "fallback disable_global", 不会切换到精准 disable_upstream. */
+        int need_retrigger = (prev_ifindex == 0 && now_ifindex > 0
+                              && sched.limited_count > 0);
+        /* 上游切换 (e.g. WiFi 下线切 4G): 老 ifindex 还在 disabled_set
+         * 里, 新 ifindex 没被 disable. 也要 retrigger. */
+        if (prev_ifindex > 0 && now_ifindex > 0 && prev_ifindex != now_ifindex
+            && sched.limited_count > 0) {
+            need_retrigger = 1;
+        }
+        if (need_retrigger) {
+            fprintf(stderr, "[sched] periodic re-probe: upstream %d -> %d, retriggering disable\n",
+                    prev_ifindex, now_ifindex);
+            trigger_adapter_disable_locked();
+        }
+        pthread_mutex_unlock(&sched.lock);
+
         /* 跑 refresh (可能 sleep 5s) */
         if (sched.adapter && sched.adapter->refresh_active) {
             offload_err_t e = sched.adapter->refresh_active();

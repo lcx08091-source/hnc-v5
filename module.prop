@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.0.0-beta.2
-versionCode=50700
+version=v5.0.0-beta.3
+versionCode=50800
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.0 beta.2 · Tier 4 limit_map 反查 (兼容 Linux 6.x 新 BPF_MAP_GET_NEXT_KEY 语义) · 修 stderr 5 版本黑洞 bug · BPF offload + netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.0 beta.3 · 修 scheduler cold-start race (worker 周期重探 upstream + 自动 retrigger disable) · Tier 4 limit_map 兜底 · netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
