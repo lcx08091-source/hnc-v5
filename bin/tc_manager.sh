@@ -438,7 +438,7 @@ load_ifb() {
 #   - pref 1 抢在 ColorOS oplus-netd 的 pref 49152 之前
 #   - 幂等: 重复调用会先 del 旧 filter 再 add
 # ═══════════════════════════════════════════════════════════════
-install_ingress_mirred() {
+install_ingress_mirred_once() {
     local iface=$1
     [ -z "$iface" ] && { log_error "install_ingress_mirred: empty iface"; return 1; }
 
@@ -505,6 +505,38 @@ install_ingress_mirred() {
     fi
 
     log_error "install_ingress_mirred: $iface mirred add FAILED (all paths): $_out (上行限速将失效!)"
+    return 1
+}
+
+# v5.0 alpha.4 hotfix1: 外层重试 wrapper
+# Ling RMX5010 真机反复验证: ColorOS tc 在 wlan2 刚 UP 后 5-30s 内, 所有 tc 语法
+# (ingress 简写 / u32 / parent ffff:) 全部报 "invalid argument". 稳定后同一命令
+# 手动跑就成功。install_ingress_mirred_once 只试一次就放弃, 重装需要等 watchdog
+# 下一轮 (30-60s), 但 init_tc 失败 skip restore 的原架构让 restore 路径的 hotfix2
+# 幂等重试也没机会跑 (见 watchdog.sh hotfix1)。
+#
+# 本 wrapper: 第 1 次失败, sleep 3s 重试; 第 2 次失败, sleep 5s 重试; 最多 3 次。
+# 总等待 8s, 覆盖绝大多数 ColorOS 冷启动 race window。
+install_ingress_mirred() {
+    local iface=$1
+    local attempt=1
+    local max=3
+    local delay=3
+    while [ $attempt -le $max ]; do
+        install_ingress_mirred_once "$iface"
+        local rc=$?
+        if [ $rc -eq 0 ]; then
+            [ $attempt -gt 1 ] && log "install_ingress_mirred: succeeded on attempt $attempt"
+            return 0
+        fi
+        if [ $attempt -lt $max ]; then
+            log "install_ingress_mirred: attempt $attempt failed, retrying in ${delay}s..."
+            sleep $delay
+            delay=$((delay + 2))
+        fi
+        attempt=$((attempt + 1))
+    done
+    log_error "install_ingress_mirred: FAILED after $max attempts (上行限速将失效)"
     return 1
 }
 

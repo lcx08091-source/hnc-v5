@@ -203,9 +203,18 @@ full_restore() {
     # _HEALTH_TS, 让下轮 health check 重新触发完整 RESTORE 路径. 之前会写
     # "RESTORE complete" 但实际半装配, _HEALTH_TS=0 强制下轮再 restore →
     # 死循环刷 RESTORE 占满 watchdog.log + 永远恢复不了.
+    #
+    # v5.0 alpha.4 hotfix1: 修改策略 — init_tc 失败时继续跑 restore
+    # 真机发现 init_tc 有时装 install_ingress_mirred 失败 (ColorOS tc 冷启动竞态)
+    # 导致 init_tc rc != 0, skip restore. 但 restore_rules 开头有幂等的
+    # install_ingress_mirred 强制调用 (hotfix2), 反而是补救的机会. skip 掉就永远没机会装
+    # 上 ingress matchall filter, 上行限速永远失效 (Ling 真机 alpha.3/4 反复验证).
+    #
+    # 新策略: init_tc 失败只记 WARNING, 继续跑 restore. restore 内部会再次
+    # 尝试 install_ingress_mirred. 若 restore 自己也整体失败, 下轮 health check
+    # 会再次触发完整 RESTORE (原 _HEALTH_TS=0 机制保留)
     if [ $tc_init_rc -ne 0 ]; then
-        log_error "full_restore: tc init failed (rc=$tc_init_rc), skip restore (will retry next probe)"
-        return $tc_init_rc
+        log "full_restore: tc init rc=$tc_init_rc, continuing to restore anyway (hotfix1 fallback)"
     fi
     sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
     _HEALTH_TS=0
@@ -459,11 +468,13 @@ do_full_init() {
     sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
     sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
     local tc_init_rc=$?
+    # v5.0 alpha.4 hotfix1: 跟 full_restore 一致策略
+    # tc init 里 install_ingress_mirred 失败 (ColorOS tc 冷启动 FAILED) 会让
+    # init_tc rc != 0, 原逻辑 return 跳过 restore, 导致 restore 内部的 hotfix2
+    # 幂等 install_ingress_mirred 永远没机会跑, 上行限速永远失效。
+    # 新策略: 记 WARN 继续 restore, restore 里会重新尝试
     if [ $tc_init_rc -ne 0 ]; then
-        log_error "do_full_init: tc_manager init failed (rc=$tc_init_rc), STATE stays PENDING, will retry next probe"
-        # 清掉可能残留的半装配 (iptables chain 可能已建, 下次 init 会自己幂等处理)
-        # STATE_FILE 不写, 维持 PENDING, 下轮 probe 重新入 do_full_init 分支
-        return $tc_init_rc
+        log "do_full_init: tc init rc=$tc_init_rc, continuing to restore (hotfix1 fallback)"
     fi
     sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
     sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
