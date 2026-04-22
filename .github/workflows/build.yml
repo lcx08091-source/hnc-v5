@@ -37,7 +37,6 @@ jobs:
           export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
           export ANDROID_NDK_HOME="$ANDROID_NDK"
           export ANDROID_NDK_ROOT="$ANDROID_NDK"
-          echo "=== ANDROID_NDK=$ANDROID_NDK ==="
           cd daemon/hotspotd
           bash build.sh arm64
 
@@ -50,12 +49,19 @@ jobs:
           bash build.sh arm64
         continue-on-error: true
 
+      # v5.0 beta.1: netlink 直通工具 (绕过 ColorOS 魔改 /system/bin/tc)
+      - name: Build hnc_tc_ingress (raw-netlink tool)
+        run: |
+          export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          export ANDROID_NDK_HOME="$ANDROID_NDK"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK"
+          cd daemon/tc_netlink
+          bash build.sh arm64
+
       - name: Verify binaries
         run: |
           echo "=== bin/ 内容 ==="
           ls -la bin/ | head -20
-          echo "=== 检查关键文件 ==="
-          ls -la bin/hotspotd bin/hnc_ipc 2>&1 || true
           # 如果 hotspotd 不在 bin/ 里, 从 daemon/ 位置拷过来
           if [ ! -f bin/hotspotd ]; then
             find daemon/ -name "hotspotd" -type f -exec cp {} bin/ \;
@@ -63,13 +69,19 @@ jobs:
           if [ ! -f bin/hnc_ipc ]; then
             find daemon/ -name "hnc_ipc" -type f -exec cp {} bin/ \;
           fi
-          ls -la bin/hotspotd bin/hnc_ipc
-          file bin/hotspotd | grep -q "ARM aarch64" || exit 1
-          file bin/hnc_ipc | grep -q "ARM aarch64" || exit 1
+          # hnc_tc_ingress 如果没落到 bin, 从 out/arm64/ 拷
+          if [ ! -f bin/hnc_tc_ingress ]; then
+            find daemon/tc_netlink -name "hnc_tc_ingress" -type f -exec cp {} bin/ \;
+          fi
+          echo "=== 关键 ARM aarch64 检查 ==="
+          ls -la bin/hotspotd bin/hnc_ipc bin/hnc_tc_ingress
+          file bin/hotspotd         | grep -q "ARM aarch64" || exit 1
+          file bin/hnc_ipc          | grep -q "ARM aarch64" || exit 1
+          file bin/hnc_tc_ingress   | grep -q "ARM aarch64" || exit 1
 
       - name: Fix permissions
         run: |
-          chmod 755 bin/*.sh bin/hotspotd bin/hnc_ipc bin/mdns_resolve 2>/dev/null || true
+          chmod 755 bin/*.sh bin/hotspotd bin/hnc_ipc bin/hnc_tc_ingress bin/mdns_resolve 2>/dev/null || true
           chmod 755 daemon/hnc_httpd/hnc_httpd 2>/dev/null || true
           chmod 755 post-fs-data.sh service.sh
 
@@ -78,15 +90,17 @@ jobs:
         run: |
           VERSION=$(grep '^version=' module.prop | cut -d= -f2)
           VERSION_SAFE=${VERSION//./_}
+          VERSION_SAFE=${VERSION_SAFE//+/_}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_safe=$VERSION_SAFE" >> $GITHUB_OUTPUT
 
       - name: Pack zip
         run: |
           OUT="HNC-${{ steps.version.outputs.version_safe }}-arm64.zip"
+          # 清冗余: build intermediates
           rm -rf daemon/hotspotd/prebuilt daemon/hotspotd/tools/prebuilt
+          rm -rf daemon/tc_netlink/out
           zip -rqX "$OUT" . -x ".*" -x "*/.*" -x "*.zip" -x ".github/*"
-          ls -lh "$OUT"
           echo "OUT_ZIP=$OUT" >> $GITHUB_ENV
 
       - name: Upload artifact
@@ -101,4 +115,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.OUT_ZIP }}
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

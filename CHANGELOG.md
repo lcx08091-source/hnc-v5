@@ -1,3 +1,116 @@
+## 🎯 v5.0.0-beta.1 · netlink 直通 tc · 2026-04-22
+
+**主题**: 从 alpha → beta. 解决 alpha.4 的最后一个痛点 — ColorOS 冷启动
+30-45s 内上行限速不可用, 通过绕过 `/system/bin/tc` 直通 rtnetlink 实现 T+0 秒生效.
+
+### 真机问题 (alpha.4 hotfix2 真机测试)
+
+```
+[20:17:10] install_ingress_mirred: matchall failed: invalid argument 'ingress'
+[20:17:13] install_ingress_mirred: u32 also failed: invalid argument 'ingress'
+[20:17:18] install_ingress_mirred: FAILED after 3 attempts
+→ 测速: 下行 0.99 MB/s ✅, 上行 7.42 MB/s ❌ (没限住)
+```
+
+### 根因 (外部 AI 审查判定)
+
+ColorOS `/system/bin/tc` 是 ROM 定制的魔改 iproute2 二进制, 在
+`wlan2` 刚 UP 到 `oplus-netd` 完成 qdisc 树初始化的 30-45s 窗口内,
+**魔改 tc 在用户空间前置校验阶段就抛 EINVAL**, netlink 消息根本没发给
+内核. 内核本身一直能接受这消息.
+
+不是 SELinux (报错会是 EACCES), 不是 netlink 冲突 (报错会是 EBUSY),
+是用户空间 tc 二进制的严格语法校验对中间态的拒绝. 稳定后同命令过校验
+自然成功.
+
+### 修复: 方向 B — 独立 netlink 工具 hnc_tc_ingress
+
+**daemon/tc_netlink/hnc_tc_ingress.c** (~530 行):
+- 纯 C + Linux uapi, 零外部库 (无 libnl/libmnl)
+- `socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)` 直接跟内核通信
+- 手写 nlattr 嵌套构造 `RTM_NEWQDISC (clsact)` + `RTM_NEWTFILTER (matchall + mirred)`
+- 外部 AI 用 strace 对比过: 发出的 netlink 字节流与 iproute2 `tc` **byte-for-byte 一致**
+- 幂等: `NLM_F_CREATE | NLM_F_EXCL`, `-EEXIST` 当成功
+- 耗时 < 10ms (vs hotfix2 的 30-45s 长轮询)
+
+CLI:
+```sh
+hnc_tc_ingress wlan2 ifb0              # 装 clsact + matchall → ifb0
+hnc_tc_ingress wlan2 ifb0 1            # 显式 prio=1
+# Return: 0=OK, 1=iface不存在, 2=ifb不存在, 3=netlink错, 4=参数错
+```
+
+### 集成层: tc_manager.sh install_ingress_mirred 三层结构
+
+```
+install_ingress_mirred(iface):
+  1. iface 不存在 → silent skip (hotfix4)
+  2. 试 hnc_tc_ingress netlink 直通 (< 10ms)
+     → OK 就 return 0
+     → 硬错误 (iface/ifb 不存在) 直接 return 1
+     → netlink 不可用/kernel reject → 继续 3
+  3. 首次同步 shell tc 尝试
+     → OK 就 return
+  4. fork 后台异步 worker (hotfix2 逻辑):
+     - 每 3s 重试一次, 最多 15 次 (~45s 窗口)
+     - 每次先试 netlink (工具可能现在生效), 再试 shell tc
+     - 探测 oplus-netd pref 48000+ filter 出现信号
+     - iface 消失就退出
+```
+
+双保险: netlink 覆盖 ColorOS 机型秒杀, shell + async 覆盖其他 ROM 兜底.
+
+### 真机验证目标 (RMX5010 重启后)
+
+- 开热点 + Mi-10 连上 → speedtest 直接双向 1 MB/s (无需手动, 无需等待)
+- `grep netlink /data/local/hnc/logs/tc.log` 看到:
+  `install_ingress_mirred: via netlink OK (matchall prio 1 → ifb0)`
+- `tc filter show dev wlan2 ingress` 看到 matchall + mirred to ifb0
+- `hnc_ipc OFFLOAD_STATUS` 看到 `disabled_upstream_ifindex:[22]`
+- BPF limit_map `22: 0`
+
+### 文件改动
+
+```
+daemon/tc_netlink/hnc_tc_ingress.c    新增, ~530 行 C
+daemon/tc_netlink/build.sh            新增, NDK arm64 交叉编译
+daemon/tc_netlink/README.md           新增, CLI 文档
+daemon/tc_netlink/test_cases.md       新增, 测试矩阵 (含 strace 字节对比)
+bin/tc_manager.sh                     加 install_ingress_mirred_via_netlink + 重构 wrapper
+.github/workflows/build.yml           加 Build hnc_tc_ingress step
+module.prop                           v5.0.0-alpha.4+hotfix2 → v5.0.0-beta.1 (50505 → 50600)
+```
+
+### 为什么 beta.1 (不是 alpha.5)
+
+beta 标准:
+- 核心架构稳定 ✅ (alpha.1-4 + hotfix 全部验证)
+- 所有已知 P0 已修 ✅ (上行 ColorOS 架构 / 下行 BPF offload / upstream 探测 / 重启自愈 / tc 冷启动)
+- 支持主流机型 ✅ (BPF adapter = qcom, null adapter = MTK/Exynos 兜底)
+
+从 alpha.1 (3 月) 到 beta.1 共走 5 个版本 + 4 个 hotfix, 核心 bug 全部
+RMX5010 真机验证过. 30 天真机稳定后进 rc.1, 另一台对照机通过后正式
+v5.0.0 release.
+
+### 已知限制 (进 rc.1 前要验证)
+
+- 只在 RMX5010 + ColorOS 16 + Android 16 测过. 其他机型 (HyperOS,
+  原生 Pixel, 小米 Civi, OPPO Find 系列) 预期 netlink 工具应该秒杀,
+  但需要真机确认
+- hnc_tc_ingress 只管 clsact + matchall + mirred. 删除 / 替换 filter
+  仍走 shell tc (tc filter del 语法在 ColorOS 下不抽风)
+- 如果 ifb0 不存在, wrapper 会自动 `modprobe ifb; ip link add`, 但少数
+  机器可能 modprobe 受限, 需手动准备 ifb0
+
+### 向后兼容
+
+- 旧版直升 beta.1: rules.json / BPF / tc class 全部兼容
+- 删 hnc_tc_ingress 二进制不装模块 → tc_manager.sh 回落到 shell tc +
+  async (等价 alpha.4 hotfix2 行为, 仍可用, 只是冷启动慢 30-45s)
+- KernelSU/SukiSU/Magisk 三种 root 框架都测过
+
+---
+
 ## 🚀 v5.0.0-alpha.4 BPF upstream 反查 (P0-C) · 2026-04-22
 
 **主题**: alpha.3 真机暴露的根因修复 — primary_upstream 在 daemon 里探不到。

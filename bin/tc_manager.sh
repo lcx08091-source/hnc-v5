@@ -508,34 +508,87 @@ install_ingress_mirred_once() {
     return 1
 }
 
-# v5.0 alpha.4 hotfix2: 异步长轮询 (取代 hotfix1 同步重试)
+# v5.0 beta.1: netlink 直通路径 (方向 B)
 #
-# 背景: hotfix1 真机测试 RMX5010 + ColorOS 16:
-#   [20:17:10] attempt 1 FAILED
-#   [20:17:13] attempt 2 FAILED  (+3s)
-#   [20:17:18] attempt 3 FAILED  (+5s)
-#   [20:17:18] FAILED after 3 attempts
-#   → 手动 30s 后 sh tc_manager.sh restore → 立刻成功
+# 背景: alpha.4 hotfix2 的异步 45s 长轮询能 work, 但用户重启后要等 30-45s
+# 才能有上行限速. 用户感知不佳, 且 oplus-netd 如果改为 > 45s 窗口就会彻底
+# 失败 (已见 RMX5010 真机偶发 FAILED after 15 attempts).
 #
-# 外部 AI 审查判定根因: ColorOS 定制 tc 二进制 + oplus-netd race.
-# 30s 内 wlan2 ingress qdisc 树处于中间态, 魔改 tc 会在前置校验阶段
-# 直接抛 "invalid argument 'ingress'" (不是 SELinux / netlink 冲突,
-# 是 tc 二进制自己的严格语法校验对中间态的拒绝). 稳定后同命令过校验.
+# 方向 B: 写一个独立 C 工具 hnc_tc_ingress, 绕过 /system/bin/tc 魔改二进制,
+# 直接构造 RTM_NEWTFILTER netlink 消息发给内核 rtnetlink socket.
 #
-# 修复策略: 异步非阻塞长轮询
-#   - 首次尝试同步跑, 正常机器 (原生 Pixel / MTK / HyperOS 较宽松) 直接成功
-#   - 失败则 fork 后台 worker, 每 3s 重试一次, 最多 15 次 (~45s 窗口)
-#   - 主函数立即 return 0, 不阻塞下行限速配置和 watchdog 主循环
-#   - 一旦 oplus-netd 完成初始化、wlan2 ingress qdisc 树稳定, 后台 worker
-#     立即注入成功, 上行限速无感衔接
+# 外部 AI 审查判定根因: ColorOS /system/bin/tc 在用户空间前置校验阶段就抛
+# "invalid argument 'ingress'", netlink 消息根本没发给内核. 内核本身一直
+# 能接受这消息. 绕过魔改 tc 之后, wlan2 一 UP 就能立即注入, 耗时 < 10ms.
 #
-# 优点相对 hotfix1:
-#   - 覆盖 45s, 足够 ColorOS 的 30s race window 加 margin
-#   - 不阻塞: hotfix1 的 sleep 3+5+7 = 15s 阻塞, 让 service.sh 看起来"卡住"
-#   - 幂等: 如果 oplus-netd 先装了它自己的 pref 49152, 我们的 pref 1 不冲突
-#   - 失败也不影响下行: 下行限速 (wlan2 egress HTB) 完全独立, 立即生效
+# 集成策略:
+#   1. 先试 netlink 直通工具 (10ms 成功)
+#   2. 失败才回落 hotfix2 异步长轮询 (30-45s 后成功)
+# 双保险, 支持所有 ROM (netlink 失败会优雅降级到 shell tc 路径)
+install_ingress_mirred_via_netlink() {
+    local iface=$1
+    local netlink_bin="$HNC_DIR/bin/hnc_tc_ingress"
+
+    # 工具缺失 → 调用方回落异步路径
+    if [ ! -x "$netlink_bin" ]; then
+        return 99
+    fi
+
+    # 确保 ifb0 存在 + UP (netlink 工具要求 ifb 已就绪)
+    if ! ip link show "$IFB_IFACE" >/dev/null 2>&1; then
+        modprobe ifb 2>/dev/null || true
+        ip link add "$IFB_IFACE" type ifb 2>/dev/null || true
+    fi
+    ip link set "$IFB_IFACE" up 2>/dev/null || true
+
+    # 调直通工具, 输出拼到我们自己日志
+    local _out
+    _out=$("$netlink_bin" "$iface" "$IFB_IFACE" 1 2>&1)
+    local rc=$?
+    if [ $rc -eq 0 ]; then
+        log "install_ingress_mirred: via netlink OK (${_out})"
+        return 0
+    fi
+
+    # netlink 失败原因分类
+    case $rc in
+        1) log_error "install_ingress_mirred: netlink iface '$iface' not found (rc=1)" ;;
+        2) log_error "install_ingress_mirred: netlink ifb '$IFB_IFACE' not found (rc=2)" ;;
+        3) log "install_ingress_mirred: netlink kernel reject (rc=3, ${_out}), will fallback" ;;
+        4) log_error "install_ingress_mirred: netlink CLI error (rc=4, ${_out})" ;;
+        *) log "install_ingress_mirred: netlink unknown rc=$rc (${_out}), will fallback" ;;
+    esac
+    return $rc
+}
+
 install_ingress_mirred() {
     local iface=$1
+    [ -z "$iface" ] && { log_error "install_ingress_mirred: empty iface"; return 1; }
+
+    # 热点关了时 silent skip (hotfix4)
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+        log "install_ingress_mirred: $iface not present yet, skip (will retry when iface up)"
+        return 0
+    fi
+
+    # beta.1 优先路径: netlink 直通 (< 10ms, ColorOS 免受魔改 tc 阻塞)
+    install_ingress_mirred_via_netlink "$iface"
+    case $? in
+        0)
+            # netlink 路径成功, 不再跑 shell tc, 不启动异步 worker
+            return 0
+            ;;
+        1|2)
+            # iface/ifb 硬错误, shell 路径也会失败, 直接返
+            return 1
+            ;;
+        *)
+            # netlink 不可用 (99) 或 kernel reject (3) 或其他 → 回落
+            log "install_ingress_mirred: falling back to async shell tc path"
+            ;;
+    esac
+
+    # === 回落路径 (alpha.4 hotfix2 + async worker) ===
 
     # 首次同步尝试
     install_ingress_mirred_once "$iface"
@@ -543,11 +596,9 @@ install_ingress_mirred() {
         return 0
     fi
 
-    log "install_ingress_mirred: initial attempt failed, spawning async worker (ColorOS race window)"
+    log "install_ingress_mirred: initial shell attempt failed, spawning async worker (ColorOS race window)"
 
     # 后台 worker: 最多等 45s, 每 3s 重试一次
-    # nohup + & 确保脚本退出后 worker 继续
-    # setsid 防止 watchdog 超时 kill 时把 worker 带走 (可选, sh 不一定有)
     (
         local attempt=1
         local max=15
@@ -556,16 +607,20 @@ install_ingress_mirred() {
         while [ $attempt -le $max ]; do
             sleep $sleep_s
 
-            # 快速探测: 如果 iface 已不存在 (热点关了), 停止 worker
+            # 热点关了就退出
             if ! ip link show "$iface" >/dev/null 2>&1; then
                 log "install_ingress_mirred (async): $iface gone, worker exit"
                 exit 0
             fi
 
-            # 精准信号探测: oplus-netd 的 pref 49152 filter 出现
-            # 代表 oplus 已完成 wlan2 ingress 初始化, 此刻注入必成
-            # 注: 此 grep 有时找不到 ifb1 关键字 (ROM 可能用别的 ifb名),
-            # 所以宽松匹配任何 pref 48000+ (system reserved range)
+            # 每次重试前先试 netlink 一次 (可能工具现在起效了)
+            install_ingress_mirred_via_netlink "$iface"
+            if [ $? -eq 0 ]; then
+                log "install_ingress_mirred (async): netlink succeeded on attempt $attempt"
+                exit 0
+            fi
+
+            # 再试 shell tc
             local oplus_ready=0
             if tc filter show dev "$iface" ingress 2>/dev/null | grep -qE "pref (4[89][0-9]{3}|5[0-9]{4})"; then
                 oplus_ready=1
@@ -574,9 +629,9 @@ install_ingress_mirred() {
             install_ingress_mirred_once "$iface"
             if [ $? -eq 0 ]; then
                 if [ $oplus_ready -eq 1 ]; then
-                    log "install_ingress_mirred (async): succeeded on attempt $attempt (oplus-netd ready detected)"
+                    log "install_ingress_mirred (async): shell succeeded on attempt $attempt (oplus-netd ready detected)"
                 else
-                    log "install_ingress_mirred (async): succeeded on attempt $attempt"
+                    log "install_ingress_mirred (async): shell succeeded on attempt $attempt"
                 fi
                 exit 0
             fi
@@ -584,11 +639,9 @@ install_ingress_mirred() {
             attempt=$((attempt + 1))
         done
 
-        log_error "install_ingress_mirred (async): FAILED after $max attempts (~45s). Uplink shaping broken - please report."
+        log_error "install_ingress_mirred (async): FAILED after $max attempts (~45s). Uplink shaping broken."
     ) >/dev/null 2>&1 &
 
-    # 主函数立即返回 0, 让 init_tc 继续装下行
-    # 注意: 这意味着即使上行最终失败, 下行也能正常限速 (这是正确的降级行为)
     return 0
 }
 
