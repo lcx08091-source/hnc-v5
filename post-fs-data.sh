@@ -62,6 +62,14 @@ if [ -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" ]; then
 fi
 
 chmod 755 $HNC_DIR/bin/*.sh
+# v5.0 beta.1 修: 单独 chmod 所有无后缀二进制
+# post-fs-data.sh 原来只 chmod *.sh, 但 bin/ 下的 C 二进制 (hotspotd / hnc_ipc /
+# hnc_tc_ingress / mdns_resolve) 没 .sh 后缀, 权限不被保证是 755.
+# 真机 RMX5010 装 beta.1 后 hnc_tc_ingress 权限 644 → 不能 exec →
+# install_ingress_mirred_via_netlink 回落 → 上行限速失败.
+for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve; do
+    [ -f "$HNC_DIR/bin/$_b" ] && chmod 755 "$HNC_DIR/bin/$_b"
+done
 chmod 755 $HNC_DIR/api/server.sh 2>/dev/null
 chmod 755 $HNC_DIR/test/run_all.sh 2>/dev/null
 chmod 755 $HNC_DIR/test/lib.sh 2>/dev/null
