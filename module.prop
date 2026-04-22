@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.0.0-beta.1+hotfix1
-versionCode=50601
+version=v5.0.0-beta.2
+versionCode=50700
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.0 beta.1 · BPF offload + netlink 直通 tc · hotfix1 修 post-fs-data 权限 bug · WebUI · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.0 beta.2 · 修 stderr 被 dup2 到 /dev/null 导致所有 Tier 3 / scheduler 日志丢失 (alpha.1 遗留 5 版本 bug) · BPF offload + netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

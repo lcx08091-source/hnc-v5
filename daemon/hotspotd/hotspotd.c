@@ -1533,10 +1533,20 @@ int main(int argc, char *argv[]) {
         if (fork() > 0) exit(0);
         setsid();
         if (fork() > 0) exit(0);
-        /* 重定向标准 IO */
+        /* 重定向标准 IO
+         * v5.0 beta.2: stdin/stdout 扔 /dev/null, stderr 重定向到 logpath,
+         * 否则 upstream.c / scheduler.c 的 fprintf(stderr, ...) 日志全部丢黑洞.
+         * 真机 RMX5010 alpha.3-beta.1 期间 Tier3 BPF 反查日志永远看不到就是
+         * 这个 bug — 整整 5 个版本没排到. */
         int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) { dup2(devnull,0); dup2(devnull,1); dup2(devnull,2); close(devnull); }
+        if (devnull >= 0) { dup2(devnull,0); dup2(devnull,1); close(devnull); }
+        /* stderr 写到日志文件 (同 g_log 路径, 追加模式, line-buffered) */
+        int errfd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (errfd >= 0) { dup2(errfd, 2); close(errfd); }
     }
+    /* 行缓冲 stderr, 保证每条 fprintf 立即写磁盘 (不等 4KB 块满)
+     * beta.2: daemonize 重定向后 stderr 指日志文件, 默认块缓冲看不到实时日志 */
+    setvbuf(stderr, NULL, _IOLBF, 0);
 
     /* 日志 */
     g_log = fopen(logpath, "a");
