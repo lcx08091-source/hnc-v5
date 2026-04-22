@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.0.0-alpha.4+hotfix1
-versionCode=50504
+version=v5.0.0-alpha.4+hotfix2
+versionCode=50505
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.0 BPF offload 抽象层 + alpha.4 BPF upstream 反查 + hotfix1 watchdog/install_ingress_mirred 重试 · WebUI 可视化控制 · 支持 KernelSU / SukiSU / Magisk. 详细更新记录见 CHANGELOG.md.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.0 BPF offload 抽象层 + alpha.4 BPF upstream 反查 + hotfix2 异步长轮询 (ColorOS 30s race 窗口覆盖) · WebUI 可视化控制 · 支持 KernelSU / SukiSU / Magisk. 详细更新记录见 CHANGELOG.md.
 minKernelSU=11485

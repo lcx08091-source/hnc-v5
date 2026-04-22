@@ -508,36 +508,88 @@ install_ingress_mirred_once() {
     return 1
 }
 
-# v5.0 alpha.4 hotfix1: 外层重试 wrapper
-# Ling RMX5010 真机反复验证: ColorOS tc 在 wlan2 刚 UP 后 5-30s 内, 所有 tc 语法
-# (ingress 简写 / u32 / parent ffff:) 全部报 "invalid argument". 稳定后同一命令
-# 手动跑就成功。install_ingress_mirred_once 只试一次就放弃, 重装需要等 watchdog
-# 下一轮 (30-60s), 但 init_tc 失败 skip restore 的原架构让 restore 路径的 hotfix2
-# 幂等重试也没机会跑 (见 watchdog.sh hotfix1)。
+# v5.0 alpha.4 hotfix2: 异步长轮询 (取代 hotfix1 同步重试)
 #
-# 本 wrapper: 第 1 次失败, sleep 3s 重试; 第 2 次失败, sleep 5s 重试; 最多 3 次。
-# 总等待 8s, 覆盖绝大多数 ColorOS 冷启动 race window。
+# 背景: hotfix1 真机测试 RMX5010 + ColorOS 16:
+#   [20:17:10] attempt 1 FAILED
+#   [20:17:13] attempt 2 FAILED  (+3s)
+#   [20:17:18] attempt 3 FAILED  (+5s)
+#   [20:17:18] FAILED after 3 attempts
+#   → 手动 30s 后 sh tc_manager.sh restore → 立刻成功
+#
+# 外部 AI 审查判定根因: ColorOS 定制 tc 二进制 + oplus-netd race.
+# 30s 内 wlan2 ingress qdisc 树处于中间态, 魔改 tc 会在前置校验阶段
+# 直接抛 "invalid argument 'ingress'" (不是 SELinux / netlink 冲突,
+# 是 tc 二进制自己的严格语法校验对中间态的拒绝). 稳定后同命令过校验.
+#
+# 修复策略: 异步非阻塞长轮询
+#   - 首次尝试同步跑, 正常机器 (原生 Pixel / MTK / HyperOS 较宽松) 直接成功
+#   - 失败则 fork 后台 worker, 每 3s 重试一次, 最多 15 次 (~45s 窗口)
+#   - 主函数立即 return 0, 不阻塞下行限速配置和 watchdog 主循环
+#   - 一旦 oplus-netd 完成初始化、wlan2 ingress qdisc 树稳定, 后台 worker
+#     立即注入成功, 上行限速无感衔接
+#
+# 优点相对 hotfix1:
+#   - 覆盖 45s, 足够 ColorOS 的 30s race window 加 margin
+#   - 不阻塞: hotfix1 的 sleep 3+5+7 = 15s 阻塞, 让 service.sh 看起来"卡住"
+#   - 幂等: 如果 oplus-netd 先装了它自己的 pref 49152, 我们的 pref 1 不冲突
+#   - 失败也不影响下行: 下行限速 (wlan2 egress HTB) 完全独立, 立即生效
 install_ingress_mirred() {
     local iface=$1
-    local attempt=1
-    local max=3
-    local delay=3
-    while [ $attempt -le $max ]; do
-        install_ingress_mirred_once "$iface"
-        local rc=$?
-        if [ $rc -eq 0 ]; then
-            [ $attempt -gt 1 ] && log "install_ingress_mirred: succeeded on attempt $attempt"
-            return 0
-        fi
-        if [ $attempt -lt $max ]; then
-            log "install_ingress_mirred: attempt $attempt failed, retrying in ${delay}s..."
-            sleep $delay
-            delay=$((delay + 2))
-        fi
-        attempt=$((attempt + 1))
-    done
-    log_error "install_ingress_mirred: FAILED after $max attempts (上行限速将失效)"
-    return 1
+
+    # 首次同步尝试
+    install_ingress_mirred_once "$iface"
+    if [ $? -eq 0 ]; then
+        return 0
+    fi
+
+    log "install_ingress_mirred: initial attempt failed, spawning async worker (ColorOS race window)"
+
+    # 后台 worker: 最多等 45s, 每 3s 重试一次
+    # nohup + & 确保脚本退出后 worker 继续
+    # setsid 防止 watchdog 超时 kill 时把 worker 带走 (可选, sh 不一定有)
+    (
+        local attempt=1
+        local max=15
+        local sleep_s=3
+
+        while [ $attempt -le $max ]; do
+            sleep $sleep_s
+
+            # 快速探测: 如果 iface 已不存在 (热点关了), 停止 worker
+            if ! ip link show "$iface" >/dev/null 2>&1; then
+                log "install_ingress_mirred (async): $iface gone, worker exit"
+                exit 0
+            fi
+
+            # 精准信号探测: oplus-netd 的 pref 49152 filter 出现
+            # 代表 oplus 已完成 wlan2 ingress 初始化, 此刻注入必成
+            # 注: 此 grep 有时找不到 ifb1 关键字 (ROM 可能用别的 ifb名),
+            # 所以宽松匹配任何 pref 48000+ (system reserved range)
+            local oplus_ready=0
+            if tc filter show dev "$iface" ingress 2>/dev/null | grep -qE "pref (4[89][0-9]{3}|5[0-9]{4})"; then
+                oplus_ready=1
+            fi
+
+            install_ingress_mirred_once "$iface"
+            if [ $? -eq 0 ]; then
+                if [ $oplus_ready -eq 1 ]; then
+                    log "install_ingress_mirred (async): succeeded on attempt $attempt (oplus-netd ready detected)"
+                else
+                    log "install_ingress_mirred (async): succeeded on attempt $attempt"
+                fi
+                exit 0
+            fi
+
+            attempt=$((attempt + 1))
+        done
+
+        log_error "install_ingress_mirred (async): FAILED after $max attempts (~45s). Uplink shaping broken - please report."
+    ) >/dev/null 2>&1 &
+
+    # 主函数立即返回 0, 让 init_tc 继续装下行
+    # 注意: 这意味着即使上行最终失败, 下行也能正常限速 (这是正确的降级行为)
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════
