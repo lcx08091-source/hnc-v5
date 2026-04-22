@@ -17,8 +17,9 @@ ARCH=${1:-arm64}
 # v3.8.3 D3: 新增 oui_override.c,用户 OUI 覆盖。
 # v3.8.4: 新增 mdns_worker.c,异步 mDNS worker(需要 -pthread 链接 libpthread)。
 # v5.0: 新增 platform.c / scheduler.c / offload/ 抽象层 (BPF tether offload)。
+# v5.0 alpha.2: 新增 upstream.c (策略路由感知的上游探测)。
 SRCS="hotspotd.c hnc_helpers.c hostname_cache.c oui_override.c mdns_worker.c \
-      platform.c scheduler.c \
+      platform.c scheduler.c upstream.c \
       offload/adapter.c offload/adapter_null.c offload/adapter_bpf.c"
 OUTDIR=prebuilt/${ARCH}
 OUT=${OUTDIR}/hotspotd
@@ -67,9 +68,15 @@ strip "$OUT" 2>/dev/null || true
 echo "[build] OK: $(ls -lh "$OUT" | awk '{print $5}')  $OUT"
 
 # ── 复制到 bin/ 供打包 ─────────────────────────────────────────
-BINDIR=../bin
+# alpha.2 修: BINDIR 从 ../bin 改为 ../../bin, 指向仓库根 bin/
+# daemon/hotspotd/ -> ../../bin/ 才是模块 zip 里真实的 bin/ 位置
+# 之前 ../bin 会创建 daemon/bin/ (不在 zip 路径), 导致装机后 bin/hotspotd
+# 不存在. 用户必须手动 mv. alpha.2 修.
+BINDIR=../../bin
 mkdir -p "$BINDIR"
 cp "$OUT" "$BINDIR/hotspotd"
+# alpha.2: 显式保留 exec 位 (WSL zip 有时丢 Linux 权限位)
+chmod 755 "$BINDIR/hotspotd"
 echo "[build] Copied to $BINDIR/hotspotd"
 
 # ── v5.0: 顺手编 hnc_ipc 并装进 bin/ ──────────────────────────
@@ -81,6 +88,7 @@ if [ -d tools ]; then
         echo "[build] WARN: hnc_ipc build failed (apply_device_rule.sh notify will silently skip)"
     if [ -f "tools/prebuilt/${ARCH}/hnc_ipc" ]; then
         cp "tools/prebuilt/${ARCH}/hnc_ipc" "$BINDIR/hnc_ipc"
+        chmod 755 "$BINDIR/hnc_ipc"
         echo "[build] Copied tools/hnc_ipc to $BINDIR/hnc_ipc"
     fi
 fi

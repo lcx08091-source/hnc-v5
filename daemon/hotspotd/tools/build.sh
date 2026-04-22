@@ -24,7 +24,8 @@ ARCH=${1:-arm64}
 TOOL=${2:-all}
 
 # 公共源码 (按需链入)
-COMMON_SRCS="../platform.c ../scheduler.c ../offload/adapter.c ../offload/adapter_null.c ../offload/adapter_bpf.c"
+# alpha.2: 加 upstream.c (scheduler 依赖)
+COMMON_SRCS="../platform.c ../scheduler.c ../upstream.c ../offload/adapter.c ../offload/adapter_null.c ../offload/adapter_bpf.c"
 COMMON_DEFS="-DHNC_HAVE_ADAPTER_BPF"
 
 OUTDIR="prebuilt/${ARCH}"

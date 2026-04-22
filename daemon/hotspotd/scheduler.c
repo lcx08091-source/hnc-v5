@@ -11,6 +11,7 @@
 
 #include "scheduler.h"
 #include "platform.h"
+#include "upstream.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,11 @@
 
 #include <net/if.h>
 #include <sys/socket.h>
+
+/* v5.0 alpha.3: rules.json 路径 (跟 hotspotd.c 对齐, 不用 include 避免循环) */
+#ifndef RULES_JSON_PATH
+#define RULES_JSON_PATH "/data/local/hnc/data/rules.json"
+#endif
 
 /* ══════════════════════════════════════════════════════════
  * 内部状态
@@ -148,61 +154,156 @@ static int limited_set_remove(const char *mac)
 }
 
 /* ══════════════════════════════════════════════════════════
- * 上游探测
+ * v5.0 alpha.3 P0-B: 启动时从 rules.json 重建 limited_macs
  *
- * 读 /proc/net/route 找 default route (Destination=00000000) 的 Iface
+ * 背景:
+ *   alpha.2 真机暴露: 重启后 BPF offload fast path 跳过 HNC HTB,
+ *   下行限速失效, 除非手动 apply_device_rule.sh 重新触发 scheduler notify。
+ *   根因: scheduler.limited_macs 在进程重启后清空, 但 BPF map 里的 limit=0
+ *   被 framework 5-30s 内回写为 U64_MAX, HNC 无从感知应重新写入。
  *
- * 格式 (字段 tab 分隔):
- *   Iface  Destination  Gateway  Flags  RefCnt  Use  Metric  Mask  ...
- *   rmnet_data2  00000000  XXXXXXXX  0003  0  0  0  00000000 ...
+ * 策略:
+ *   init 末尾扫 rules.json, 找所有 "limit_enabled":true 的 MAC, 直接填 set。
+ *   如果 count > 0 → 触发一次 adapter disable, 重建 BPF offload 屏蔽。
  *
- * v5.0 alpha.1 限制:
- *   - 只看 IPv4 默认路由
- *   - 多上游(metric 不同的多条 default route)只取第一条
- *   - 不感知 tethering 内的 NAT 路径
- *   v5.0 beta 由 upstream.c 替换 (走 netlink RTM_NEWROUTE)
+ * 为什么不走 notify_device_limit_changed:
+ *   - notify 会对每个 MAC 做 refresh_primary_upstream + adapter_trigger
+ *   - N 个设备 N 次探测 = 浪费. 直接填 set, 最后一次 trigger
+ *
+ * 解析方式:
+ *   复用 hotspotd.c 的 fread 整文件 + strstr 找 devices section 的手法,
+ *   避开 JSON 解析库依赖. rules.json 典型 < 8KB。
+ *
+ * 锁语义:
+ *   调用方必须未持 sched.lock (本函数内部 lock)。只在 init 末尾调用。
  * ══════════════════════════════════════════════════════════ */
 
-/* 内部使用, 不加锁 (调用方负责)
- * 成功填 ifindex/ifname 返 0; 失败返 -1
- */
-static int detect_primary_upstream(int *ifindex_out, char *ifname_out, size_t ifname_size)
+static int rebuild_from_rules(void)
 {
-    FILE *f = fopen("/proc/net/route", "r");
-    if (!f) return -1;
-
-    char line[512];
-    /* skip header */
-    if (fgets(line, sizeof(line), f) == NULL) {
-        fclose(f);
-        return -1;
+    FILE *f = fopen(RULES_JSON_PATH, "r");
+    if (!f) {
+        fprintf(stderr, "[sched] rebuild: rules.json not found (%s), skip\n",
+                RULES_JSON_PATH);
+        return 0;    /* 没配置文件 = 无限速设备, 正常场景 */
     }
 
-    int found = 0;
-    while (fgets(line, sizeof(line), f)) {
-        /* Linux 网卡名最长 15 字符 (IFNAMSIZ-1), 用 IFNAMSIZ buffer */
-        char iface[IFNAMSIZ];
-        char dest[16];
-        unsigned int flags;
-        /* sscanf: Iface Destination Gateway Flags ... */
-        if (sscanf(line, "%15s %15s %*s %x", iface, dest, &flags) != 3)
-            continue;
-        if (strcmp(dest, "00000000") != 0) continue;
-        /* 默认路由必须 UP (RTF_UP=0x1) */
-        if (!(flags & 0x1)) continue;
-
-        unsigned int idx = if_nametoindex(iface);
-        if (idx == 0) continue;
-
-        *ifindex_out = (int)idx;
-        /* iface 已限制 15 字符, 写入 ifname_size>=16 的 buf 不会截断 */
-        snprintf(ifname_out, ifname_size, "%s", iface);
-        found = 1;
-        break;
-    }
+    static char buf[16384];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
-    return found ? 0 : -1;
+    if (n == 0) return 0;
+    buf[n] = '\0';
+
+    /* 定位 devices section: "devices":{...} */
+    char *dev_start = strstr(buf, "\"devices\"");
+    if (!dev_start) return 0;
+    char *obj_start = strchr(dev_start, '{');
+    if (!obj_start) return 0;
+
+    /* brace-counting 找 devices 对象结尾 (跳过嵌套, 跳过字符串内 brace)
+     * hostname 里可能有 '{' 或 '}', 要识别 JSON 字符串 */
+    int depth = 1;
+    int in_string = 0;
+    int escape = 0;
+    char *dev_end = NULL;
+    for (char *p = obj_start + 1; *p; p++) {
+        if (escape) { escape = 0; continue; }
+        if (*p == '\\') { escape = 1; continue; }
+        if (*p == '"') { in_string = !in_string; continue; }
+        if (in_string) continue;
+        if (*p == '{') depth++;
+        else if (*p == '}') {
+            depth--;
+            if (depth == 0) { dev_end = p; break; }
+        }
+    }
+    if (!dev_end) return 0;
+    *dev_end = '\0';   /* 临时截断, devices 对象仅存在这范围 */
+
+    /* 扫每个 MAC-key + 它的 block (brace-match) */
+    int added = 0;
+    char *p = obj_start + 1;
+    while (p < dev_end) {
+        /* 找下一个 "aa:bb:cc:dd:ee:ff" MAC 字符串 (作为 key) */
+        char *q = strchr(p, '"');
+        if (!q || q >= dev_end) break;
+
+        /* 必须是 17 字符 MAC 格式 */
+        int is_mac = 0;
+        if (q + 18 < dev_end && q[3] == ':' && q[6] == ':' &&
+            q[9] == ':' && q[12] == ':' && q[15] == ':' && q[18] == '"') {
+            is_mac = 1;
+        }
+
+        if (!is_mac) {
+            /* skip this string */
+            p = strchr(q + 1, '"');
+            if (!p) break;
+            p++;
+            continue;
+        }
+
+        char mac_raw[18];
+        memcpy(mac_raw, q + 1, 17);
+        mac_raw[17] = '\0';
+
+        /* 找这个 MAC 对应的 block: 冒号后 '{...}' */
+        char *block_open = strchr(q + 19, '{');
+        if (!block_open) break;
+
+        /* brace-count 找 block 结尾 */
+        int d = 1, in_s = 0, esc = 0;
+        char *block_end = NULL;
+        for (char *r = block_open + 1; r < dev_end && *r; r++) {
+            if (esc) { esc = 0; continue; }
+            if (*r == '\\') { esc = 1; continue; }
+            if (*r == '"') { in_s = !in_s; continue; }
+            if (in_s) continue;
+            if (*r == '{') d++;
+            else if (*r == '}') { d--; if (d == 0) { block_end = r; break; } }
+        }
+        if (!block_end) break;
+
+        /* 在 block 内找 "limit_enabled":true */
+        char saved = *(block_end + 1);
+        *(block_end + 1) = '\0';
+        int has_limit = (strstr(block_open, "\"limit_enabled\"") != NULL) &&
+                        (strstr(block_open, "true") != NULL);
+        *(block_end + 1) = saved;
+
+        if (has_limit) {
+            char norm[18];
+            if (normalize_mac(mac_raw, norm) == 0) {
+                pthread_mutex_lock(&sched.lock);
+                if (limited_set_add(norm) >= 0) {
+                    added++;
+                }
+                pthread_mutex_unlock(&sched.lock);
+            }
+        }
+
+        p = block_end + 1;
+    }
+
+    *dev_end = '}';   /* 复位 */
+
+    if (added > 0) {
+        fprintf(stderr, "[sched] rebuild: %d limited device(s) from rules.json\n",
+                added);
+    } else {
+        fprintf(stderr, "[sched] rebuild: no limited devices in rules.json\n");
+    }
+    return added;
 }
+
+/* ══════════════════════════════════════════════════════════
+ * 上游探测 (alpha.2: 改用 upstream.c 三层 fallback)
+ *
+ * alpha.1 用 /proc/net/route main table default route, 在 ColorOS 策略路由下
+ * 失败 (default 在 per-iface table). alpha.2 改走 upstream_detect_primary:
+ *   Tier 1: ip route get 8.8.8.8 (策略路由感知, 最可靠)
+ *   Tier 2: /proc/net/route 启发式扫描 (rmnet/wwan/eth 前缀)
+ *   Tier 3: (留 alpha.3) BPF upstream4_map 反查
+ * ══════════════════════════════════════════════════════════ */
 
 /* 公开 wrap, 加锁 + 缓存
  * 仅在内部触发: init / 0→>0 转换时
@@ -211,7 +312,7 @@ static void refresh_primary_upstream_locked(void)
 {
     int idx = 0;
     char name[HNC_SCHED_IFNAME_LEN] = {0};
-    if (detect_primary_upstream(&idx, name, sizeof(name)) == 0) {
+    if (upstream_detect_primary(&idx, name, sizeof(name)) == 0) {
         if (idx != sched.primary_upstream_ifindex ||
             strcmp(name, sched.primary_upstream_ifname) != 0) {
             fprintf(stderr, "[sched] primary upstream: %s (ifindex=%d)\n", name, idx);
@@ -220,9 +321,13 @@ static void refresh_primary_upstream_locked(void)
         snprintf(sched.primary_upstream_ifname,
                  sizeof(sched.primary_upstream_ifname), "%s", name);
     } else {
-        fprintf(stderr, "[sched] primary upstream not found (no default route)\n");
-        sched.primary_upstream_ifindex = 0;
-        sched.primary_upstream_ifname[0] = '\0';
+        fprintf(stderr, "[sched] primary upstream not found (all tiers failed)\n");
+        /* 注: alpha.2 不再清零 cached 值 — 如果上次探到过, 保留它.
+         * 网络切换瞬态 (uplink 短暂下线) 不应该清空 scheduler 认知, 否则
+         * 下次 disable_upstream 会写到 ifindex=0, 毫无意义. */
+        if (sched.primary_upstream_ifindex == 0) {
+            sched.primary_upstream_ifname[0] = '\0';
+        }
     }
 }
 
@@ -246,7 +351,18 @@ static void trigger_adapter_disable_locked(void)
     switch (a->granularity) {
     case OFFLOAD_GRAN_PER_UPSTREAM: {
         if (sched.primary_upstream_ifindex <= 0) {
-            fprintf(stderr, "[sched] no primary upstream, can't disable_upstream\n");
+            /* alpha.2: upstream 探测全部 tier 失败时, 自动降级到 global disable
+             * 避免 scheduler 集合 limited_count>0 但 BPF 从未被写入的尴尬。
+             * 后果: 所有 upstream 都被禁 offload (跟 global 模式等价), 但
+             * 对用户来说"限速生效"比"精准限某个上游但无效"重要。
+             * 主要出现在 ColorOS 5G 策略路由 + 网络瞬态切换场景。 */
+            if (a->disable_global) {
+                offload_err_t e = a->disable_global();
+                fprintf(stderr, "[sched] no primary upstream → fallback disable_global: %s\n",
+                        offload_err_str(e));
+            } else {
+                fprintf(stderr, "[sched] no primary upstream AND no disable_global support\n");
+            }
             return;
         }
         if (a->disable_upstream == NULL) {
@@ -280,11 +396,19 @@ static void trigger_adapter_restore_locked(void)
 
     switch (a->granularity) {
     case OFFLOAD_GRAN_PER_UPSTREAM: {
-        if (sched.primary_upstream_ifindex <= 0) return;
-        if (a->restore_upstream == NULL) return;
-        offload_err_t e = a->restore_upstream(sched.primary_upstream_ifindex);
-        fprintf(stderr, "[sched] restore_upstream(ifindex=%d): %s\n",
-                sched.primary_upstream_ifindex, offload_err_str(e));
+        /* alpha.2: 对称 fallback. 如果 disable 走的是 global 降级,
+         * restore 也走 global 才能解, 否则 restore_upstream(0) 毫无意义。
+         * 更稳的做法: 无条件走 restore_global — 因为我们拿不准当初 disable
+         * 时到底写了哪个 ifindex (或全部), 一把 restore_global 把所有 entry
+         * 都设回 U64_MAX 一定是正确的。 */
+        if (a->restore_global) {
+            offload_err_t e = a->restore_global();
+            fprintf(stderr, "[sched] restore (via global): %s\n", offload_err_str(e));
+        } else if (a->restore_upstream && sched.primary_upstream_ifindex > 0) {
+            offload_err_t e = a->restore_upstream(sched.primary_upstream_ifindex);
+            fprintf(stderr, "[sched] restore_upstream(ifindex=%d): %s\n",
+                    sched.primary_upstream_ifindex, offload_err_str(e));
+        }
         break;
     }
     case OFFLOAD_GRAN_GLOBAL: {
@@ -422,6 +546,24 @@ int hnc_scheduler_init(void)
             offload_gran_str(sched.adapter->granularity),
             sched.primary_upstream_ifname,
             sched.primary_upstream_ifindex);
+
+    /* v5.0 alpha.3 P0-B: 从 rules.json 重建 limited_macs
+     * 如果有限速设备, 触发一次 adapter disable, 重建 BPF offload 屏蔽
+     * 这样重启后不需要手动 apply_device_rule.sh, 限速自动恢复 */
+    int rebuilt = rebuild_from_rules();
+    if (rebuilt > 0) {
+        pthread_mutex_lock(&sched.lock);
+        /* 0 → >0 转换等价: 重新探测上游 + trigger disable
+         * (notify 路径一致, 避免重复代码) */
+        refresh_primary_upstream_locked();
+        trigger_adapter_disable_locked();
+        pthread_mutex_unlock(&sched.lock);
+        fprintf(stderr, "[sched] rebuild: triggered adapter disable (count=%d upstream=%s/%d)\n",
+                rebuilt,
+                sched.primary_upstream_ifname,
+                sched.primary_upstream_ifindex);
+    }
+
     return 0;
 }
 

@@ -1,3 +1,87 @@
+## 🚀 v5.0.0-alpha.3 重启即用 (P0-B + P1) · 2026-04-22
+
+**主题**: 修 alpha.2 真机暴露的两大遗留问题。配合 alpha.2 已埋的 upstream.c,
+本版是 v5.x 系列首个 **重启后无需任何手动操作, 限速/延迟完整自愈** 的版本。
+
+### P0-B scheduler 启动时从 rules.json 重建 limited_macs (scheduler.c ~110 行)
+
+**背景**:
+alpha.2 真机场景:
+1. 装模块 → apply limit → 限速生效 ✅
+2. 重启手机 → 开热点 → Mi-10 连上
+3. speedtest 下行飞 19 MB/s ❌ (限速失效)
+4. 手动 `apply_device_rule.sh limit f6:67... 8 8` → speedtest 双向精准 ✅
+
+**根因**:
+- 进程重启 → `scheduler.limited_macs[]` 内存清空, HNC 不知道谁被限速
+- BPF map 里 `limit[ifindex]=0` 被 framework 在 5-30s 内回写为 `U64_MAX`
+- restore_rules 恢复 tc HTB class 但**没通过 scheduler notify 路径**, 所以
+  没有触发 `adapter->disable_upstream` 重新屏蔽 BPF offload
+- BPF fast path 继续工作, 跳过 HNC HTB, 下行限速失效
+- 上行路径不经 BPF offload, 所以上行精准工作 (alpha.2 真机 7.04/8 Mbps)
+
+**修复** (`scheduler.c:rebuild_from_rules`):
+- init 末尾扫 `/data/local/hnc/data/rules.json`
+- brace-count JSON 解析找 `"devices"` section 里所有有 `"limit_enabled":true` 的 MAC
+- 直接填 `limited_macs[]` 数组 (绕过 notify 路径, N 设备只触发 1 次 adapter)
+- `count > 0` → 重探上游 + `trigger_adapter_disable_locked()` 一次
+
+### P1 init_tc 不再无条件删 root htb (tc_manager.sh)
+
+**背景**:
+alpha.2 真机发现: 每次 init_tc 都 `tc qdisc del dev wlan2 root`, 把挂在已有 root
+htb 下的 class 1:80 / 1:50 等**全部清掉**。如果 watchdog 在 restore_rules 重
+建 class 之前再触发一次 init, 就出现"下行限速飞"窗口。
+
+**修复** (`tc_manager.sh:init_tc`):
+- 先检测现有 root qdisc: `tc qdisc show | awk '$4=="root" {print $2}'`
+- 是 `htb/hfsc/cbq/fq/fq_codel` → 保留, 日志 "preserving existing root qdisc"
+- 其他类型 (noqueue/pfifo) → 删重建
+- ifb0 同理
+
+### 复用 alpha.2 已埋的 upstream.c
+
+alpha.2 阶段已把 `daemon/hotspotd/upstream.c` 写了 (Tier 1 ip route get +
+Tier 2 /proc/net/route 启发式) 但真机装的 hotspotd 二进制是 alpha.1 编的,
+没含新代码。alpha.3 重编后生效:
+- 期望 `hnc_ipc OFFLOAD_STATUS` 的 `primary_upstream_ifname` 自动显示 `rmnet_data3`
+- ColorOS 策略路由不再是盲点
+
+### 真机验证目标 (RMX5010)
+
+装 alpha.3 → 重启 → 开热点 → Mi-10 连上 → speedtest 直接双向精准 (无需手动):
+- 下行 ≈ 1 MB/s (精度 ≥99%)
+- 上行 ≈ 1 MB/s (精度 ≥85%)
+- `hnc_ipc OFFLOAD_STATUS` 里:
+  - `primary_upstream_ifname`: "rmnet_data3" (或类似, 取决于当前上游)
+  - `limited_device_count`: >0
+  - `disabled_upstream_ifindex`: [N]
+
+### 代码改动
+
+```
+daemon/hotspotd/scheduler.c:  +~110 lines (rebuild_from_rules + init 末尾调用)
+bin/tc_manager.sh:            +~30 lines  (init_tc root 保留逻辑)
+module.prop:                  v5.0.0-alpha.2 → v5.0.0-alpha.3 (50501 → 50502)
+```
+
+### 已知限制 (alpha.4 候选)
+
+- `rebuild_from_rules` 对 hostname 含 `}` 的 JSON 字符串通过 brace-count 已处
+  理, 但对 `\"` 转义 不够严格. 实际场景: hostname 很少含 `"`, 先凑合。
+- upstream Tier 3 (BPF upstream4_map 反查) 仍留 alpha.4
+- build.sh 打包 exec 位保留策略已在 alpha.2 做到, 但 `zip -X` 没用 — WSL 打
+  包走 `chmod 755 + zip` 组合保证 exec 位, 实际可用
+
+### 向后兼容
+
+- v5.0 alpha.1/2 → alpha.3: 直接覆盖装, rules.json / BPF 行为自动对齐
+- 无 BPF adapter 的机器 (非 qcom, null adapter) → rebuild 走 null adapter
+  trigger (无操作, 安全)
+- 重启时 rules.json 不存在 (新装) → rebuild 日志 "rules.json not found", 正常
+
+---
+
 ## 🎯 v5.0.0-alpha.2 上行限速 ColorOS 修复 (P0-0) · 2026-04-22
 
 **主题**: 修复 v4.x 所有版本在 ColorOS (及其他 ROM 预装 root htb 的) 设备上

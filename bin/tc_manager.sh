@@ -416,6 +416,99 @@ load_ifb() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# v5.0 alpha.2 P0-0: 独立安装 ingress mirred (wlan2 → ifb0)
+#
+# 背景:
+#   v4.x init_tc 把 mirred 安装放在 root htb add 之后的同一流程里。
+#   ColorOS / RMX5010 上 wlan2 的 root htb 被 oplus-netd 预装, HNC 的
+#   `tc qdisc add dev wlan2 root handle 1:` 会因 File exists 失败(tc.log
+#   显示 "invalid argument 'root'", 是 ColorOS 定制 iproute2 的错误翻译),
+#   init_tc 直接 return, 导致 ingress mirred 永远不装。
+#
+#   结果: 上行流量被 oplus pref 49152 mirred 抢到 ifb1, HNC 的 ifb0 永远
+#   收不到数据包, 上行限速在 v4.x 所有版本都完全失效。
+#
+#   真机验证 (RMX5010 + SD8 Elite + ColorOS 16 + Android 16):
+#   装前: 上行限速 2 Mbit/s 实际 45-55 Mbps (~22x 超标)
+#   装后: 上行 2.16 Mbit/s (92% 精度)
+#
+# 设计:
+#   - 跟 root htb add 完全解耦, 任何情况下都尝试装
+#   - 用 matchall (而非 u32 match u32 0 0), 一条 filter 同时覆盖 v4+v6
+#   - pref 1 抢在 ColorOS oplus-netd 的 pref 49152 之前
+#   - 幂等: 重复调用会先 del 旧 filter 再 add
+# ═══════════════════════════════════════════════════════════════
+install_ingress_mirred() {
+    local iface=$1
+    [ -z "$iface" ] && { log_error "install_ingress_mirred: empty iface"; return 1; }
+
+    # v5.0 alpha.2 hotfix4: iface 不存在时 silent skip
+    # ColorOS 上 wlan2 按需创建, 热点没开时不存在。restore_rules / watchdog 会
+    # 在热点没开时调我们, 此时 tc 报 "Cannot find device" 会被翻译成
+    # "invalid argument 'ingress'" 等迷惑性错误。静默跳过, 等 wlan2 真的 UP
+    # 再装。
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+        log "install_ingress_mirred: $iface not present yet, skip (will retry when iface up)"
+        return 0
+    fi
+
+    # v5.0 alpha.2 hotfix3: 直接用 ingress 简写, 不再用 parent spec 探测
+    # ColorOS 定制 tc 有多重错误翻译:
+    #   - hotfix1 以为要用 parent ffff:fff2 (因为某次 ingress 简写报错)
+    #   - hotfix3 真机验证: ColorOS tc 反而不认 parent ffff:fff2, 只认 ingress 简写
+    # 真机上 Ling 手动跑 "tc filter add dev wlan2 ingress prio 1 protocol all matchall..."
+    # 永远成功, 改回这个语法。
+    #
+    # 如果 ingress 失败, 再试 parent ffff: (老式 ingress qdisc) 作为 fallback.
+
+    # 确保有 ingress 挂点 (clsact 或老式 ingress qdisc 都行)
+    if ! tc qdisc show dev "$iface" 2>/dev/null | grep -qE "clsact ffff:|ingress "; then
+        # 什么都没有, 尝试装 clsact (优先) 或 ingress
+        tc qdisc add dev "$iface" clsact 2>/dev/null \
+            || tc qdisc add dev "$iface" handle ffff: ingress 2>/dev/null \
+            || log_error "install_ingress_mirred: cannot add clsact/ingress qdisc on $iface"
+    fi
+
+    # 幂等: 先删可能残留的 pref 1
+    tc filter del dev "$iface" ingress pref 1 2>/dev/null || true
+
+    # 主路径: ingress 简写 + matchall (Ling 真机手动验证过能用)
+    local _out
+    _out=$(tc filter add dev "$iface" ingress prio 1 protocol all matchall \
+           action mirred egress redirect dev "$IFB_IFACE" 2>&1)
+    if [ -z "$_out" ]; then
+        log "install_ingress_mirred: $iface ingress pref 1 matchall → $IFB_IFACE OK"
+        return 0
+    fi
+
+    log_error "install_ingress_mirred: matchall failed: $_out, trying u32 fallback"
+
+    # Fallback 1: ingress 简写 + u32 (旧内核)
+    _out=$(tc filter add dev "$iface" ingress protocol ip prio 1 u32 \
+           match u32 0 0 action mirred egress redirect dev "$IFB_IFACE" 2>&1)
+    if [ -z "$_out" ]; then
+        log "install_ingress_mirred: $iface ingress pref 1 u32 (v4 only) → $IFB_IFACE OK"
+        tc filter add dev "$iface" ingress protocol ipv6 prio 2 u32 \
+            match u32 0 0 action mirred egress redirect dev "$IFB_IFACE" 2>/dev/null || true
+        return 0
+    fi
+
+    log_error "install_ingress_mirred: u32 also failed: $_out, trying parent ffff: fallback"
+
+    # Fallback 2: 老式 parent ffff: (非 clsact 内核)
+    tc filter del dev "$iface" parent ffff: pref 1 2>/dev/null || true
+    _out=$(tc filter add dev "$iface" parent ffff: prio 1 protocol all matchall \
+           action mirred egress redirect dev "$IFB_IFACE" 2>&1)
+    if [ -z "$_out" ]; then
+        log "install_ingress_mirred: $iface parent ffff: pref 1 matchall → $IFB_IFACE OK"
+        return 0
+    fi
+
+    log_error "install_ingress_mirred: $iface mirred add FAILED (all paths): $_out (上行限速将失效!)"
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════
 # 初始化 TC 基础结构
 # ═══════════════════════════════════════════════════════════════
 init_tc() {
@@ -444,12 +537,29 @@ init_tc() {
     # HNC_TEST_MODE=1 时跳过重试逻辑 · mock 环境的 tc 会 echo 调用记录到 stdout
     # (非空 != 失败), 新逻辑会误判. 测试只需验证命令组合正确性, 不验证重试,
     # 走单次 add 的老路径就够了.
-    tc qdisc del dev "$iface" root 2>/dev/null || true
+    #
+    # v5.0 alpha.3 P1: 不再无条件 del root qdisc
+    # alpha.2 真机发现: 每次 init_tc (watchdog 10s 触发 + restore_rules 触发) 都
+    # `tc qdisc del root` 把 wlan2 上已有的 class 1:80 清掉, 然后 restore_rules
+    # 要重建所有 class. 如果 watchdog 在 restore 之间插一脚, class 临时消失,
+    # 下行限速在那个窗口里飞。
+    # 改为: 先检测, 是 htb root 就保留 (下面 add 会因 File exists 失败, 走复用
+    # 分支); 不是 htb (比如 noqueue, 或 pfifo) 才删重建。
+    _existing_root=$(tc qdisc show dev "$iface" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+    case "$_existing_root" in
+        htb|hfsc|cbq|fq|fq_codel)
+            log "init_tc: preserving existing root qdisc ($_existing_root) on $iface"
+            ;;
+        *)
+            tc qdisc del dev "$iface" root 2>/dev/null || true
+            ;;
+    esac
 
     if [ -n "$HNC_TEST_MODE" ]; then
         # 测试路径: 单次 add, 保持旧行为方便 mock 断言
         tc qdisc add dev "$iface" root handle 1: htb default 9999 r2q 10 2>/dev/null \
             || { log_error "init_tc: failed to add root htb on $iface (test mode)"; return 1; }
+        _htb_add_ok=1     # v5.0 alpha.2 P0-0: 测试模式下也要设, 避免后续 return 0
     else
         # 生产路径: 捕获 stderr + 重试 3 次
         _htb_add_ok=0
@@ -461,6 +571,21 @@ init_tc() {
                 [ $_htb_retry -gt 0 ] && log "init_tc: root htb add succeeded on retry #$_htb_retry"
                 break
             fi
+            # v5.0 alpha.2 P0-0: 识别 "root qdisc 已被 ROM 预装" 的情况
+            # ColorOS oplus-netd 在 wlan2 预装 htb 1: root, 再 add 会失败:
+            #   上游 iproute2 报: RTNETLINK answers: File exists
+            #   ColorOS 定制 tc 报: tc: invalid argument 'root' to 'command'
+            # 此时检查现有 root qdisc 是否为 htb, 是则复用 (HNC 的 class 1:80
+            # 会挂到这个已有 htb 下, set_limit 正常工作). 不是则按原逻辑重试.
+            if echo "$_htb_out" | grep -qE "File exists|invalid argument 'root'"; then
+                _existing_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | \
+                                   awk '/^qdisc htb / && $4 == "root"' | head -1)
+                if [ -n "$_existing_qdisc" ]; then
+                    log "init_tc: root htb already installed by ROM on $iface, reusing: $_existing_qdisc"
+                    _htb_add_ok=1
+                    break
+                fi
+            fi
             log_error "init_tc: root htb add failed (attempt $((_htb_retry+1))/3) on $iface: $_htb_out"
             # 冷启时序问题 retry 前 del 一次 (可能上次 add 部分成功了残留)
             tc qdisc del dev "$iface" root 2>/dev/null || true
@@ -469,9 +594,21 @@ init_tc() {
         done
 
         if [ $_htb_add_ok -eq 0 ]; then
-            log_error "init_tc: root htb add FAILED after 3 retries on $iface, giving up"
-            return 1
+            log_error "init_tc: root htb add FAILED after 3 retries on $iface, continuing to install ingress mirred anyway (上行仍需要)"
+            # v5.0 alpha.2 P0-0: 不再 return 1
+            # 即使 root htb add 失败, 也要装 ingress mirred, 不然上行限速直接挂.
+            # 下行 class 可能因为没有 default 9999 class 表现略异, 但 set_limit
+            # 的 ensure_device_class 会建自己的 class, 影响面仅限于未限速设备.
         fi
+    fi
+
+    # v5.0 alpha.2 P0-0: 独立装 ingress mirred, 与 root htb add 结果脱钩
+    install_ingress_mirred "$iface"
+
+    # 以下 class / ingress qdisc / ifb 等代码只在 root htb OK 时执行
+    if [ "$_htb_add_ok" != "1" ]; then
+        log "init_tc: skipping class/ingress/ifb setup due to root htb failure"
+        return 0
     fi
 
     tc class add dev "$iface" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
@@ -546,8 +683,18 @@ init_tc() {
     fi
 
     # ── IFB0 Egress HTB（上传整形）──────────────────────────
-    tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
-    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+    # v5.0 alpha.3 P1: 同 wlan2, 保留已有 htb qdisc, 避免清掉 class 1:XX
+    _ifb_root=$(tc qdisc show dev "$IFB_IFACE" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+    case "$_ifb_root" in
+        htb)
+            log "init_tc: preserving existing ifb0 htb root"
+            ;;
+        *)
+            tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
+            tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+            ;;
+    esac
+    # class 1:1 / 1:9999 add 是幂等的 (已存在会 silent fail, 无害)
     tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
     tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
     tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null \
@@ -729,6 +876,14 @@ restore_rules() {
     log "Restoring rules from $RULES_FILE"
     [ -f "$RULES_FILE" ] || return 0
     local iface; iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface)
+
+    # v5.0 alpha.2 hotfix2: 强制装 ingress mirred (保证重启后上行限速生效)
+    # watchdog 判定 "qdisc htb 1: 已存在" (oplus 装的) 时会跳过 init_tc, 导致
+    # install_ingress_mirred 从没被调用。restore_rules 开头强制调一次, 幂等,
+    # 保证 HNC 的 pref 1 matchall → ifb0 就位。
+    if [ -n "$iface" ] && ip link show "$iface" >/dev/null 2>&1; then
+        install_ingress_mirred "$iface"
+    fi
 
     # 提取所有设备 MAC（只匹配 devices 对象里有 mark_id 的条目）
     # rc3.1.34 修 #15: 之前 `grep -oE` 全文搜会把 blacklist 数组里的 MAC 也匹进来.

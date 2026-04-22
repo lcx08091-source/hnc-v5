@@ -140,6 +140,32 @@ echo $! > $RUN/watchdog.pid
 log "=== All services started ==="
 log "All services started. WebUI: open KernelSU manager → modules → HNC"
 
+# ─── v5.0 alpha.2: Offload Recovery ────────────────────────
+# hotspotd 重启后 scheduler 内存里 limited 集合是空的, 但 rules.json 里
+# 可能有 limit_enabled=true 的设备. 重新通知 scheduler 建立集合,
+# 这样下一次 apply_device_rule.sh 或 watchdog 触发时状态一致.
+#
+# 后台异步跑, 不阻塞 service.sh. hotspotd 刚启动需要 2s 让 unix socket 就绪.
+(
+    sleep 3
+    RULES="$HNC_DIR/data/rules.json"
+    HNC_IPC="$HNC_DIR/bin/hnc_ipc"
+    [ -f "$RULES" ] && [ -x "$HNC_IPC" ] || exit 0
+
+    # 扫 rules.json 里所有 "limit_enabled":true 的 mac
+    # 格式假设: {"aa:bb:...":{..."limit_enabled":true...},...}
+    # 用 grep 非贪婪粗暴匹配, 不引入 jq 依赖 (ColorOS 不装)
+    RECOVERED=0
+    for MAC in $(grep -oE '"[0-9a-fA-F:]{17}"[^}]*"limit_enabled"[[:space:]]*:[[:space:]]*true' "$RULES" \
+                 | grep -oE '^"[0-9a-fA-F:]{17}"' \
+                 | tr -d '"'); do
+        "$HNC_IPC" OFFLOAD_NOTIFY_LIMIT "$MAC" 1 >/dev/null 2>&1 && RECOVERED=$((RECOVERED+1))
+    done
+    if [ "$RECOVERED" -gt 0 ]; then
+        log "offload recovery: notified $RECOVERED limited device(s) to scheduler"
+    fi
+) &
+
 # ─── 热点自动启动 ────────────────────────────────────────────
 # 读取 rules.json 里的 hotspot_auto 字段（WebUI 控制）
 HOTSPOT_AUTO=$(grep -o '"hotspot_auto"[[:space:]]*:[[:space:]]*[a-z]*' \
