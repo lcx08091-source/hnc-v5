@@ -1,9 +1,7 @@
 # Prebuilt libelf.a and libz.a — Source attribution
 
-These static libraries (aarch64 Android) are vendored from:
-  https://github.com/JiaHuann/libbpf-bootstrap-android (BSD-3-Clause)
+libelf.a: from Termux libelf-static 0.193-1 package (elfutils upstream, LGPL-2.1+)
+libz.a:   from Termux zlib-static 1.3.2 package (zlib License)
 
-libelf itself is LGPL-2.1 (from elfutils upstream).
-zlib is under the zlib License.
-
-Binaries used unmodified as build-time dependencies.
+Both built for aarch64 Android (Bionic libc), extracted from Termux
+native package archives. Unmodified.

@@ -82,6 +82,9 @@ typedef Elf64_Rel GElf_Rel;
 /* Relocation table entry with addend (in section of type SHT_RELA).  */
 typedef Elf64_Rela GElf_Rela;
 
+/* Relative relocation entry (in section of type SHT_RELR).  */
+typedef Elf64_Relr GElf_Relr;
+
 /* Program segment header.  */
 typedef Elf64_Phdr GElf_Phdr;
 
@@ -95,7 +98,7 @@ typedef Elf64_Dyn GElf_Dyn;
 /* Version definition sections.  */
 typedef Elf64_Verdef GElf_Verdef;
 
-/* Auxialiary version information.  */
+/* Auxiliary version information.  */
 typedef Elf64_Verdaux GElf_Verdaux;
 
 /* Version dependency section.  */
@@ -133,7 +136,11 @@ typedef Elf64_Lib GElf_Lib;
 
 /* How to extract information held in the st_other field.  */
 
+#ifdef ELF64_ST_VISIBILITY
 #define GELF_ST_VISIBILITY(val)		ELF64_ST_VISIBILITY (val)
+#else
+#define GELF_ST_VISIBILITY(val)		((val) & 0x3)
+#endif
 
 
 /* How to extract and insert information held in the r_info field.  */

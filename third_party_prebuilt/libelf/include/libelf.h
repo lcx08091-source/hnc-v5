@@ -64,6 +64,24 @@
  #define ELFCOMPRESS_HIPROC     0x7fffffff /* End of processor-specific.  */
 #endif
 
+#ifndef ELFCOMPRESS_ZSTD
+ /* So ZSTD compression can be used even with an old system elf.h.  */
+ #define ELFCOMPRESS_ZSTD       2          /* Zstandard algorithm.  */
+#endif
+
+#ifndef SHT_RELR
+ /* So RELR defines/typedefs can be used even with an old system elf.h.  */
+ #define SHT_RELR       19      /* RELR relative relocations */
+
+ /* RELR relocation table entry */
+ typedef Elf32_Word     Elf32_Relr;
+ typedef Elf64_Xword    Elf64_Relr;
+
+ #define DT_RELRSZ      35      /* Total size of RELR relative relocations */
+ #define DT_RELR        36      /* Address of RELR relative relocations */
+ #define DT_RELRENT     37      /* Size of one RELR relative relocaction */
+#endif
+
 #if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 3)
 # define __nonnull_attribute__(...) __attribute__ ((__nonnull__ (__VA_ARGS__)))
 # define __deprecated_attribute__ __attribute__ ((__deprecated__))
@@ -117,6 +135,9 @@ typedef enum
   ELF_T_GNUHASH,		/* GNU-style hash section.  */
   ELF_T_AUXV,			/* Elf32_auxv_t, Elf64_auxv_t, ... */
   ELF_T_CHDR,			/* Compressed, Elf32_Chdr, Elf64_Chdr, ... */
+  ELF_T_NHDR8,			/* Special GNU Properties note.  Same as Nhdr,
+				   except padding.  */
+  ELF_T_RELR,			/* Relative relocation entry.  */
   /* Keep this the last entry.  */
   ELF_T_NUM
 } Elf_Type;
@@ -281,7 +302,7 @@ extern Elf_Scn *elf_getscn (Elf *__elf, size_t __index);
 
 /* Get section at OFFSET.  */
 extern Elf_Scn *elf32_offscn (Elf *__elf, Elf32_Off __offset);
-/* Similar bug this time the binary calls is ELFCLASS64.  */
+/* Similar but this time the binary calls is ELFCLASS64.  */
 extern Elf_Scn *elf64_offscn (Elf *__elf, Elf64_Off __offset);
 
 /* Get index of section.  */
@@ -294,7 +315,14 @@ extern Elf_Scn *elf_nextscn (Elf *__elf, Elf_Scn *__scn);
 extern Elf_Scn *elf_newscn (Elf *__elf);
 
 /* Get the section index of the extended section index table for the
-   given symbol table.  */
+   given symbol table.  Returns -1 when the given Elf_Scn is NULL or
+   if an error occurred during lookup, elf_errno will be set.  Returns
+   0 if the given Elf_Scn isn't a symbol table (sh_type is not
+   SHT_SYMTAB) or no extended section index table could be
+   found. Otherwise the section index of the extended section index
+   table for the given Elf_Scn is returned.  An extended index table
+   has a sh_type of SHT_SYMTAB_SHNDX and a sh_link equal to the given
+   symbol table section index.  */
 extern int elf_scnshndx (Elf_Scn *__scn);
 
 /* Get the number of sections in the ELF file.  If the file uses more
@@ -310,13 +338,13 @@ extern int elf_getshnum (Elf *__elf, size_t *__dst)
 
 
 /* Get the section index of the section header string table in the ELF
-   file.  If the index cannot be represented in the e_shnum field of
+   file.  If the index cannot be represented in the e_shstrndx field of
    the ELF header the information from the sh_link field in the zeroth
    section header is used.  */
 extern int elf_getshdrstrndx (Elf *__elf, size_t *__dst);
-/* Sun messed up the implementation of 'elf_getshnum' in their implementation.
-   It was agreed to make the same functionality available under a different
-   name and obsolete the old name.  */
+/* Sun messed up the implementation of 'elf_getshstrndx' in their
+   implementation.  It was agreed to make the same functionality available
+   under a different name and obsolete the old name.  */
 extern int elf_getshstrndx (Elf *__elf, size_t *__dst)
      __deprecated_attribute__;
 
@@ -346,10 +374,10 @@ extern Elf64_Chdr *elf64_getchdr (Elf_Scn *__scn);
 
    elf_compress takes a compression type that should be either zero to
    decompress or an ELFCOMPRESS algorithm to use for compression.
-   Currently only ELFCOMPRESS_ZLIB is supported.  elf_compress_gnu
-   will compress in the traditional GNU compression format when
-   compress is one and decompress the section data when compress is
-   zero.
+   Currently ELFCOMPRESS_ZLIB and ELFCOMPRESS_ZSTD are supported.
+   elf_compress_gnu will compress in the traditional GNU compression
+   format when compress is one and decompress the section data when
+   compress is zero.
 
    The FLAGS argument can be zero or ELF_CHF_FORCE.  If FLAGS contains
    ELF_CHF_FORCE then it will always compress the section, even if
@@ -366,10 +394,15 @@ extern Elf64_Chdr *elf64_getchdr (Elf_Scn *__scn);
    It is an error to request compression for a section that already
    has SHF_COMPRESSED set, or (for elf_compress) to request
    decompression for an section that doesn't have SHF_COMPRESSED set.
+   If a section has SHF_COMPRESSED set then calling elf_compress_gnu
+   will result in an error.  The section has to be decompressed first
+   using elf_compress.  Calling elf_compress on a section compressed
+   with elf_compress_gnu is fine, but probably useless.
+
    It is always an error to call these functions on SHT_NOBITS
    sections or if the section has the SHF_ALLOC flag set.
    elf_compress_gnu will not check whether the section name starts
-   with ".debug" or .zdebug".  It is the responsibilty of the caller
+   with ".debug" or .zdebug".  It is the responsibility of the caller
    to make sure the deprecated GNU compression method is only called
    on correctly named sections (and to change the name of the section
    when using elf_compress_gnu).
