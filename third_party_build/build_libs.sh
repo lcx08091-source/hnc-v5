@@ -94,15 +94,19 @@ if [ ! -f "$OUT/lib/libelf.a" ]; then
 NATIVE_EOF
 
     # 拷贝头文件到 OUT/include
+    mkdir -p "$OUT/include/sys"
     cp "$LIBELF_SRC/libelf.h" "$OUT/include/"
     cp "$LIBELF_SRC/gelf.h"   "$OUT/include/"
     cp "$LIBELF_COMMON/_elftc.h" "$OUT/include/"
     cp "$LIBELF_COMMON/elfdefinitions.h" "$OUT/include/"
-    # sys/queue.h, sys/elfdefinitions.h 等
-    [ -d "$LIBELF_COMMON/sys" ] && cp -r "$LIBELF_COMMON/sys"/* "$OUT/include/sys/" 2>/dev/null
+    # elftoolchain elfdefinitions.h 第 32 行 #include <sys/elfdefinitions.h>
+    # 我们在 sys/ 子目录也放一份 (chimera-linux 版本默认放在 common/, 没拆 sys/)
+    cp "$LIBELF_COMMON/elfdefinitions.h" "$OUT/include/sys/"
+    if [ -d "$LIBELF_COMMON/sys" ]; then
+        cp "$LIBELF_COMMON/sys"/*.h "$OUT/include/sys/" 2>/dev/null || true
+    fi
     cp "$LIBELF_COMMON/utarray.h" "$OUT/include/" 2>/dev/null || true
     cp "$LIBELF_COMMON/uthash.h"  "$OUT/include/" 2>/dev/null || true
-    # 内部头
     cp "$LIBELF_SRC/_libelf.h"        "$OUT/include/"
     cp "$LIBELF_SRC/_libelf_ar.h"     "$OUT/include/"
     cp "$LIBELF_SRC/_libelf_config.h" "$OUT/include/"
