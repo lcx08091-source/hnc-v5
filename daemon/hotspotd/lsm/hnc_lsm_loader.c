@@ -365,14 +365,21 @@ static void fixup_map_fds(struct bpf_insn *insns, uint32_t ninsn,
     }
 }
 
-/* BPF_BTF_LOAD: 把 BTF blob 注入 kernel, 拿到 btf fd */
-static int load_btf(const void *btf_data, uint32_t btf_size)
+/* BPF_BTF_LOAD: 把 BTF blob 注入 kernel, 拿到 btf fd
+ * v5.0.0-beta.4 hotfix4: 加 log_buf 让 kernel 报详细 BTF 校验失败原因 */
+static int load_btf(const void *btf_data, uint32_t btf_size,
+                    char *log_buf, uint32_t log_buf_size)
 {
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.btf      = (uint64_t)(uintptr_t)btf_data;
     attr.btf_size = btf_size;
-    /* btf_log_buf / btf_log_size 留空 */
+    if (log_buf && log_buf_size) {
+        attr.btf_log_buf  = (uint64_t)(uintptr_t)log_buf;
+        attr.btf_log_size = log_buf_size;
+        attr.btf_log_level = 1;
+        log_buf[0] = 0;
+    }
     long fd = sys_bpf(BPF_BTF_LOAD, &attr, sizeof(attr));
     return (int)fd;
 }
@@ -610,8 +617,13 @@ int hnc_lsm_init(const char *bpf_object_path,
 
     /* ─── Step 6: BPF_BTF_LOAD prog btf ────────────────────── */
     fprintf(stderr, "[lsm] step6: BPF_BTF_LOAD\n"); fflush(stderr);
-    int prog_btf_fd = load_btf(btf_data, btf_size);
+    static char btf_log_buf[16 * 1024];
+    int prog_btf_fd = load_btf(btf_data, btf_size, btf_log_buf, sizeof(btf_log_buf));
     if (prog_btf_fd < 0) {
+        if (btf_log_buf[0]) {
+            fprintf(stderr, "[lsm] BTF verifier log:\n%s\n", btf_log_buf);
+            fflush(stderr);
+        }
         set_fail("BPF_BTF_LOAD: %s", strerror(errno));
         free(insns); free(btf_data); free(relocs);
         return -1;
