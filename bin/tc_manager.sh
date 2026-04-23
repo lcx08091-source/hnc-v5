@@ -849,6 +849,40 @@ init_tc() {
 #   - 关闭限速：只把 rate 重置为 DEFAULT_RATE，不删 class，不碰 leaf netem
 #   - 结果：关限速时若该设备还有延迟，延迟保持不变
 # ═══════════════════════════════════════════════════════════════
+# ─── v5.1 hotfix: ifb0 root htb 自愈 ──────────────────────
+ensure_ifb_root_v1() {
+    local _root
+    _root=$(tc qdisc show dev "$IFB_IFACE" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+    [ "$_root" = "htb" ] && return 0
+    log "ensure_ifb_root_v1: ifb0 root='$_root' rebuilding htb"
+    ip link set dev "$IFB_IFACE" up 2>/dev/null
+    tc qdisc del dev "$IFB_IFACE" root 2>/dev/null
+    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+    tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+    tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+    tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
+    log "ensure_ifb_root_v1: rebuilt OK"
+    return 0
+}
+
+# ─── v5.1 hotfix: wlan2 ingress pref 1 mirred 自愈 ─────
+ensure_ingress_mirred_v1() {
+    local iface=$1
+    [ -z "$iface" ] && return 1
+    if tc filter show dev "$iface" ingress 2>/dev/null | grep -q "pref 1.*matchall"; then
+        return 0
+    fi
+    log "ensure_ingress_mirred_v1: pref 1 missing on $iface, reinstalling"
+    tc qdisc show dev "$iface" 2>/dev/null | grep -qE "clsact ffff:|ingress " \
+        || tc qdisc add dev "$iface" clsact 2>/dev/null
+    tc filter del dev "$iface" ingress pref 1 2>/dev/null
+    tc filter add dev "$iface" ingress prio 1 protocol all matchall \
+        action mirred egress redirect dev "$IFB_IFACE" 2>/dev/null \
+        || { log_error "ensure_ingress_mirred_v1: tc filter add FAILED"; return 1; }
+    log "ensure_ingress_mirred_v1: reinstalled OK"
+    return 0
+}
+
 set_limit() {
     local iface=$1 mark_id=$2 down_mbps=${3:-0} up_mbps=${4:-0} ip=${5:-}
     _validate_mark_id "$mark_id" || return 1
@@ -871,6 +905,8 @@ set_limit() {
         fi
     fi
 
+    ensure_ifb_root_v1
+    ensure_ingress_mirred_v1 "$iface"
     # ── Ingress（上传：设备→热点，通过 ifb0）────────────────
     if gt0 "$up_mbps"; then
         ensure_device_class "$IFB_IFACE" "$class_id" "$ip"
