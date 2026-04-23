@@ -88,6 +88,9 @@ if [ ! -f "$OUT/lib/libelf.a" ]; then
     # _libelf_config.h 已存在, 但 native types 需要根据 target 设
     cat > "$OUT/include/_libelf_native.h" << 'NATIVE_EOF'
 /* Auto-generated for aarch64-linux-android (LE, 64-bit) */
+/* v5.1 stage2 fix3: Bionic NDK <elf.h> 提供标准 ELFDATA*/ELFCLASS*/EM_* 常量
+ * 必须在我们的自定义 LIBELF_* 宏之前 include, 否则下面 ELFDATA2LSB 未定义 */
+#include <elf.h>
 #define LIBELF_BYTEORDER  ELFDATA2LSB
 #define LIBELF_CLASS      ELFCLASS64
 #define LIBELF_ARCH       EM_AARCH64

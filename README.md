@@ -1,38 +1,44 @@
-# v5.1 libbpf Stage 2 - Fix 2: 强制注入 elfdefinitions.h
+# v5.1 libbpf Stage 2 - Fix 3: include <elf.h> in _libelf_native.h
 
-## 问题
-fix1 后 sys/elfdefinitions.h 找到了, 但新错误:
+## 问题(Gemini 抓到)
+fix2 后 elfdefinitions.h 被注入,但新错误:
 ```
-libelf.h:233:1: error: unknown type name 'Elf32_Ehdr'
-   233 | Elf32_Ehdr *elf32_getehdr(Elf *_elf);
+libelf_xlate.c:59:18: error: use of undeclared identifier 'ELFDATANONE'
+libelf_xlate.c:62:19: error: use of undeclared identifier 'ELFDATA2LSB'
+libelf_xlate.c:62:46: error: use of undeclared identifier 'ELFDATA2MSB'
 ```
 
-elftoolchain 的 libelf.h 用 ELF types (Elf32_Ehdr 等) 但**自己不 #include**
-elfdefinitions.h, 期望 user 在 source 里先 include。我们 build 时
-ELF type 没注入到编译单元。
+`ELFDATA*` / `ELFCLASS*` / `EM_*` 是标准 ELF 常量(在系统 `<elf.h>` 里),
+不在 elftoolchain 的 elfdefinitions.h 里(它定义的是 *Elf32_Ehdr*, *Elf32_Sym*
+这种 type,不是常量宏)。
+
+我之前自动生成的 _libelf_native.h 用了 `ELFDATA2LSB` 但**没先 include <elf.h>**,
+当 -include _libelf_native.h 注入时,编译器看到 ELFDATA2LSB 还不知道是啥。
 
 ## 修
-LIBELF_CFLAGS 加 `-include elfdefinitions.h`,强制每个 .c 编译头部
-注入 ELF type 定义,等价于每个 .c 第一行加了 #include "elfdefinitions.h"。
-
-顺手:把 head -3 截断去掉, 让 CI 显示完整 compiler error (失败时方便诊断)
+_libelf_native.h heredoc 加一行 `#include <elf.h>`(用 Bionic NDK 自带的标准
+ELF 头文件提供所有常量)。
 
 ## 装
 ```sh
 cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_1-stage2-fix2.zip .
-unzip -o HNC-v5_1-stage2-fix2.zip
-rm HNC-v5_1-stage2-fix2.zip
+cp /sdcard/Download/HNC-v5_1-stage2-fix3.zip .
+unzip -o HNC-v5_1-stage2-fix3.zip
+rm HNC-v5_1-stage2-fix3.zip
 git add -A
-git commit -m "v5.1 stage2 fix2: -include elfdefinitions.h forces ELF type injection
+git commit -m "v5.1 stage2 fix3: #include <elf.h> in _libelf_native.h
 
-elftoolchain libelf.h declares functions returning Elf32_Ehdr etc
-but doesn't itself include the type definitions, expecting user to
-include them. -include CFLAG injects elfdefinitions.h into every TU."
+Bionic NDK provides standard ELFDATA*/ELFCLASS*/EM_* constants in
+<elf.h>. Our generated _libelf_native.h used ELFDATA2LSB without
+first including <elf.h>, causing undeclared identifier errors when
+the file was -include'd. Diagnosis credit: Gemini peer review."
 git push
 ```
 
 ## 期望下一轮
-libelf 53/57 编通,可能还有 4-5 个特殊 .c 失败 (用了 GNU 扩展)。
-失败的 .c 文件如果不影响 libbpf 用到的核心功能, 可以从 .a 排除。
-贴新的 CI build log 给我。
+libelf_xlate.c 应该过, 然后剩下 56 个 .c 应该大部分都过
+(libelf 整体不太用 GNU 扩展, 主要是 ELF parsing)。
+
+如果 libelf 全过, 接着 libbpf 编译开始 — libbpf 用了一堆 GNU 扩展
+(mempcpy, argp.h, obstack), 大概率有 5-10 个 .c 失败需要 shim。
+继续贴 CI log。
