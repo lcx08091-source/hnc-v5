@@ -200,7 +200,7 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// dispatch
-	resp := dispatchAction(s.hncDir, req.Action, req.Params)
+	resp := dispatchAction(s.hncDir, req.Action, req.Params, tid == "loopback")
 	result := "ok"
 	if !resp.OK {
 		result = "error"
@@ -226,7 +226,14 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // dispatchAction 按 action 白名单分发(已通过 auth + rate limit + CSRF)
-func dispatchAction(hncDir, action string, p map[string]string) actionResp {
+func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool) actionResp {
+	// rc5.1.1 audit: 这三个管理类 action 会影响其他 token,只允许本机 loopback 调用
+	switch action {
+	case "pair_revoke", "auth_required_set", "remote_enabled_set":
+		if !isLoopback {
+			return actionResp{OK: false, Error: "forbidden", Detail: "this action is loopback-only (use the on-device KSU WebUI)"}
+		}
+	}
 	switch action {
 	case "rule_set":
 		return actionRuleSet(hncDir, p)
