@@ -332,12 +332,20 @@ static int parse_bpf_object(const char *path,
         }
     }
 
+    /* v5.0.0-beta.4 hotfix3: 必须在 munmap 之前把 sh_btf->sh_size 取出来,
+     * 否则 munmap 释放 ELF 映射后 sh_btf 指针变野指针, 解引用 SEGV.
+     * (致谢 evaluation AI 的 root cause 分析:
+     *  fault addr = mmap_base + e_shoff + 7*sizeof(Shdr) + offsetof(sh_size)
+     *  对应 [.BTF section header].sh_size 字段,
+     *  落在 munmap 释放后变成 PROT_NONE 的"洞", tombstone 误识为 guard page) */
+    uint32_t btf_size_local = sh_btf->sh_size;
+
     munmap(elf, st.st_size);
 
     *prog_insns_out  = insns;
     *prog_ninsn_out  = ninsn;
     *btf_data_out    = btf_data;
-    *btf_size_out    = sh_btf->sh_size;
+    *btf_size_out    = btf_size_local;   /* 安全: 不再触碰已释放的 mmap 区 */
     *relocs_out      = relocs;
     *nrelocs_out     = nrelocs;
     return 0;

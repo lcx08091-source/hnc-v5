@@ -1519,6 +1519,27 @@ static int try_ns_dhcp_resolve(const char *mac, char *out, size_t outlen) {
 /* ══════════════════════════════════════════════════════════
    主函数
 ══════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════
+ * v5.0.0-beta.4 hotfix3: SIGSEGV / SIGBUS / SIGABRT handler
+ * 立刻把 fault address 落到 stderr (= log file), 不依赖 tombstone
+ * ══════════════════════════════════════════════════════════ */
+static void hnc_crash_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)ctx;
+    /* async-signal-safe: 只用 write() */
+    char buf[128];
+    int n = snprintf(buf, sizeof(buf),
+                     "\n[FATAL] sig=%d code=%d fault_addr=%p pid=%d\n",
+                     sig, info->si_code, info->si_addr, (int)getpid());
+    if (n > 0) {
+        write(STDERR_FILENO, buf, (size_t)n);
+        /* 强制 fdatasync 让 log file 落盘前 default-handler kill 进程 */
+        fsync(STDERR_FILENO);
+    }
+    /* 恢复 default handler 继续走 → tombstone 仍然生成 */
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 int main(int argc, char *argv[]) {
     /* 简单参数：-d 后台化，-l <logfile> */
     int daemonize = 0;
@@ -1547,6 +1568,19 @@ int main(int argc, char *argv[]) {
     /* 行缓冲 stderr, 保证每条 fprintf 立即写磁盘 (不等 4KB 块满)
      * beta.2: daemonize 重定向后 stderr 指日志文件, 默认块缓冲看不到实时日志 */
     setvbuf(stderr, NULL, _IOLBF, 0);
+
+    /* v5.0.0-beta.4 hotfix3: 装 SIGSEGV/SIGBUS handler
+     * 任何段错先把 fault address 写进日志, 再让 default handler 杀进程生成 tombstone */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_flags = SA_SIGINFO;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_sigaction = hnc_crash_handler;
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS,  &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+    }
 
     /* 日志 */
     g_log = fopen(logpath, "a");

@@ -1,107 +1,90 @@
-# HNC v5.0.0-beta.4 hotfix2: set_fail SEGV 真因修复
+# HNC v5.0.0-beta.4 hotfix3: parse_bpf_object use-after-unmap 修复
 
-## 问题
-hotfix1 后 hotspotd 仍 SIGSEGV crash loop, tombstone 显示崩在
-`/data/local/hnc/bin/hotspotd pc 0x168c4`,日志只到 `[lsm] step4: parse_bpf_object`
-后停止,没有 step4 完成或 FAIL 输出。
+## Root Cause(感谢 evaluation AI)
+parse_bpf_object 末尾:
+```c
+munmap(elf, st.st_size);              // ELF 映射释放
+*btf_size_out = sh_btf->sh_size;      // sh_btf 是野指针! → SEGV
+```
+`sh_btf` 指向 ELF section header table 内部,跟 mmap 区域共生。
+`munmap` 后整块内存变成 PROT_NONE "洞",随后 `sh_btf->sh_size` 段错。
 
-## 根因(基于 addr2line 反查证据)
-`addr2line -e hotspotd 0x168c4` 解析为 **`set_fail` 函数 line 127**
-(`g.stat.state = HNC_LSM_FAILED` 那行,`pthread_mutex_lock` 之后)。
-fault addr `0x...5e8` 在 `[anon:thread signal stack]`,正是 ARM64
-va_list register save area 区域。
+数学校验:
+- mmap 基址(假设) = 0x7d85606000
+- e_shoff = 0xa408
+- .BTF section index = 7,Elf64_Shdr 大小 0x40
+- offsetof(Elf64_Shdr, sh_size) = 0x20
+- fault addr = 0x7d85606000 + 0xa408 + 7*0x40 + 0x20 = **0x7d856105e8** ✓
 
-调用链:
-1. `parse_bpf_object` 在某 syscall 失败(可能 mmap/open errno=ENOENT)
-2. 返回 -errno → init 调 `set_fail("parse_bpf_object: %s", strerror(...))`
-3. `set_fail` 内 `pthread_mutex_lock(&g.stat_lock)` + `va_start(ap, fmt)` 段错
+完美对上 tombstone fault addr。
 
-之前以为崩在 `parse_bpf_object` 内,实际是它 graceful 返回后 set_fail 段错,
-真正的失败原因被吞了。
+之前我误以为 fault 在 [thread signal stack guard page] 是 stack overflow,
+其实那是 munmap 之后内核标记区域刚好夹在两个 thread sigstack 中间,被
+tombstone 解析器误认为 guard page。
 
-## 修复
-两处:
+## 修改
+1. **parse_bpf_object**: 把 `sh_btf->sh_size` 提取到本地 `btf_size_local`
+   *在* munmap 之前,然后再 munmap。这是 4 字符的修改。
 
-1. **`g.stat_lock` 改用 `PTHREAD_MUTEX_INITIALIZER` 静态初始化**
-   - 删除 hnc_lsm_init 里的 `pthread_mutex_init(&g.stat_lock, NULL)`
-   - 排除任何 dynamic init 顺序问题
-
-2. **`set_fail` 重写 — fprintf 优先**
-   ```c
-   static void set_fail(const char *fmt, ...) {
-       char tmp[128];
-       va_list ap;
-       va_start(ap, fmt);
-       vsnprintf(tmp, sizeof(tmp), fmt, ap);
-       va_end(ap);
-       /* 关键:先打日志,即便 mutex 段错也能看到原因 */
-       fprintf(stderr, "[lsm] FAIL: %s\n", tmp);
-       fflush(stderr);
-       /* 然后再写共享状态 */
-       pthread_mutex_lock(&g.stat_lock);
-       g.stat.state = HNC_LSM_FAILED;
-       snprintf(g.stat.fail_reason, sizeof(g.stat.fail_reason), "%s", tmp);
-       pthread_mutex_unlock(&g.stat_lock);
-   }
-   ```
+2. **hotspotd.c main**: 装 SIGSEGV/SIGBUS/SIGABRT handler,任何段错先 write
+   fault addr 到 stderr (= log file),再 raise default handler 让 tombstone
+   照常生成。以后调试不用再翻 /data/tombstones/。
 
 ## 装机
 ```sh
 cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_0_0-beta4-hotfix2.zip .
-unzip -o HNC-v5_0_0-beta4-hotfix2.zip
-rm HNC-v5_0_0-beta4-hotfix2.zip
-
-git diff --stat
+cp /sdcard/Download/HNC-v5_0_0-beta4-hotfix3.zip .
+unzip -o HNC-v5_0_0-beta4-hotfix3.zip
+rm HNC-v5_0_0-beta4-hotfix3.zip
 git add -A
-git commit -m "v5.0.0-beta.4 hotfix2: set_fail SEGV root cause fix
+git commit -m "v5.0.0-beta.4 hotfix3: parse_bpf_object use-after-unmap
 
-addr2line traced PC 0x168c4 to set_fail line 127 (mutex_lock + va_start).
-Two fixes:
-1. g.stat_lock uses PTHREAD_MUTEX_INITIALIZER (static init), no dynamic
-   init race during early failure paths.
-2. set_fail formats and prints FAIL message to stderr BEFORE acquiring
-   lock or writing shared state. Even if mutex/va_args path SEGVs,
-   underlying failure reason now reaches log.
+Root cause (credit: evaluation AI):
+  parse_bpf_object's final access to sh_btf->sh_size happens AFTER
+  munmap(elf), making sh_btf a dangling pointer into freed mmap region.
+  Tombstone fault addr 0x7d856105e8 = mmap_base + e_shoff +
+  7*sizeof(Shdr) + offsetof(sh_size), exact match.
 
-This unblocks LSM diagnosis: any future LSM init failure will print
-[lsm] FAIL: <real reason> before any potential SEGV."
+Fix: extract sh_size to local before munmap.
+
+Bonus: install SIGSEGV/SIGBUS/SIGABRT handler in main() to log fault
+address to stderr before tombstone, removing dependency on /data/tombstones/."
 git push
 
-# 等 CI → 装 → 重启 → 立刻看日志
-su -c "grep -iE 'lsm|sched|tier' /data/local/hnc/logs/hotspotd.log | tail -50"
+# 等 CI → 装 → 重启 → 应该看到完整 LSM init 走完
 ```
 
-## 期望日志(成功路径)
+## 期望日志(成功)
 ```
 [lsm] BPF LSM active in kernel
-[lsm] target limit_map id=N
+[lsm] target limit_map id=3
 [lsm] step3: create_ctrl_map
-[lsm] step3: ctrl_map fd=N
-[lsm] step3: ringbuf_map fd=N
+[lsm] step3: ctrl_map fd=10
+[lsm] step3: ringbuf_map fd=11
 [lsm] step4: parse_bpf_object
-[lsm] step4: parsed bpf.o: NN insns, NN relocs, btf=NNNN bytes
-[lsm] step5: using attach_btf_id=0
+[lsm] step4: parsed bpf.o: NN insns, NN relocs, btf=NNNN bytes   ← 之前没出现的!
+[lsm] step5: using attach_btf_id=0 (kernel auto-infer)
 [lsm] step6: BPF_BTF_LOAD
-[lsm] step6: prog_btf_fd=N
+[lsm] step6: prog_btf_fd=12
 [lsm] step7: BPF_PROG_LOAD
-[lsm] step7: LSM prog loaded, fd=N
-[lsm] step8: populate ctrl map
-[lsm] step9: mmap ringbuf
-[lsm] step9: mmap OK (cons=0x... prod=0x... data=0x...)
+... (期望 verifier OK 或 verifier log)
 [lsm] step10: attach LSM
 [lsm] step10: link_fd=N
 [lsm] step11: start ringbuf consumer thread
-[lsm] ACTIVE. protecting map_id=N ifindex=22 hotspotd_pid=N
+[lsm] ACTIVE. protecting map_id=3 ifindex=22 hotspotd_pid=N
 ```
 
-## 期望日志(失败路径,但不再 crash loop)
-```
-[lsm] step4: parse_bpf_object
-[lsm] FAIL: parse_bpf_object: <精确 errno>     ← 这条以前看不到
-[sched] BPF LSM guard FAILED, fallback to passive disable
-[sched] worker started ...
-... hotspotd 正常运行 ...
-```
+## 后续可能需要的事(evaluation AI 提到的 CO-RE)
+我们 BPF 程序用了 BPF_CORE_READ 读 task_struct/files_struct 字段,
+当前手撸 loader 只 BPF_BTF_LOAD 注入 .BTF, 没处理 .BTF.ext 的 CO-RE
+重定位。这意味着 BPF 程序里的字段偏移是编译时 hardcode 的,跟真机
+ColorOS 内核的实际偏移可能不一致 → verifier 拒绝 OR 静默读脏数据。
 
-如果还失败,日志里现在能看到具体 reason,告诉我下一步。
+如果 hotfix3 装上后 step7 BPF_PROG_LOAD verifier log 报字段越界 / 类型
+不匹配 / Invalid argument,需要进入下一阶段:引入 libbpf 静态链接
+(NDK cross-compile libbpf + libelf + zlib),靠 libbpf 处理 CO-RE。
+
+但 OPPO 用的 vmlinux.h 我们直接从真机 BTF dump 出来的,理论上字段
+偏移跟运行时一致。BPF_CORE_READ 在 .BTF.ext 里只生成 relocation 信息,
+verifier 看不到 .BTF.ext 时仍然按 hardcode 偏移走。**多半 OK**,但
+这是个隐患,先看 hotfix3 实际验证。
