@@ -29,9 +29,9 @@ if [ -z "$ANDROID_NDK" ] && [ -z "$CC" ]; then
 fi
 
 case "$ARCH" in
-    arm64)   TARGET=aarch64-linux-android;  API=21 ;;
-    arm)     TARGET=armv7a-linux-androideabi; API=21 ;;
-    x86_64)  TARGET=x86_64-linux-android;   API=21 ;;
+    arm64)   TARGET=aarch64-linux-android;  API=28 ;;
+    arm)     TARGET=armv7a-linux-androideabi; API=28 ;;
+    x86_64)  TARGET=x86_64-linux-android;   API=28 ;;
     *)       echo "Unknown arch: $ARCH"; exit 1 ;;
 esac
 

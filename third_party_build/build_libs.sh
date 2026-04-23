@@ -8,7 +8,7 @@ ARCH="${1:-arm64}"
 [ -z "$ANDROID_NDK" ] && { echo "ERROR: ANDROID_NDK env not set"; exit 1; }
 
 case "$ARCH" in
-    arm64) TARGET=aarch64-linux-android; API=21 ;;
+    arm64) TARGET=aarch64-linux-android; API=28 ;;
     *) echo "Only arm64 supported"; exit 1 ;;
 esac
 
