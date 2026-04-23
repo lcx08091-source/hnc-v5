@@ -143,20 +143,55 @@ get_or_assign_mid() {
 # 不 fail 调用 (tc/iptables 已应用回滚意义不大), 但 log WARN + 在 stdout
 # 追加 partial_json_fail 字段, Go 端能识别并提示用户重试收敛.
 JSON_FAILED=""
+JSET_BUF=""
+BATCH_HELPER="$HNC_DIR/bin/json_set_batch.sh"
+# rc5.1.1: buffer 模式. 不立即写, 等 flush 一次性 batch 写入.
+# 兼容原签名: js_set_dev <field> <value>
 js_set_dev() {
-    # 用法: js_set_dev <field> <value>
     local field=$1 val=$2
+    # 用 ASCII 0x1F 分隔 K 与 V, 0x1E 分隔 record
+    JSET_BUF="${JSET_BUF}${field}$(printf '\037')${val}$(printf '\036')"
+}
+
+# rc5.1.1: 一次写入所有缓冲字段. limit/clear 在最后调一次.
+js_set_dev_flush() {
+    [ -z "$JSET_BUF" ] && return 0
+    # 1. 把 buffer 切成 K V K V ... 给 batch helper
+    local args=""
+    local IFS_ORIG="$IFS"
+    local SEP_REC="$(printf '\036')"
+    local SEP_KV="$(printf '\037')"
+    local rec k v
+    # 用 while + IFS 拆分, 兼容 ash
+    local _buf="$JSET_BUF"
+    JSET_BUF=""
+    while [ -n "$_buf" ]; do
+        rec="${_buf%%${SEP_REC}*}"
+        _buf="${_buf#*${SEP_REC}}"
+        [ -z "$rec" ] && continue
+        k="${rec%%${SEP_KV}*}"
+        v="${rec#*${SEP_KV}}"
+        args="$args $k $v"
+    done
+    # 2. 调用 batch helper 一次写入
     local out rc
-    out=$(sh "$JSON_SET" device "$MAC" "$field" "$val" 2>&1)
+    # shellcheck disable=SC2086
+    out=$(sh "$BATCH_HELPER" device "$MAC" $args 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
-        log "WARN: json_set device $MAC $field=$val failed rc=$rc out=$out"
-        if [ -z "$JSON_FAILED" ]; then
-            JSON_FAILED="$field"
-        else
-            JSON_FAILED="$JSON_FAILED,$field"
-        fi
+        log "WARN: js_set_dev_flush failed rc=$rc args=$args out=$out"
+        # 把所有缓冲过的字段名都加进 JSON_FAILED
+        local kk
+        set -- $args
+        while [ $# -ge 2 ]; do
+            kk=$1; shift 2
+            if [ -z "$JSON_FAILED" ]; then JSON_FAILED="$kk"
+            else JSON_FAILED="$JSON_FAILED,$kk"
+            fi
+        done
+        return 1
     fi
+    return 0
 }
 
 # rc3.1.33 修 #19: get_or_assign_mid 在 gate_lock 保护下跑.
@@ -218,6 +253,7 @@ case "$CMD" in
         js_set_dev down_mbps "$DN_MBPS"
         js_set_dev up_mbps "$UP_MBPS"
         js_set_dev limit_enabled true
+        js_set_dev_flush
         if [ -n "$JSON_FAILED" ]; then
             log "limit applied (tc/iptables OK) but partial JSON write failed: $JSON_FAILED"
             echo "ok partial_json_fail=$JSON_FAILED"
@@ -250,6 +286,7 @@ case "$CMD" in
         js_set_dev down_mbps 0
         js_set_dev up_mbps 0
         js_set_dev limit_enabled false
+        js_set_dev_flush
         if [ -n "$JSON_FAILED" ]; then
             log "clear applied (tc/iptables OK) but partial JSON write failed: $JSON_FAILED"
             echo "ok partial_json_fail=$JSON_FAILED"
