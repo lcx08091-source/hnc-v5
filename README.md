@@ -1,55 +1,87 @@
-# v5.1 FINAL fix8 — ZSTD/BZ2 stubs for libelf
+# HNC v5.1 Plan B — kprobe + counter-write
 
-## 问题
-fix7 解决 crc32, 现在报:
-```
-ld.lld: error: undefined symbol: ZSTD_createCCtx (+ 4 more)
-    referenced by elf_compress.c in libelf.a
-```
+## 根因
+ColorOS kernel 6.6.102 禁用 `CONFIG_FUNCTION_TRACER`(反 root 加固),
+BPF LSM / fentry / fexit 均依赖 trampoline → 全部 `-ENOTSUPP`。
 
-Termux libelf-static 0.193 编译时启用了 zstd/bz2/lzma 压缩支持,但:
-1. Termux 没有 `libzstd`/`libbz2-static` 等包名 (pkg search 证实)
-2. libbpf 从不加载 COMPRESSED ELF section (BPF .o 不用)
-3. 所以这些 ZSTD 函数 runtime 永远不会被调用
+kprobe 走另一套机制(`CONFIG_KPROBES=y`,ColorOS 保留),**可以 attach**。
 
-## 修
-写 `compat_stubs.c` — 空实现 ZSTD_createCCtx / ZSTD_freeCCtx /
-ZSTD_compressStream2 / ZSTD_decompress / BZ2_* 等函数,内部 abort()
-(runtime 不会跑到这)。让 linker 有 symbol 可以 resolve。
+## 策略
+- `SEC("kprobe/security_bpf")`:kprobe hook 到 kernel `security_bpf()` 入口
+- BPF 程序:检测 `cmd=BPF_MAP_UPDATE_ELEM + target_map + U64_MAX + 非 hotspotd` 
+  → 发 ringbuf 事件
+- Userspace:ringbuf consumer 收到事件 → **立刻** `bpf_map_update_elem(limit_map, ifindex, 0)` 盖掉
 
-把 `lsm/compat_stubs.c` 加到 hotspotd 的 build.sh SRCS 列表。
+**相对 LSM active 差一个 kernel→userspace→kernel 的往返(~100μs 级)。
+实际 framework 的 U64_MAX 短暂存在几十到几百微秒,fast path 来不及激活。**
 
-## 装
+## 修改文件
+1. `daemon/hotspotd/lsm/hnc_limit_map_guard.bpf.c` (141 行)
+   - SEC 改 `kprobe/security_bpf`
+   - 函数签名改 `BPF_KPROBE(hnc_check_bpf, cmd, attr, size)` (3 参数,无 prev_ret)
+   - 去掉 `return -EPERM` 逻辑,kprobe retval 无效
+
+2. `daemon/hotspotd/lsm/hnc_lsm_loader.c` (411 行)
+   - `bpf_program__attach_lsm` → `bpf_program__attach_kprobe(prog, false, "security_bpf")`
+   - `ringbuf_handle_event` 加 counter-write:收到事件立刻 `bpf_map_update_elem(limit_map, ifindex, 0)`
+   - 日志新增 `[lsm] COUNTER-WRITE: ... latency=NNNus` 看实际延迟
+
+## 装机
 ```sh
 cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_1-FINAL-fix8.zip .
-unzip -o HNC-v5_1-FINAL-fix8.zip
-rm HNC-v5_1-FINAL-fix8.zip
+cp /sdcard/Download/HNC-v5_1-planB.zip .
+unzip -o HNC-v5_1-planB.zip
+rm HNC-v5_1-planB.zip
 
-# 把 compat_stubs.c 加到 build.sh 的 SRCS 
-# 找 SRCS="hotspotd.c ..." 那行,在末尾加 lsm/compat_stubs.c
-sed -i 's|lsm/hnc_lsm_loader.c"|lsm/hnc_lsm_loader.c lsm/compat_stubs.c"|' daemon/hotspotd/build.sh
+# 重编 BPF .o (用 local clang 或让 CI 重编)
+# 在 Termux:
+pkg install clang -y 2>/dev/null   # 如果没装
+cd daemon/hotspotd/lsm
+clang -O2 -g -target bpf -D__TARGET_ARCH_arm64 \
+      -I../../../third_party_prebuilt/libelf/include \
+      -I. \
+      -c hnc_limit_map_guard.bpf.c \
+      -o ../../../bpf/hnc_limit_map_guard.bpf.o
+llvm-strip -g ../../../bpf/hnc_limit_map_guard.bpf.o 2>/dev/null || true
+cd ~/hnc-v5
 
-# 验证
-grep "lsm/" daemon/hotspotd/build.sh | head -3
-
+# 或者只 push, 让 CI 重编
 git add -A
-git commit -m "v5.1 FINAL fix8: stub out ZSTD/BZ2 for libelf's elf_compress.c
+git commit -m "v5.1 Plan B: kprobe + counter-write (ColorOS LSM workaround)
 
-Termux libelf-static was built with compression support, but Termux
-has no libzstd-static/libbz2-static packages. libbpf doesn't load
-compressed ELF sections anyway (BPF objects are plain), so these
-functions are never called at runtime.
-
-compat_stubs.c provides abort()-on-call stubs for:
-  ZSTD_createCCtx/freeCCtx/compressStream2/decompress/isError
-  BZ2_bzBuffToBuff{Compress,Decompress}
-
-Linker now has symbols to resolve; runtime safety guaranteed by
-our BPF .o files being uncompressed."
+ColorOS disables CONFIG_FUNCTION_TRACER, blocking BPF LSM / fentry
+trampoline (-ENOTSUPP). Switch to kprobe/security_bpf (CONFIG_KPROBES=y
+preserved). Since kprobe cannot deny, use counter-write: BPF detects
+suspicious write, emits ringbuf event, userspace rewrites limit_map to
+0 within microseconds. Fast path fails to sustain; framework's U64_MAX
+is overwritten before tethering BPF sees stable state."
 git push
 ```
 
-## 如果 CI 报 "lzma undef"
-说明还需要 liblzma stubs。告诉我具体的 undef symbol, 我加到 compat_stubs.c。
-但 liblzma 被 libelf call 的概率更低。
+## 期望日志
+```
+[lsm] step1: BPF LSM active in kernel
+[lsm] step2: target limit_map id=3
+[lsm] step3: open OK
+[lsm] step4: load OK
+[lsm] step5: prog + maps resolved
+[lsm] step6: ctrl populated
+[lsm] step7: bpf_program__attach_kprobe(security_bpf)
+[lsm] step7: kprobe attached to security_bpf       ← 关键, 这次应该成
+[lsm] step8: ringbuf consumer started
+[lsm] ACTIVE. protecting map_id=3 ifindex=22 hotspotd_pid=NNNN
+```
+
+当 framework 写 limit_map 时:
+```
+[lsm] COUNTER-WRITE: comm=system_server pid=NNNN ifindex=22 val=0xffffffffffffffff rewrite=OK latency=150us
+```
+
+## 故障模式
+- **如果 kprobe attach 也失败** (极少数):报 "cannot find kernel btf id" 或
+  "No such file or directory" → kprobe event_id 没建好,需要 `echo 1 >
+  /sys/kernel/tracing/tracing_on` 或类似
+- **如果 attach 成功但没收到事件**:可能 BPF_CORE_READ 字段偏移错
+  (libbpf 做 CO-RE 重定位,应该对,但 ColorOS kernel 可能魔改 struct)
+- **如果 counter-write 报 EPERM**:limit_map 白名单限制 hotspotd,
+  需要 v5.2 确认

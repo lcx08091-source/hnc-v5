@@ -137,11 +137,27 @@ static int ringbuf_handle_event(void *ctx, void *data, size_t len)
     snprintf(g.stat.last_caller_comm, sizeof(g.stat.last_caller_comm), "%s", ev->comm);
     pthread_mutex_unlock(&g.stat_lock);
 
-    if (ev->verdict) {
+    /* v5.1 Plan B: counter-write 策略 — kprobe 只观察, 不能 deny,
+     * 这里收到可疑 write 事件 → 立刻写 limit_map[ifindex]=0 盖掉
+     * framework 刚写的 U64_MAX, 切断 fast path */
+    if (ev->verdict && g.target_limit_map_fd >= 0) {
+        uint32_t key = ev->ifindex;
+        uint64_t zero = 0;
+        int rc = bpf_map_update_elem(g.target_limit_map_fd, &key, &zero, BPF_ANY);
+        uint64_t now_ns;
+        {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+        }
+        uint64_t latency_us = (now_ns - ev->ts_ns) / 1000;
         fprintf(stderr,
-                "[lsm] DENY: comm=%s pid=%u uid=%u ifindex=%u val=0x%llx\n",
-                ev->comm, ev->caller_pid, ev->caller_uid,
-                ev->ifindex, (unsigned long long)ev->attempted_value);
+                "[lsm] COUNTER-WRITE: comm=%s pid=%u ifindex=%u val=0x%llx "
+                "rewrite=%s latency=%lluus\n",
+                ev->comm, ev->caller_pid, ev->ifindex,
+                (unsigned long long)ev->attempted_value,
+                rc == 0 ? "OK" : strerror(errno),
+                (unsigned long long)latency_us);
     }
     return 0;
 }
@@ -271,17 +287,24 @@ int hnc_lsm_init(const char *bpf_object_path,
         fprintf(stderr, "[lsm] step6: ctrl populated\n"); fflush(stderr);
     }
 
-    /* ─── Step 7: attach LSM ─────────────────────────────── */
-    fprintf(stderr, "[lsm] step7: bpf_program__attach_lsm\n"); fflush(stderr);
-    g.link = bpf_program__attach_lsm(g.prog);
+    /* ─── Step 7: attach kprobe to security_bpf ───────────────
+     * v5.1 Plan B: ColorOS kernel 禁用 CONFIG_FUNCTION_TRACER,
+     * BPF LSM / fentry attach 全部 -ENOTSUPP。改用 kprobe
+     * (CONFIG_KPROBES=y,ColorOS 保留)。kprobe 只观察,
+     * userspace 通过 ringbuf 收到事件后毫秒级 counter-write。 */
+    fprintf(stderr, "[lsm] step7: bpf_program__attach_kprobe(security_bpf)\n");
+    fflush(stderr);
+    g.link = bpf_program__attach_kprobe(g.prog, false /* retprobe=false */,
+                                         "security_bpf");
     if (!g.link || libbpf_get_error(g.link)) {
         long err = libbpf_get_error(g.link);
-        set_fail("attach_lsm: %s", strerror(-err));
+        set_fail("attach_kprobe: %s", strerror(-err));
         g.link = NULL;
         bpf_object__close(g.obj); g.obj = NULL;
         return -1;
     }
-    fprintf(stderr, "[lsm] step7: LSM attached\n"); fflush(stderr);
+    fprintf(stderr, "[lsm] step7: kprobe attached to security_bpf\n");
+    fflush(stderr);
 
     /* ─── Step 8: 启 ringbuf consumer 线程 ──────────────── */
     g.rb = ring_buffer__new(g.events_map_fd, ringbuf_handle_event, NULL, NULL);

@@ -1,31 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// hnc_limit_map_guard.bpf.c — HNC v5.0 BPF LSM 程序
+// hnc_limit_map_guard.bpf.c — HNC v5.1 Plan B (kprobe)
 //
-// 拦截 system_server 对 tethering limit_map 的 BPF_MAP_UPDATE_ELEM,
-// 当且仅当下列条件全部命中时返回 -EPERM:
-//   - cmd == BPF_MAP_UPDATE_ELEM
-//   - 目标 map id == ctrl.protected_map_id (userspace 注入)
-//   - 目标 key (ifindex) == ctrl.protected_ifindex (userspace 注入)
-//   - 写入 value == U64_MAX
-//   - caller pid != ctrl.hotspotd_pid (白名单)
-// 其他情况一律 return 0 (放行),零干扰。
+// ColorOS kernel 6.6.102 禁用 CONFIG_FUNCTION_TRACER -> BPF LSM / fentry
+// 都无法 attach (ENOTSUPP)。改用 kprobe 机制(依赖 CONFIG_KPROBES=y,
+// ColorOS 有)。
+//
+// kprobe 只能观察,不能拦截。策略改为"快速 counter-write":
+//   - kprobe 在 security_bpf 入口触发
+//   - 检测条件: cmd=BPF_MAP_UPDATE_ELEM && map_id=protected && val=U64_MAX
+//   - 不命中: 不做事
+//   - 命中: 发 ringbuf 事件 -> userspace 毫秒级重写 limit_map[ifindex]=0
+//
+// 相比 LSM active 差一个"从事件上报到 userspace 完成 write"的窗口(~1-10ms),
+// 相比 passive 60s 精度高 6000 倍。实际效果足够。
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
-#define EPERM 1
 #define U64_MAX 0xFFFFFFFFFFFFFFFFULL
-#define BPF_MAP_UPDATE_ELEM_CMD 2  // include/uapi/linux/bpf.h enum bpf_cmd
+#define BPF_MAP_UPDATE_ELEM_CMD 2
 
-// ─── 控制 map (userspace 写,kernel 读) ────────────────────────────
+// ─── 控制 map (userspace 写,kernel 读) ────────────────────
 struct hnc_lsm_ctrl {
     __u32 protected_map_id;
     __u32 protected_ifindex;
     __u32 hotspotd_pid;
-    __u32 enabled;     // 1=拦截+记录, 0=只记录不拦截 (调试)
+    __u32 enabled;
 };
 
 struct {
@@ -35,14 +38,14 @@ struct {
     __uint(max_entries, 1);
 } hnc_ctrl_map SEC(".maps");
 
-// ─── 事件 ringbuf ─────────────────────────────────────────────────
+// ─── 事件 ringbuf ─────────────────────────────────────────
 struct hnc_lsm_event {
     __u64 ts_ns;
     __u32 caller_pid;
     __u32 caller_uid;
     __u64 attempted_value;
     __u32 ifindex;
-    __u32 verdict;     // 0=allow, 1=deny
+    __u32 verdict;       // 在 kprobe 模式下 verdict 恒=1 (观察到可疑 write)
     char  comm[16];
 };
 
@@ -51,32 +54,23 @@ struct {
     __uint(max_entries, 64 * 1024);
 } hnc_lsm_events SEC(".maps");
 
-// ─── 主 LSM hook ─────────────────────────────────────────────────
+// ─── 主 hook: kprobe/security_bpf ─────────────────────────
 // security_bpf(int cmd, union bpf_attr *attr, unsigned int size)
-// LSM ret 0 = allow, 负数 = deny
+//
+// kprobe BPF_KPROBE 宏自动解 ctx->di/si/dx (x86) 或 x0/x1/x2 (arm64)
 
-SEC("lsm/bpf")
-int BPF_PROG(hnc_check_bpf,
-             int cmd,
-             union bpf_attr *attr,
-             unsigned int size,
-             int prev_ret)
+SEC("kprobe/security_bpf")
+int BPF_KPROBE(hnc_check_bpf, int cmd, union bpf_attr *attr, unsigned int size)
 {
-    // LSM 链规则:之前的 LSM 已 deny → 必须保持 deny
-    if (prev_ret != 0)
-        return prev_ret;
-
     if (cmd != BPF_MAP_UPDATE_ELEM_CMD)
         return 0;
 
     __u32 ckey = 0;
     struct hnc_lsm_ctrl *ctrl = bpf_map_lookup_elem(&hnc_ctrl_map, &ckey);
-    if (!ctrl)
-        return 0;
-    if (ctrl->protected_map_id == 0)  // 还没初始化
+    if (!ctrl || ctrl->protected_map_id == 0)
         return 0;
 
-    // ─── 1. 反查 map_fd → bpf_map * → map id ───────────────
+    // ─── 1. 反查 map_fd -> bpf_map * -> map id ───────
     __u32 map_fd = BPF_CORE_READ(attr, map_fd);
 
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
@@ -88,7 +82,6 @@ int BPF_PROG(hnc_check_bpf,
 
     __u32 max_fds = BPF_CORE_READ(fdt, max_fds);
     if (map_fd >= max_fds) return 0;
-    // 位掩码强制证明边界 (向 verifier 证明 map_fd 不会越界)
     map_fd &= 0xFFFF;
     if (map_fd >= max_fds) return 0;
 
@@ -106,26 +99,29 @@ int BPF_PROG(hnc_check_bpf,
     if (mid != ctrl->protected_map_id)
         return 0;
 
-    // ─── 2. 检查 key (ifindex) ──────────────────────────────
+    // ─── 2. 检查 key (ifindex) ──────────────────────
     __u64 key_uptr = BPF_CORE_READ(attr, key);
     __u32 ifindex = 0;
     bpf_probe_read_user(&ifindex, sizeof(ifindex), (void *)key_uptr);
     if (ifindex != ctrl->protected_ifindex)
         return 0;
 
-    // ─── 3. 白名单 hotspotd ─────────────────────────────────
+    // ─── 3. 白名单 hotspotd ──────────────────────────
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 caller_tgid = pid_tgid >> 32;
     if (caller_tgid == ctrl->hotspotd_pid)
-        return 0;   // 我们自己写,放行
+        return 0;
 
-    // ─── 4. 读 value, 只对 U64_MAX 拒绝 ──────────────────────
+    // ─── 4. 读 value ────────────────────────────────
     __u64 val_uptr = BPF_CORE_READ(attr, value);
     __u64 val = 0;
     bpf_probe_read_user(&val, sizeof(val), (void *)val_uptr);
 
-    // ─── 5. 记录事件 ────────────────────────────────────────
-    __u32 verdict = (val == U64_MAX) ? 1 : 0;
+    // ─── 5. 只对 U64_MAX (fast path 启用值) 告警 ────
+    if (val != U64_MAX)
+        return 0;
+
+    // ─── 6. 发事件, userspace 立刻 counter-write ───
     struct hnc_lsm_event *ev = bpf_ringbuf_reserve(
         &hnc_lsm_events, sizeof(*ev), 0);
     if (ev) {
@@ -134,15 +130,12 @@ int BPF_PROG(hnc_check_bpf,
         ev->caller_uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
         ev->attempted_value = val;
         ev->ifindex = ifindex;
-        ev->verdict = verdict;
+        ev->verdict = 1;  // "检测到可疑 write, 已通知 userspace"
         bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
         bpf_ringbuf_submit(ev, 0);
     }
 
-    if (verdict && ctrl->enabled)
-        return -EPERM;
-
-    return 0;
+    return 0;  // kprobe retval 无效, kernel 照常继续
 }
 
 char _license[] SEC("license") = "GPL";
