@@ -1,9 +1,3 @@
 [submodule "third_party/libbpf"]
-	path = third_party/libbpf
-	url = https://github.com/libbpf/libbpf.git
-[submodule "third_party/libelf"]
-	path = third_party/libelf
-	url = https://github.com/chimera-linux/elftoolchain.git
-[submodule "third_party/zlib"]
-	path = third_party/zlib
-	url = https://github.com/madler/zlib.git
+path = third_party/libbpf
+url = https://github.com/libbpf/libbpf.git
