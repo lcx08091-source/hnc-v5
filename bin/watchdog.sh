@@ -581,6 +581,39 @@ PROBE_INTERVAL_ACTIVE=60
 log "bootstrap: ensure httpd before loop entry"
 ensure_httpd_running 2>/dev/null || log "bootstrap: ensure_httpd_running failed (will retry in loop)"
 
+# ─── v5.1 RC1 主动 uplink health check ─────────────────────────
+# 每 60s 轮询一次, 不触发 full_restore, 直接 inline 修复
+ensure_tc_uplink_healthy() {
+    local iface="${IFACE:-wlan2}"
+    # 1. ifb0 root 必须是 htb
+    local _ifb_root
+    _ifb_root=$(tc qdisc show dev ifb0 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+    if [ "$_ifb_root" != "htb" ]; then
+        log "ensure_tc_uplink: ifb0 root='$_ifb_root' repairing"
+        ip link set dev ifb0 up 2>/dev/null || true
+        tc qdisc del dev ifb0 root 2>/dev/null || true
+        tc qdisc add dev ifb0 root handle 1: htb default 9999 r2q 10 2>/dev/null
+        tc class add dev ifb0 parent 1:  classid 1:1    htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null
+        tc class add dev ifb0 parent 1:1 classid 1:9999 htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null
+        tc qdisc add dev ifb0 parent 1:9999 handle 9999: fq_codel 2>/dev/null \
+            || tc qdisc add dev ifb0 parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
+        log "ensure_tc_uplink: ifb0 htb rebuilt"
+    fi
+    # 2. wlan2 ingress pref 1 matchall mirred 必须在
+    if ! tc filter show dev "$iface" ingress 2>/dev/null | grep -q "pref 1.*matchall"; then
+        log "ensure_tc_uplink: $iface ingress pref 1 missing, reinstalling"
+        tc qdisc show dev "$iface" 2>/dev/null | grep -qE "clsact ffff:|ingress " \
+            || tc qdisc add dev "$iface" clsact 2>/dev/null
+        tc filter del dev "$iface" ingress pref 1 2>/dev/null
+        if tc filter add dev "$iface" ingress prio 1 protocol all matchall \
+               action mirred egress redirect dev ifb0 2>/dev/null; then
+            log "ensure_tc_uplink: $iface pref 1 mirred reinstalled"
+        else
+            log_error "ensure_tc_uplink: $iface pref 1 mirred reinstall FAILED"
+        fi
+    fi
+}
+
 while true; do
     # 读当前状态(每轮读,因为 do_full_init / do_migrate 会改文件)
     STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "PENDING")
@@ -742,6 +775,9 @@ while true; do
 
         # httpd 保活(拉起新进程)
         ensure_httpd_running
+
+        # v5.1 RC1: 主动 uplink 健康检查
+        ensure_tc_uplink_healthy
         ;;
     esac
 
