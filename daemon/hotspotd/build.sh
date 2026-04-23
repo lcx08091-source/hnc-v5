@@ -75,6 +75,7 @@ $CC \
     -I"$LIBS_OUT/include" \
     -o "$OUT" \
     $SRCS \
+    -Wl,--allow-multiple-definition \
     "$LIBS_OUT/lib/libbpf.a" \
     "$LIBS_OUT/lib/libelf.a" \
     "$LIBS_OUT/lib/libz.a"
