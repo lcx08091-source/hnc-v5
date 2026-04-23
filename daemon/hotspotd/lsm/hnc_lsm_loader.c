@@ -162,99 +162,21 @@ static int probe_bpf_lsm_active(void)
  *
  * 当前实现: 让用户态自己读 vmlinux BTF 找 id. */
 
-/* 读 BTF blob, 在 type table 里找 FUNC 名为 target_name 的 type id */
-static int find_btf_id_by_name(const char *btf_path, const char *target_name)
-{
-    int fd = open(btf_path, O_RDONLY);
-    if (fd < 0) return -errno;
-    struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return -errno; }
-    void *data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (data == MAP_FAILED) return -errno;
+/* ── BTF lookup ────────────────────────────────────────────
+ *
+ * 历史方案: 自己解析 /sys/kernel/btf/vmlinux 找 security hook 的
+ * BTF id, 但手撸 BTF parser 易越界 (vmlinux ~6MB, 千万 type entry,
+ * 任何 kind padding 算错都会让后续 name_off 飞天导致 strcmp segfault).
+ *
+ * 当前方案: Linux 5.11+ 起, BPF_PROG_LOAD with attach_btf_id=0 +
+ * expected_attach_type=BPF_LSM_MAC + 正确 prog_btf_fd, kernel 会读
+ * prog 自己的 BTF 找 BTF_KIND_DECL_TAG 标记的 hook 名 ("lsm/bpf"),
+ * 自动解析为 vmlinux 里的 security_bpf BTF id.
+ *
+ * 我们的 .bpf.c 里 SEC("lsm/bpf") 配合 clang 自动生成的 DECL_TAG,
+ * 已经满足这个要求, 不需用户态干预.
+ */
 
-    /* BTF header (struct btf_header from include/uapi/linux/btf.h) */
-    struct btf_header {
-        uint16_t magic;
-        uint8_t  version;
-        uint8_t  flags;
-        uint32_t hdr_len;
-        uint32_t type_off;
-        uint32_t type_len;
-        uint32_t str_off;
-        uint32_t str_len;
-    } __attribute__((packed));
-
-    struct btf_header *hdr = (struct btf_header *)data;
-    if (hdr->magic != 0xeB9F) {
-        munmap(data, st.st_size);
-        return -EINVAL;
-    }
-
-    const char *strtab = (const char *)data + hdr->hdr_len + hdr->str_off;
-    const char *types  = (const char *)data + hdr->hdr_len + hdr->type_off;
-    const char *types_end = types + hdr->type_len;
-
-    /* 遍历 BTF types
-     * struct btf_type { uint32_t name_off; uint32_t info; uint32_t size_or_type; }
-     * info 高 16 bits 是 vlen, 低 16 bits 后续解读, bit 31 = kind_flag
-     * info 中 bits 24-28 = kind (FUNC=12, FUNC_PROTO=13, ...) */
-
-    struct btf_type {
-        uint32_t name_off;
-        uint32_t info;
-        uint32_t size_or_type;
-    };
-
-    int id = 1;   /* type id 从 1 开始 */
-    const struct btf_type *t = (const struct btf_type *)types;
-    int found_id = -1;
-
-    while ((const char *)t < types_end) {
-        uint32_t info = t->info;
-        unsigned vlen = info & 0xFFFF;
-        unsigned kind = (info >> 24) & 0x1F;
-        const char *name = strtab + t->name_off;
-
-        if (kind == 12 /* BTF_KIND_FUNC */ && strcmp(name, target_name) == 0) {
-            found_id = id;
-            break;
-        }
-
-        /* size 跨度按 kind 决定 */
-        size_t adv = sizeof(struct btf_type);
-        switch (kind) {
-        case 1: /* INT */          adv += 4; break;
-        case 2: /* PTR */          break;
-        case 3: /* ARRAY */        adv += 12; break;
-        case 4: /* STRUCT */
-        case 5: /* UNION */        adv += vlen * 12; break;
-        case 6: /* ENUM */         adv += vlen * 8; break;
-        case 7: /* FWD */          break;
-        case 8: /* TYPEDEF */      break;
-        case 9: /* VOLATILE */     break;
-        case 10:/* CONST */        break;
-        case 11:/* RESTRICT */     break;
-        case 12:/* FUNC */         break;
-        case 13:/* FUNC_PROTO */   adv += vlen * 8; break;
-        case 14:/* VAR */          adv += 4; break;
-        case 15:/* DATASEC */      adv += vlen * 12; break;
-        case 16:/* FLOAT */        break;
-        case 17:/* DECL_TAG */     adv += 4; break;
-        case 18:/* TYPE_TAG */     break;
-        case 19:/* ENUM64 */       adv += vlen * 12; break;
-        default:
-            /* 未知 kind, 直接放弃 */
-            munmap(data, st.st_size);
-            return found_id > 0 ? found_id : -EPROTO;
-        }
-        t = (const struct btf_type *)((const char *)t + adv);
-        id++;
-    }
-
-    munmap(data, st.st_size);
-    return found_id > 0 ? found_id : -ENOENT;
-}
 
 /* ══════════════════════════════════════════════════════════
  * BPF object 加载
@@ -616,21 +538,27 @@ int hnc_lsm_init(const char *bpf_object_path,
         g.stat.protected_ifindex = initial_ifindex;
         pthread_mutex_unlock(&g.stat_lock);
         fprintf(stderr, "[lsm] target limit_map id=%u\n", info.id);
+        fflush(stderr);
     }
 
     /* ─── Step 3: 创建我们的 maps ─────────────────────────── */
+    fprintf(stderr, "[lsm] step3: create_ctrl_map\n"); fflush(stderr);
     g.fd_ctrl_map = create_ctrl_map();
     if (g.fd_ctrl_map < 0) {
         set_fail("create_ctrl_map: %s", strerror(errno));
         return -1;
     }
+    fprintf(stderr, "[lsm] step3: ctrl_map fd=%d\n", g.fd_ctrl_map); fflush(stderr);
+
     g.fd_ringbuf_map = create_ringbuf_map(64 * 1024);
     if (g.fd_ringbuf_map < 0) {
         set_fail("create_ringbuf_map: %s", strerror(errno));
         return -1;
     }
+    fprintf(stderr, "[lsm] step3: ringbuf_map fd=%d\n", g.fd_ringbuf_map); fflush(stderr);
 
     /* ─── Step 4: 解析 .bpf.o ─────────────────────────────── */
+    fprintf(stderr, "[lsm] step4: parse_bpf_object\n"); fflush(stderr);
     struct bpf_insn *insns = NULL;
     uint32_t ninsn = 0;
     void *btf_data = NULL;
@@ -647,44 +575,31 @@ int hnc_lsm_init(const char *bpf_object_path,
         set_fail("parse_bpf_object(%s): %s", bpf_object_path, strerror(-rc));
         return -1;
     }
-    fprintf(stderr, "[lsm] parsed bpf.o: %u insns, %u relocs, btf=%u bytes\n",
+    fprintf(stderr, "[lsm] step4: parsed bpf.o: %u insns, %u relocs, btf=%u bytes\n",
             ninsn, nrelocs, btf_size);
+    fflush(stderr);
 
     /* fixup map fds */
     int map_fds[2] = { g.fd_ctrl_map, g.fd_ringbuf_map };
     fixup_map_fds(insns, ninsn, relocs, nrelocs, map_fds);
 
-    /* ─── Step 5: 找 vmlinux BTF 里 security_bpf 的 BTF id ─── */
-    int sec_bpf_btf_id = find_btf_id_by_name("/sys/kernel/btf/vmlinux",
-                                              "bpf");  /* LSM hook 名,
-                                              对应 security_bpf, 但 BPF 程序
-                                              实际找的是 hook 函数名 'bpf' */
-    /* AOSP / mainline 5.11+ 的 LSM hook BTF 命名: 函数名就是 hook 名,
-     * 例如 lsm/file_mprotect 对应 BTF FUNC name="file_mprotect",
-     * lsm/bpf 对应 BTF FUNC name="bpf".
-     * 真机上如果失败, 改为 "security_bpf" 重试 (传统 hook 名)。 */
-    if (sec_bpf_btf_id < 0) {
-        sec_bpf_btf_id = find_btf_id_by_name("/sys/kernel/btf/vmlinux",
-                                              "bpf_lsm_bpf");
-    }
-    if (sec_bpf_btf_id < 0) {
-        /* 实测 ColorOS 16 上正确名字可能是 "bpf_lsm_bpf" 或其他, 让 kernel
-         * 自己用 SEC name 推断: attach_btf_id=0, kernel 5.12+ 支持 */
-        fprintf(stderr, "[lsm] BTF id lookup failed, trying attach_btf_id=0 (kernel autoinfer)\n");
-        sec_bpf_btf_id = 0;
-    } else {
-        fprintf(stderr, "[lsm] security_bpf BTF id = %d\n", sec_bpf_btf_id);
-    }
+    /* ─── Step 5: attach_btf_id 由 kernel 自动推断 (Linux 5.11+) ─── */
+    int sec_bpf_btf_id = 0;
+    fprintf(stderr, "[lsm] step5: using attach_btf_id=0 (kernel auto-infer)\n");
+    fflush(stderr);
 
     /* ─── Step 6: BPF_BTF_LOAD prog btf ────────────────────── */
+    fprintf(stderr, "[lsm] step6: BPF_BTF_LOAD\n"); fflush(stderr);
     int prog_btf_fd = load_btf(btf_data, btf_size);
     if (prog_btf_fd < 0) {
         set_fail("BPF_BTF_LOAD: %s", strerror(errno));
         free(insns); free(btf_data); free(relocs);
         return -1;
     }
+    fprintf(stderr, "[lsm] step6: prog_btf_fd=%d\n", prog_btf_fd); fflush(stderr);
 
     /* ─── Step 7: BPF_PROG_LOAD ────────────────────────────── */
+    fprintf(stderr, "[lsm] step7: BPF_PROG_LOAD\n"); fflush(stderr);
     static char log_buf[64 * 1024];
     log_buf[0] = 0;
     int prog_fd = load_lsm_prog(insns, ninsn, prog_btf_fd, sec_bpf_btf_id,
@@ -700,9 +615,11 @@ int hnc_lsm_init(const char *bpf_object_path,
         return -1;
     }
     g.fd_lsm_prog = prog_fd;
-    fprintf(stderr, "[lsm] LSM prog loaded, fd=%d\n", prog_fd);
+    fprintf(stderr, "[lsm] step7: LSM prog loaded, fd=%d\n", prog_fd);
+    fflush(stderr);
 
     /* ─── Step 8: populate ctrl map ────────────────────────── */
+    fprintf(stderr, "[lsm] step8: populate ctrl map\n"); fflush(stderr);
     {
         struct hnc_lsm_ctrl_v v = {
             .protected_map_id  = g.stat.protected_map_id,
@@ -724,6 +641,7 @@ int hnc_lsm_init(const char *bpf_object_path,
     }
 
     /* ─── Step 9: mmap ringbuf 数据区 ─────────────────────── */
+    fprintf(stderr, "[lsm] step9: mmap ringbuf\n"); fflush(stderr);
     long page = sysconf(_SC_PAGESIZE);
     g.rb_data_size = 64 * 1024;
     g.rb_consumer_pos_page = mmap(NULL, page, PROT_READ | PROT_WRITE,
@@ -738,16 +656,22 @@ int hnc_lsm_init(const char *bpf_object_path,
         set_fail("ringbuf mmap: %s", strerror(errno));
         return -1;
     }
+    fprintf(stderr, "[lsm] step9: mmap OK (cons=%p prod=%p data=%p)\n",
+            g.rb_consumer_pos_page, g.rb_producer_pos_page, g.rb_data);
+    fflush(stderr);
 
     /* ─── Step 10: attach LSM ─────────────────────────────── */
+    fprintf(stderr, "[lsm] step10: attach LSM\n"); fflush(stderr);
     int link_fd = attach_lsm(prog_fd);
     if (link_fd < 0) {
         set_fail("attach_lsm: %s", strerror(errno));
         return -1;
     }
     g.fd_lsm_link = link_fd;
+    fprintf(stderr, "[lsm] step10: link_fd=%d\n", link_fd); fflush(stderr);
 
     /* ─── Step 11: 启 ringbuf consumer 线程 ────────────────── */
+    fprintf(stderr, "[lsm] step11: start ringbuf consumer thread\n"); fflush(stderr);
     g.rb_should_stop = 0;
     if (pthread_create(&g.rb_thread, NULL, ringbuf_thread, NULL) != 0) {
         fprintf(stderr, "[lsm] WARN: ringbuf thread start failed\n");
@@ -763,6 +687,7 @@ int hnc_lsm_init(const char *bpf_object_path,
     g.initialized = 1;
     fprintf(stderr, "[lsm] ACTIVE. protecting map_id=%u ifindex=%u, hotspotd_pid=%u\n",
             g.stat.protected_map_id, initial_ifindex, (uint32_t)getpid());
+    fflush(stderr);
     return 0;
 }
 
