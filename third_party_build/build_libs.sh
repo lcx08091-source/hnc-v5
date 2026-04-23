@@ -78,7 +78,7 @@ if [ ! -f "$OUT/lib/libbpf.a" ]; then
     FAILED=0
     for src in *.c; do
         case "$src" in
-            linker.c|gen_loader.c) echo "  SKIP $src"; continue ;;
+            linker.c) echo "  SKIP $src"; continue ;;
         esac
         echo "  CC libbpf/$src"
         if ! "$CC" $LIBBPF_CFLAGS -c "$src" -o "$LIBBPF_OBJ_DIR/${src%.c}.o"; then
