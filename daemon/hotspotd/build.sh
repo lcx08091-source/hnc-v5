@@ -16,7 +16,7 @@ ARCH=${1:-arm64}
 SRCS="hotspotd.c hnc_helpers.c hostname_cache.c oui_override.c mdns_worker.c \
       platform.c scheduler.c upstream.c \
       offload/adapter.c offload/adapter_null.c offload/adapter_bpf.c \
-      lsm/hnc_lsm_loader.c"
+      lsm/hnc_lsm_loader.c lsm/compat_stubs.c"
 OUTDIR=prebuilt/${ARCH}
 OUT=${OUTDIR}/hotspotd
 
