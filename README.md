@@ -1,52 +1,78 @@
-# HNC v5.0.0-beta.4 hotfix1: BTF parser SEGV fix
+# HNC v5.0.0-beta.4 hotfix2: set_fail SEGV 真因修复
 
 ## 问题
-beta.4 装机后 hotspotd 静默崩溃,tombstone 显示
-`SIGSEGV SEGV_MAPERR fault addr 0x787...5e8`,崩在 `[lsm] target limit_map id=3` 之后。
+hotfix1 后 hotspotd 仍 SIGSEGV crash loop, tombstone 显示崩在
+`/data/local/hnc/bin/hotspotd pc 0x168c4`,日志只到 `[lsm] step4: parse_bpf_object`
+后停止,没有 step4 完成或 FAIL 输出。
 
-## 根因
-`find_btf_id_by_name()` 自己解析 vmlinux BTF (3.3 MB) 找 `security_bpf` hook id,
-但手撸的 BTF parser 对 type kind padding 计算错误,导致 `name_off` 越界,
-`strcmp(strtab + name_off, target)` 读到未映射地址,SEGV。
+## 根因(基于 addr2line 反查证据)
+`addr2line -e hotspotd 0x168c4` 解析为 **`set_fail` 函数 line 127**
+(`g.stat.state = HNC_LSM_FAILED` 那行,`pthread_mutex_lock` 之后)。
+fault addr `0x...5e8` 在 `[anon:thread signal stack]`,正是 ARM64
+va_list register save area 区域。
+
+调用链:
+1. `parse_bpf_object` 在某 syscall 失败(可能 mmap/open errno=ENOENT)
+2. 返回 -errno → init 调 `set_fail("parse_bpf_object: %s", strerror(...))`
+3. `set_fail` 内 `pthread_mutex_lock(&g.stat_lock)` + `va_start(ap, fmt)` 段错
+
+之前以为崩在 `parse_bpf_object` 内,实际是它 graceful 返回后 set_fail 段错,
+真正的失败原因被吞了。
 
 ## 修复
-完全删除 `find_btf_id_by_name`,改用 Linux 5.11+ 的标准做法:
-- BPF_PROG_LOAD 时传 `attach_btf_id=0`
-- kernel 读 prog 自己 BTF 里 clang 生成的 `BTF_KIND_DECL_TAG("lsm/bpf")`
-- kernel 自动解析为 vmlinux 里 `security_bpf` 的 BTF id
+两处:
 
-不需要 user-space BTF 解析,代码 -90 行,SEGV 风险消除。
+1. **`g.stat_lock` 改用 `PTHREAD_MUTEX_INITIALIZER` 静态初始化**
+   - 删除 hnc_lsm_init 里的 `pthread_mutex_init(&g.stat_lock, NULL)`
+   - 排除任何 dynamic init 顺序问题
 
-同时给 init 每个 step 加了 `fprintf(stderr) + fflush()`,失败时能精确
-定位到崩在哪个 step。
+2. **`set_fail` 重写 — fprintf 优先**
+   ```c
+   static void set_fail(const char *fmt, ...) {
+       char tmp[128];
+       va_list ap;
+       va_start(ap, fmt);
+       vsnprintf(tmp, sizeof(tmp), fmt, ap);
+       va_end(ap);
+       /* 关键:先打日志,即便 mutex 段错也能看到原因 */
+       fprintf(stderr, "[lsm] FAIL: %s\n", tmp);
+       fflush(stderr);
+       /* 然后再写共享状态 */
+       pthread_mutex_lock(&g.stat_lock);
+       g.stat.state = HNC_LSM_FAILED;
+       snprintf(g.stat.fail_reason, sizeof(g.stat.fail_reason), "%s", tmp);
+       pthread_mutex_unlock(&g.stat_lock);
+   }
+   ```
 
 ## 装机
 ```sh
-# Termux
 cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_0_0-beta4-hotfix1.zip .
-unzip -o HNC-v5_0_0-beta4-hotfix1.zip
-rm HNC-v5_0_0-beta4-hotfix1.zip
+cp /sdcard/Download/HNC-v5_0_0-beta4-hotfix2.zip .
+unzip -o HNC-v5_0_0-beta4-hotfix2.zip
+rm HNC-v5_0_0-beta4-hotfix2.zip
 
+git diff --stat
 git add -A
-git commit -m "v5.0.0-beta.4 hotfix1: BTF parser SEGV fix
+git commit -m "v5.0.0-beta.4 hotfix2: set_fail SEGV root cause fix
 
-Removed in-process BTF parser (find_btf_id_by_name) which had
-incorrect type kind padding calculation causing name_off overflow
-into unmapped memory (SEGV_MAPERR observed on RMX5010 ColorOS 16).
+addr2line traced PC 0x168c4 to set_fail line 127 (mutex_lock + va_start).
+Two fixes:
+1. g.stat_lock uses PTHREAD_MUTEX_INITIALIZER (static init), no dynamic
+   init race during early failure paths.
+2. set_fail formats and prints FAIL message to stderr BEFORE acquiring
+   lock or writing shared state. Even if mutex/va_args path SEGVs,
+   underlying failure reason now reaches log.
 
-Replaced with kernel auto-infer: attach_btf_id=0 + correct
-prog_btf_fd, kernel resolves lsm/bpf hook from prog's BTF DECL_TAG.
-
-Added step-by-step fprintf+fflush to LSM init for precise crash
-location reporting on future failures."
-
+This unblocks LSM diagnosis: any future LSM init failure will print
+[lsm] FAIL: <real reason> before any potential SEGV."
 git push
 
-# 等 CI (5-10min) → 下 Artifact zip → KSU 装 → 重启
+# 等 CI → 装 → 重启 → 立刻看日志
+su -c "grep -iE 'lsm|sched|tier' /data/local/hnc/logs/hotspotd.log | tail -50"
 ```
 
-## 验证(装机后期望日志)
+## 期望日志(成功路径)
 ```
 [lsm] BPF LSM active in kernel
 [lsm] target limit_map id=N
@@ -55,7 +81,7 @@ git push
 [lsm] step3: ringbuf_map fd=N
 [lsm] step4: parse_bpf_object
 [lsm] step4: parsed bpf.o: NN insns, NN relocs, btf=NNNN bytes
-[lsm] step5: using attach_btf_id=0 (kernel auto-infer)
+[lsm] step5: using attach_btf_id=0
 [lsm] step6: BPF_BTF_LOAD
 [lsm] step6: prog_btf_fd=N
 [lsm] step7: BPF_PROG_LOAD
@@ -67,11 +93,15 @@ git push
 [lsm] step10: link_fd=N
 [lsm] step11: start ringbuf consumer thread
 [lsm] ACTIVE. protecting map_id=N ifindex=22 hotspotd_pid=N
-[sched] BPF LSM guard ACTIVE
 ```
 
-如果某 step 之后没有期望的下一行 → 那个 step 失败了,告诉我崩点。
+## 期望日志(失败路径,但不再 crash loop)
+```
+[lsm] step4: parse_bpf_object
+[lsm] FAIL: parse_bpf_object: <精确 errno>     ← 这条以前看不到
+[sched] BPF LSM guard FAILED, fallback to passive disable
+[sched] worker started ...
+... hotspotd 正常运行 ...
+```
 
-## 包含
-- daemon/hotspotd/lsm/hnc_lsm_loader.c (新版,删 BTF parser + 加诊断)
-- bpf/hnc_limit_map_guard.bpf.o (预编译,跟之前一样,作 fallback 用)
+如果还失败,日志里现在能看到具体 reason,告诉我下一步。

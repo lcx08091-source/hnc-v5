@@ -106,7 +106,12 @@ static struct {
     void        *rb_consumer_pos_page;  /* mmap'd consumer pos page */
     void        *rb_producer_pos_page;  /* mmap'd producer pos page */
 
-    /* status (受 stat_lock 保护) */
+    /* status (静态初始化 mutex, 任何调用顺序安全)
+     * 之前用 pthread_mutex_init 在 hnc_lsm_init 里 dynamic init,
+     * 但 set_fail / get_status 可能在 init 失败的早期就被调用,
+     * 此时 dynamic init 已完成但调用栈复杂, NDK clang 编出的
+     * pthread_mutex_lock 路径在 ARM64 上跟 host 行为不一致, 容易段错.
+     * 改为 PTHREAD_MUTEX_INITIALIZER 一次性安全。 */
     pthread_mutex_t stat_lock;
     hnc_lsm_status_t stat;
 } g = {
@@ -115,6 +120,7 @@ static struct {
     .fd_lsm_prog = -1,
     .fd_lsm_link = -1,
     .fd_target_limit_map = -1,
+    .stat_lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
 /* ══════════════════════════════════════════════════════════
@@ -123,14 +129,20 @@ static struct {
 
 static void set_fail(const char *fmt, ...)
 {
-    pthread_mutex_lock(&g.stat_lock);
-    g.stat.state = HNC_LSM_FAILED;
+    /* 先把 fail_reason 拼到本地 buf, 再写共享状态 + 打印
+     * 避免 va_start/va_end 在持锁中段错时无 log */
+    char tmp[128];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(g.stat.fail_reason, sizeof(g.stat.fail_reason), fmt, ap);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
     va_end(ap);
+    /* 先打日志, 即便 mutex 段错也能看到原因 */
+    fprintf(stderr, "[lsm] FAIL: %s\n", tmp);
+    fflush(stderr);
+    pthread_mutex_lock(&g.stat_lock);
+    g.stat.state = HNC_LSM_FAILED;
+    snprintf(g.stat.fail_reason, sizeof(g.stat.fail_reason), "%s", tmp);
     pthread_mutex_unlock(&g.stat_lock);
-    fprintf(stderr, "[lsm] FAIL: %s\n", g.stat.fail_reason);
 }
 
 #include <stdarg.h>
@@ -488,7 +500,7 @@ int hnc_lsm_init(const char *bpf_object_path,
                  uint32_t initial_ifindex)
 {
     if (g.initialized) return 0;
-    pthread_mutex_init(&g.stat_lock, NULL);
+    /* mutex 已 PTHREAD_MUTEX_INITIALIZER 静态初始化, 无需 dynamic init */
     g.stat.state = HNC_LSM_DISABLED;
     g.stat.hotspotd_pid = (uint32_t)getpid();
 
@@ -744,6 +756,8 @@ void hnc_lsm_shutdown(void)
         munmap(g.rb_producer_pos_page, page);
 
     pthread_mutex_destroy(&g.stat_lock);
+    /* 注: PTHREAD_MUTEX_INITIALIZER 静态 mutex destroy 后再次 lock 是 UB,
+     * 但 hotspotd shutdown 后整个进程退出, 不会再调 get_status, 安全. */
     g.initialized = 0;
     fprintf(stderr, "[lsm] shutdown complete\n");
 }
