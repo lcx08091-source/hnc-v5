@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive       # v5.1: 拉 third_party/{libbpf,libelf,zlib}
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -24,13 +26,26 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Install tools
-        run: sudo apt-get install -y zip unzip file
+      - name: Install tools (clang for BPF object)
+        run: sudo apt-get install -y zip unzip file clang llvm
 
-      - name: Debug NDK path
+      - name: Debug NDK + submodules
         run: |
           echo "NDK path: ${{ steps.setup-ndk.outputs.ndk-path }}"
           ls -la "${{ steps.setup-ndk.outputs.ndk-path }}" | head -5
+          echo "--- submodules ---"
+          git submodule status
+          ls third_party/libbpf/src/*.c | head -3
+          ls third_party/libelf/libelf/*.c | head -3
+          ls third_party/zlib/*.c | head -3
+
+      # v5.0.0-beta.4 hotfix6: build third_party libs first
+      - name: Build third_party libs (zlib + libelf + libbpf)
+        run: |
+          export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          cd third_party_build
+          bash build_libs.sh arm64
+          ls -la _libs_out/lib/
 
       - name: Build hotspotd + hnc_ipc
         run: |
@@ -49,7 +64,6 @@ jobs:
           bash build.sh arm64
         continue-on-error: true
 
-      # v5.0 beta.1: netlink 直通工具 (绕过 ColorOS 魔改 /system/bin/tc)
       - name: Build hnc_tc_ingress (raw-netlink tool)
         run: |
           export ANDROID_NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
@@ -62,14 +76,12 @@ jobs:
         run: |
           echo "=== bin/ 内容 ==="
           ls -la bin/ | head -20
-          # 如果 hotspotd 不在 bin/ 里, 从 daemon/ 位置拷过来
           if [ ! -f bin/hotspotd ]; then
             find daemon/ -name "hotspotd" -type f -exec cp {} bin/ \;
           fi
           if [ ! -f bin/hnc_ipc ]; then
             find daemon/ -name "hnc_ipc" -type f -exec cp {} bin/ \;
           fi
-          # hnc_tc_ingress 如果没落到 bin, 从 out/arm64/ 拷
           if [ ! -f bin/hnc_tc_ingress ]; then
             find daemon/tc_netlink -name "hnc_tc_ingress" -type f -exec cp {} bin/ \;
           fi
@@ -78,6 +90,16 @@ jobs:
           file bin/hotspotd         | grep -q "ARM aarch64" || exit 1
           file bin/hnc_ipc          | grep -q "ARM aarch64" || exit 1
           file bin/hnc_tc_ingress   | grep -q "ARM aarch64" || exit 1
+
+      - name: Verify BPF object
+        run: |
+          echo "=== bpf/ ==="
+          ls -la bpf/ 2>/dev/null
+          if [ -f bpf/hnc_limit_map_guard.bpf.o ]; then
+            file bpf/hnc_limit_map_guard.bpf.o
+          else
+            echo "WARN: BPF object missing - LSM will not load"
+          fi
 
       - name: Fix permissions
         run: |
@@ -97,9 +119,10 @@ jobs:
       - name: Pack zip
         run: |
           OUT="HNC-${{ steps.version.outputs.version_safe }}-arm64.zip"
-          # 清冗余: build intermediates
           rm -rf daemon/hotspotd/prebuilt daemon/hotspotd/tools/prebuilt
           rm -rf daemon/tc_netlink/out
+          rm -rf third_party_build/_libs_out third_party_build/_obj
+          rm -rf third_party
           zip -rqX "$OUT" . -x ".*" -x "*/.*" -x "*.zip" -x ".github/*"
           echo "OUT_ZIP=$OUT" >> $GITHUB_ENV
 

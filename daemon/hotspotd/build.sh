@@ -1,24 +1,18 @@
 #!/bin/bash
-# daemon/build.sh — 使用 Android NDK 交叉编译 hotspotd
-# 用法：
-#   export ANDROID_NDK=/path/to/android-ndk
-#   bash daemon/build.sh [arm64|arm|x86_64]
+# daemon/hotspotd/build.sh — 使用 Android NDK 交叉编译 hotspotd
+# v5.0.0-beta.4 hotfix6: 链接 libbpf 静态库
 #
-# 输出：daemon/prebuilt/<arch>/hotspotd
-# 模块 ZIP 中预置的二进制在 bin/hotspotd（arm64-v8a）
+# 用法:
+#   export ANDROID_NDK=/path/to/android-ndk
+#   bash daemon/hotspotd/build.sh [arm64]
 
 set -e
 cd "$(dirname "$0")"
 
 ARCH=${1:-arm64}
-# v3.6 Commit 2: 编译 hotspotd.c + hnc_helpers.c
-# hnc_helpers.c 包含从 hotspotd.c 提取的纯 helper 函数。
-# v3.8.1 A3: 新增 hostname_cache.c,持久化 DHCP/mDNS 识别结果。
-# v3.8.3 D3: 新增 oui_override.c,用户 OUI 覆盖。
-# v3.8.4: 新增 mdns_worker.c,异步 mDNS worker(需要 -pthread 链接 libpthread)。
-# v5.0: 新增 platform.c / scheduler.c / offload/ 抽象层 (BPF tether offload)。
-# v5.0 alpha.2: 新增 upstream.c (策略路由感知的上游探测)。
-# v5.0.0-beta.4: 新增 lsm/hnc_lsm_loader.c (BPF LSM Limit Map Guard)。
+
+# v5.0.0-beta.4 hotfix6: 改用 libbpf, 删除手撸 lsm/hnc_lsm_loader.c 的
+# sys_bpf 实现, 改为 libbpf 标准 API
 SRCS="hotspotd.c hnc_helpers.c hostname_cache.c oui_override.c mdns_worker.c \
       platform.c scheduler.c upstream.c \
       offload/adapter.c offload/adapter_null.c offload/adapter_bpf.c \
@@ -28,11 +22,9 @@ OUT=${OUTDIR}/hotspotd
 
 mkdir -p "$OUTDIR"
 
-# ── 方案一：使用 NDK standalone toolchain ──────────────────────
+# ── NDK toolchain ──────────────────────────────────────────────
 if [ -z "$ANDROID_NDK" ] && [ -z "$CC" ]; then
-    echo "[build] ERROR: 请设置 ANDROID_NDK 或 CC 环境变量"
-    echo "  export ANDROID_NDK=/path/to/android-ndk-r26"
-    echo "  或 export CC=aarch64-linux-android21-clang"
+    echo "[build] ERROR: 请设置 ANDROID_NDK 或 CC"
     exit 1
 fi
 
@@ -49,59 +41,67 @@ if [ -n "$ANDROID_NDK" ]; then
     CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
 fi
 
+# ── v5.0.0-beta.4 hotfix6: 编 third_party libs (zlib, libelf, libbpf) ──
+LIBS_OUT="$(cd ../../third_party_build && pwd)/_libs_out"
+if [ ! -f "$LIBS_OUT/lib/libbpf.a" ]; then
+    echo ""
+    echo "=== Building third_party libs ==="
+    (cd ../../third_party_build && bash build_libs.sh "$ARCH")
+fi
+
+if [ ! -f "$LIBS_OUT/lib/libbpf.a" ]; then
+    echo "[build] ERROR: libbpf.a missing after build_libs.sh"
+    exit 1
+fi
+
+# ── 编译 hotspotd 主体 + 链接 libbpf ─────────────────────────
+echo ""
 echo "[build] Compiler: $CC"
 echo "[build] Target:   $ARCH  Output: $OUT"
+echo "[build] libs:     $LIBS_OUT/lib/{libbpf,libelf,libz}.a"
 
 $CC \
     -O2 \
     -std=c11 \
     -Wall \
     -Wextra \
+    -Wno-unused-parameter \
     -static-libgcc \
     -D_GNU_SOURCE \
     -DANDROID \
     -DHNC_HAVE_ADAPTER_BPF \
     -fPIE -pie \
     -pthread \
+    -I"$LIBS_OUT/include" \
     -o "$OUT" \
-    $SRCS
+    $SRCS \
+    "$LIBS_OUT/lib/libbpf.a" \
+    "$LIBS_OUT/lib/libelf.a" \
+    "$LIBS_OUT/lib/libz.a"
 
 strip "$OUT" 2>/dev/null || true
 echo "[build] OK: $(ls -lh "$OUT" | awk '{print $5}')  $OUT"
 
-# ── 复制到 bin/ 供打包 ─────────────────────────────────────────
-# alpha.2 修: BINDIR 从 ../bin 改为 ../../bin, 指向仓库根 bin/
-# daemon/hotspotd/ -> ../../bin/ 才是模块 zip 里真实的 bin/ 位置
-# 之前 ../bin 会创建 daemon/bin/ (不在 zip 路径), 导致装机后 bin/hotspotd
-# 不存在. 用户必须手动 mv. alpha.2 修.
+# 复制到 bin/
 BINDIR=../../bin
 mkdir -p "$BINDIR"
 cp "$OUT" "$BINDIR/hotspotd"
-# alpha.2: 显式保留 exec 位 (WSL zip 有时丢 Linux 权限位)
 chmod 755 "$BINDIR/hotspotd"
 echo "[build] Copied to $BINDIR/hotspotd"
 
-# ── v5.0: 顺手编 hnc_ipc 并装进 bin/ ──────────────────────────
-# apply_device_rule.sh 需要 hnc_ipc 通知 scheduler, 没它 v5.0 集成失效
+# ── 编 hnc_ipc ─────────────────────────────────────────────
 echo ""
 echo "=== v5.0 tools build (hnc_ipc) ==="
 if [ -d tools ]; then
     (cd tools && bash build.sh "$ARCH" hnc_ipc) || \
-        echo "[build] WARN: hnc_ipc build failed (apply_device_rule.sh notify will silently skip)"
+        echo "[build] WARN: hnc_ipc build failed"
     if [ -f "tools/prebuilt/${ARCH}/hnc_ipc" ]; then
         cp "tools/prebuilt/${ARCH}/hnc_ipc" "$BINDIR/hnc_ipc"
         chmod 755 "$BINDIR/hnc_ipc"
-        echo "[build] Copied tools/hnc_ipc to $BINDIR/hnc_ipc"
     fi
 fi
 
-# ── v5.0.0-beta.4: 编译 BPF LSM Limit Map Guard ─────────────────
-# 需要 host 上有 clang (with bpf target) 和 ColorOS 16 dump 的 vmlinux.h
-# (位于 daemon/hotspotd/lsm/vmlinux.h, 一次性 commit, OS 大版本升级时
-# 重新 dump)
-#
-# 输出: ../../bpf/hnc_limit_map_guard.bpf.o  (打进 zip 部署到
-#        /data/local/hnc/bpf/ 由 hotspotd 加载)
+# ── 编 BPF object (LSM 程序) ─────────────────────────────
 echo ""
 echo "=== v5.0.0-beta.4 BPF LSM build ==="
 if [ -f lsm/vmlinux.h ] && [ -f lsm/hnc_limit_map_guard.bpf.c ]; then
@@ -114,26 +114,19 @@ if [ -f lsm/vmlinux.h ] && [ -f lsm/hnc_limit_map_guard.bpf.c ]; then
         "$BPFCC" -O2 -g \
             -target bpf \
             -D__TARGET_ARCH_arm64 \
+            -I"$LIBS_OUT/include" \
             -Ilsm \
             -c lsm/hnc_limit_map_guard.bpf.c \
-            -o "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" || {
-            echo "[build] WARN: BPF compile failed (LSM guard will not load on device)"
-        }
+            -o "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" || \
+            echo "[build] WARN: BPF compile failed"
         if [ -f "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" ]; then
-            # strip debug 信息减小 .o (BTF 必须保留, 不能 -strip-all)
             llvm-strip -g "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" 2>/dev/null \
               || strip -g "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" 2>/dev/null \
               || true
-            echo "[build] BPF LSM object: $(ls -lh "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" | awk '{print $5}')"
+            echo "[build] BPF object: $(ls -lh "$BPF_OUT_DIR/hnc_limit_map_guard.bpf.o" | awk '{print $5}')"
         fi
     fi
-else
-    echo "[build] skip BPF: lsm/vmlinux.h or lsm/hnc_limit_map_guard.bpf.c missing"
 fi
 
-# ── 在 HOST Linux 上快速测试编译（功能测试用，非 Android）──────
 echo ""
-echo "=== Host build (for syntax check only) ==="
-HOST_OUT=${OUTDIR}/hotspotd_host
-gcc -O0 -std=c11 -Wall -D_GNU_SOURCE -pthread -o "$HOST_OUT" $SRCS 2>&1 || true
-[ -f "$HOST_OUT" ] && echo "Host build: OK" || echo "Host build: skipped (different libc)"
+echo "[build] === build done ==="

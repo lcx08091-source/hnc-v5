@@ -1,78 +1,80 @@
-# HNC v5.0.0-beta.4 hotfix4: BPF_BTF_LOAD log_buf 诊断
+# HNC v5.1 libbpf 改造 — Stage 2 patch
 
-## 目的
-hotfix3 让 LSM init 走通 step1-5,但 step6 BPF_BTF_LOAD 报 EINVAL,
-没有具体原因。本 hotfix 让 kernel 把 BTF 校验失败的精确原因写到日志。
+## 文件
+1. `third_party_build/build_libs.sh` (205 行) — NDK 静态编 zlib + libelf + libbpf,输出到 `_libs_out/`
+2. `third_party_build/.gitignore` — 忽略编译产物
+3. `daemon/hotspotd/build.sh` (132 行) — hotspotd 编译时链接 3 个静态库
+4. `.github/workflows/build.yml` (141 行) — CI 加 submodule init + build_libs step
 
-## 修改
-单点改动:`load_btf()` 加 `log_buf / log_size / log_level` attr,
-失败时 fprintf BTF verifier log。
+## 装机步骤(在 `~/hnc-v5`)
 
-```c
-static int load_btf(const void *btf_data, uint32_t btf_size,
-                    char *log_buf, uint32_t log_buf_size)
-{
-    union bpf_attr attr;
-    memset(&attr, 0, sizeof(attr));
-    attr.btf      = (uint64_t)(uintptr_t)btf_data;
-    attr.btf_size = btf_size;
-    if (log_buf && log_buf_size) {
-        attr.btf_log_buf  = (uint64_t)(uintptr_t)log_buf;
-        attr.btf_log_size = log_buf_size;
-        attr.btf_log_level = 1;
-        log_buf[0] = 0;
-    }
-    long fd = sys_bpf(BPF_BTF_LOAD, &attr, sizeof(attr));
-    return (int)fd;
-}
-```
-
-调用点改:
-```c
-static char btf_log_buf[16 * 1024];
-int prog_btf_fd = load_btf(btf_data, btf_size, btf_log_buf, sizeof(btf_log_buf));
-if (prog_btf_fd < 0) {
-    if (btf_log_buf[0]) {
-        fprintf(stderr, "[lsm] BTF verifier log:\n%s\n", btf_log_buf);
-    }
-    set_fail("BPF_BTF_LOAD: %s", strerror(errno));
-    ...
-}
-```
-
-## 装机
 ```sh
 cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_0_0-beta4-hotfix4.zip .
-unzip -o HNC-v5_0_0-beta4-hotfix4.zip
-rm HNC-v5_0_0-beta4-hotfix4.zip
+cp /sdcard/Download/HNC-v5_1-libbpf-stage2.zip .
+unzip -o HNC-v5_1-libbpf-stage2.zip
+rm HNC-v5_1-libbpf-stage2.zip
+
+# 检查
+ls -la third_party_build/build_libs.sh         # 应该 +x
+ls -la daemon/hotspotd/build.sh                # 应该 +x
+ls -la .github/workflows/build.yml
+
+# Commit + push
 git add -A
-git commit -m "v5.0.0-beta.4 hotfix4: BPF_BTF_LOAD log_buf for diagnosis
+git status      # 确认含: third_party_build/, .gitmodules, daemon/hotspotd/build.sh,
+                #         daemon/hotspotd/lsm/hnc_lsm_loader.c (Stage 1 unzip 时已加),
+                #         .github/workflows/build.yml
 
-Add btf_log_buf/size/level to BPF_BTF_LOAD attr so kernel can report
-the specific BTF type kind / field that caused EINVAL. Without log
-we're blind on whether the issue is:
-  - BTF_KIND_DECL_TAG (clang 18, kernel may reject)
-  - BTF_KIND_TYPE_TAG (newer)
-  - BTF_KIND_ENUM64 (newer)
-  - .rel.BTF unresolved name_off
-  - BTF DATASEC referencing absent map definition
-  - or something else specific to OPPO ColorOS BPF subsystem"
+git commit -m "v5.1: libbpf static-link migration
+
+Replaces 800-line hand-rolled sys_bpf loader with libbpf API
+(bpf_object__open_file + load + attach_lsm + ring_buffer__poll).
+
+Build chain:
+  third_party/{libbpf,libelf,zlib} as git submodules
+  third_party_build/build_libs.sh: NDK clang -> static .a libs
+  daemon/hotspotd/build.sh: links libbpf.a + libelf.a + libz.a (~700KB
+    increase to hotspotd binary, acceptable)
+  .github/workflows/build.yml: + submodules:recursive + build_libs step
+
+This delegates BTF sanitization, .rel.BTF resolution, CO-RE relocation
+to libbpf, escaping the hand-rolled sys_bpf dead-end (BPF_BTF_LOAD
+EINVAL/ENOSPC encountered in beta.4 hotfix1-5)."
+
 git push
-
-# 等 CI → 装 → 重启 → 等 30 秒
-su -c "grep -iE 'lsm|FAIL|BTF' /data/local/hnc/logs/hotspotd.log | tail -60"
 ```
 
-## 期望日志
-```
-[lsm] step6: BPF_BTF_LOAD
-[lsm] BTF verifier log:
-<...kernel 报的具体原因, 比如 "Unsupported BTF_KIND" 或 "Invalid name_off"...>
-[lsm] FAIL: BPF_BTF_LOAD: Invalid argument
-[sched] BPF LSM guard FAILED, fallback to passive disable
-```
+## CI 第一次跑大概 8-12 分钟(要编 ~100 个 .c 静态库)
 
-把 BTF verifier log 那一段全贴回来,我决定下一步:
-- 如果只 1-2 个 incompatible kind → 我给 BPF 程序加 -mllvm flag 禁用,或手撸 BTF strip
-- 如果一大堆问题 → 上 libbpf 静态链接(evaluation AI 推荐)
+后续构建 build_libs.sh 会跳过(`if [ ! -f libbpf.a ]`)→ 几秒
+但 GitHub Actions runner 每次新机器,实际每次 CI 都会重编。
+
+## 期望失败 + 应对(按可能性排)
+
+**1. libelf 编译失败** — elftoolchain 用了一些 GNU 扩展可能 Bionic 缺
+   - 现象:`warn: elf_xxx.c` 一堆然后 ar 报 no objects
+   - 应对:贴 build_libs 输出给我,我加 -include shim.h
+
+**2. libbpf 编译失败** — 类似 GNU 扩展
+   - 现象:同上
+   - 应对:同上
+
+**3. hotspotd 链接失败** — symbol undef
+   - 现象:`undefined reference to 'mempcpy'` / `argp_parse` / `obstack_*`
+   - 应对:加 missing.c shim 或者排除某些 libelf source
+
+**4. hotspotd 链接成功但 LSM init 失败** — libbpf 报错
+   - 现象:`[libbpf] xxx error` 在日志里
+   - 应对:基于 libbpf 报的具体错改 BPF program 或 loader
+
+不管哪种,贴 CI build log(失败那一段)+ 装机日志,我快速迭代。
+
+## 不会破坏的事
+- beta.3 scheduler 周期重探仍生效(不依赖 LSM)
+- LSM 失败时 graceful 降级到 passive 模式,业务 100% 正常
+- watchdog / hnc_httpd / tc_netlink 全部不变
+
+## 涉及风险(可控)
+- hotspotd binary 大小 130KB → ~700KB(可接受)
+- CI 第一次 build 时间长(可接受,后续艺术家 GitHub cache 加速)
+- libelf cross-compile 第一次必踩坑(预期 1-2 轮 hotfix)
