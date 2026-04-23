@@ -117,14 +117,15 @@ NATIVE_EOF
         -I$OUT/include \
         -I$LIBELF_SRC -I$LIBELF_COMMON \
         -include $OUT/include/_libelf_native.h \
+        -include $LIBELF_COMMON/elfdefinitions.h \
         -DLIBELF_TEST_HOOKS=0 \
         -Wno-implicit-function-declaration"
 
     for src in *.c; do
         # 跳过 m4 生成文件 (我们没装 m4, 先跳过, 看 ld 报缺啥再补)
         echo "  CC libelf/$src"
-        "$CC" $LIBELF_CFLAGS -c "$src" -o "$LIBELF_OBJ_DIR/${src%.c}.o" 2>&1 \
-            | head -3 || echo "  (warn: $src)"
+        "$CC" $LIBELF_CFLAGS -c "$src" -o "$LIBELF_OBJ_DIR/${src%.c}.o" || \
+            echo "  [WARN] libelf/$src failed"
     done
 
     if ls "$LIBELF_OBJ_DIR"/*.o >/dev/null 2>&1; then
@@ -185,8 +186,8 @@ if [ ! -f "$OUT/lib/libbpf.a" ]; then
             linker.c|gen_loader.c) echo "  SKIP $src"; continue ;;
         esac
         echo "  CC libbpf/$src"
-        "$CC" $LIBBPF_CFLAGS -c "$src" -o "$LIBBPF_OBJ_DIR/${src%.c}.o" 2>&1 | head -5 \
-            || echo "  (warn: $src)"
+        "$CC" $LIBBPF_CFLAGS -c "$src" -o "$LIBBPF_OBJ_DIR/${src%.c}.o" || \
+            echo "  [WARN] libbpf/$src failed"
     done
 
     if ls "$LIBBPF_OBJ_DIR"/*.o >/dev/null 2>&1; then
