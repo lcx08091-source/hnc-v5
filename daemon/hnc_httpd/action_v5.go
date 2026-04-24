@@ -10,11 +10,11 @@
 package main
 
 import (
-	"unicode/utf8"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ────────────────────────────────────────────────────────────────
@@ -182,8 +182,40 @@ func actionTemplateApply(hncDir string, p map[string]string) actionResp {
 // 热点控制 · 修 Bug M
 // ────────────────────────────────────────────────────────────────
 
-var ssidRE = regexp.MustCompile(`^[A-Za-z0-9\-_ .]{1,32}$`)
-var passRE = regexp.MustCompile(`^[\x20-\x7e]{8,63}$`) // printable ASCII
+// rc5.1.1 UTF-8 支持: 原 ssidRE/passRE 正则只接受 ASCII, 中文/日文/emoji SSID
+// 全部被拒. IEEE 802.11 实际允许 SSID 为 32 字节任意 UTF-8, WPA 密码为 8-63
+// 字节 UTF-8, Android 从 4.x 起就支持中文 SSID.
+func validSSID(s string) bool {
+	b := []byte(s)
+	if len(b) == 0 || len(b) > 32 {
+		return false
+	}
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 { // 拒绝控制字符
+			return false
+		}
+	}
+	return true
+}
+
+func validPass(s string) bool {
+	b := []byte(s)
+	if len(b) < 8 || len(b) > 63 {
+		return false
+	}
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 {
+			return false
+		}
+	}
+	return true
+}
 
 func actionHotspotStart(hncDir string) actionResp {
 	rc, out := runBin(hncDir, "hotspot_autostart.sh", "start")
@@ -208,10 +240,10 @@ func actionHotspotSave(hncDir string, p map[string]string) actionResp {
 	pass := p["password"]
 	delayStr := p["delay_sec"]
 	autostart := p["autostart"]
-	if ssid != "" && !ssidRE.MatchString(ssid) {
+	if ssid != "" && !validSSID(ssid) {
 		return actionResp{OK: false, Error: "bad params", Detail: "invalid ssid"}
 	}
-	if pass != "" && !passRE.MatchString(pass) {
+	if pass != "" && !validPass(pass) {
 		return actionResp{OK: false, Error: "bad params", Detail: "invalid password (8-63 printable ASCII)"}
 	}
 	delay, ok := atoiClamp(delayStr, 0, 3600)
