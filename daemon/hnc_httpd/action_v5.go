@@ -10,6 +10,7 @@
 package main
 
 import (
+	"unicode/utf8"
 	"log"
 	"regexp"
 	"strconv"
