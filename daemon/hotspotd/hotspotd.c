@@ -973,6 +973,25 @@ static int unix_server_open(void) {
     return fd;
 }
 
+
+/* hotfix2: send() may legally perform a short write.
+ * Use a small helper for IPC responses so GET_DEVICES and status JSON are not truncated
+ * when the client/socket buffer is temporarily full. */
+static int send_all(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = send(fd, p + off, len - off, 0);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+
 static void handle_client(int cfd) {
     /* v3.5.2 P1-B: 加读写超时防止恶意客户端挂起主线程
      * - 2 秒读超时:客户端连上但不发数据 → recv 超时后 close
@@ -994,14 +1013,13 @@ static void handle_client(int cfd) {
     if (strcmp(req, "GET_DEVICES") == 0) {
         /* 直接发 JSON 文件内容 */
         FILE *f = fopen(DEVICES_JSON, "r");
-        if (!f) { send(cfd, "{}", 2, 0); }
+        if (!f) { (void)send_all(cfd, "{}", 2); }
         else {
             char fbuf[65536];
             size_t rd;
             while ((rd = fread(fbuf, 1, sizeof(fbuf), f)) > 0) {
-                /* v3.5.2 P1-B: 检查 send 返回值,失败就 break(客户端断连 / 超时) */
-                ssize_t sent = send(cfd, fbuf, rd, 0);
-                if (sent < 0) break;
+                /* hotfix2: 处理短写,避免设备较多时返回半截 JSON */
+                if (send_all(cfd, fbuf, rd) != 0) break;
             }
             fclose(f);
         }
@@ -1031,12 +1049,12 @@ static void handle_client(int cfd) {
             /* else: 距上次重算不到 2 秒,不改 g_last_stats_update,
              * 让 update_traffic_stats 的 TTL 检查自然工作 */
         }
-        send(cfd, "OK:queued\n", 10, 0);
+        (void)send_all(cfd, "OK:queued\n", 10);
     } else if (strcmp(req, "STATUS") == 0) {
         char resp[128];
         snprintf(resp, sizeof(resp), "running:1 devices:%d pid:%d\n",
                  g_ndev, (int)getpid());
-        send(cfd, resp, strlen(resp), 0);
+        (void)send_all(cfd, resp, strlen(resp));
     } else if (strncmp(req, "OFFLOAD_NOTIFY_LIMIT ", 21) == 0) {
         /* v5.0: OFFLOAD_NOTIFY_LIMIT <mac> <0|1>
          * apply_device_rule.sh 在 tc 规则添加/删除后调 */
@@ -1045,23 +1063,23 @@ static void handle_client(int cfd) {
         if (sscanf(req + 21, "%31s %d", mac, &flag) == 2 &&
             (flag == 0 || flag == 1)) {
             hnc_scheduler_notify_device_limit_changed(mac, flag);
-            send(cfd, "OK\n", 3, 0);
+            (void)send_all(cfd, "OK\n", 3);
         } else {
-            send(cfd, "ERR:bad args (expect MAC 0|1)\n", 30, 0);
+            (void)send_all(cfd, "ERR:bad args (expect MAC 0|1)\n", 30);
         }
     } else if (strcmp(req, "OFFLOAD_REFRESH") == 0) {
         hnc_scheduler_request_refresh();
-        send(cfd, "OK:queued\n", 10, 0);
+        (void)send_all(cfd, "OK:queued\n", 10);
     } else if (strcmp(req, "OFFLOAD_STATUS") == 0) {
         hnc_offload_summary_t summ;
         hnc_scheduler_get_summary(&summ);
         char json[2048];
         int n = hnc_scheduler_summary_to_json(&summ, json, sizeof(json));
         if (n > 0) {
-            send(cfd, json, (size_t)n, 0);
-            send(cfd, "\n", 1, 0);
+            (void)send_all(cfd, json, (size_t)n);
+            (void)send_all(cfd, "\n", 1);
         } else {
-            send(cfd, "ERR:summary serialize\n", 22, 0);
+            (void)send_all(cfd, "ERR:summary serialize\n", 22);
         }
     } else if (strcmp(req, "OFFLOAD_DISABLE_GLOBAL") == 0) {
         offload_err_t e = hnc_scheduler_force_disable_global();
@@ -1069,19 +1087,19 @@ static void handle_client(int cfd) {
         snprintf(resp, sizeof(resp), "%s:%s\n",
                  e == OFFLOAD_OK ? "OK" : "ERR",
                  offload_err_str(e));
-        send(cfd, resp, strlen(resp), 0);
+        (void)send_all(cfd, resp, strlen(resp));
     } else if (strcmp(req, "OFFLOAD_RESTORE_GLOBAL") == 0) {
         offload_err_t e = hnc_scheduler_force_restore_global();
         char resp[64];
         snprintf(resp, sizeof(resp), "%s:%s\n",
                  e == OFFLOAD_OK ? "OK" : "ERR",
                  offload_err_str(e));
-        send(cfd, resp, strlen(resp), 0);
+        (void)send_all(cfd, resp, strlen(resp));
     } else if (strcmp(req, "QUIT") == 0) {
-        send(cfd, "BYE\n", 4, 0);
+        (void)send_all(cfd, "BYE\n", 4);
         g_running = 0;
     } else {
-        send(cfd, "ERR:unknown command\n", 20, 0);
+        (void)send_all(cfd, "ERR:unknown command\n", 20);
     }
     close(cfd);
 }
@@ -1393,8 +1411,9 @@ static int try_ns_dhcp_resolve(const char *mac, char *out, size_t outlen) {
     char *buffer = (char *)malloc(BUF_CAP);
     if (!buffer) {
         close(pipefd[0]);
-        /* 必须 waitpid 收割,否则僵尸进程 */
-        waitpid(pid, NULL, 0);
+        /* hotfix2: malloc 失败时不要无限等 dumpsys,先杀再收割。 */
+        kill(pid, SIGKILL);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
         return 0;
     }
 
@@ -1524,18 +1543,12 @@ static int try_ns_dhcp_resolve(const char *mac, char *out, size_t outlen) {
  * 立刻把 fault address 落到 stderr (= log file), 不依赖 tombstone
  * ══════════════════════════════════════════════════════════ */
 static void hnc_crash_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)info;
     (void)ctx;
-    /* async-signal-safe: 只用 write() */
-    char buf[128];
-    int n = snprintf(buf, sizeof(buf),
-                     "\n[FATAL] sig=%d code=%d fault_addr=%p pid=%d\n",
-                     sig, info->si_code, info->si_addr, (int)getpid());
-    if (n > 0) {
-        write(STDERR_FILENO, buf, (size_t)n);
-        /* 强制 fdatasync 让 log file 落盘前 default-handler kill 进程 */
-        fsync(STDERR_FILENO);
-    }
-    /* 恢复 default handler 继续走 → tombstone 仍然生成 */
+    /* hotfix2: signal handler 内避免 snprintf/fsync 等非 async-signal-safe 调用。
+     * 这里只写固定短消息,然后恢复默认处理器继续生成 tombstone。 */
+    static const char msg[] = "\n[FATAL] hotspotd crash; re-raising for tombstone\n";
+    (void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
     signal(sig, SIG_DFL);
     raise(sig);
 }

@@ -389,9 +389,14 @@ case "$CMD" in
                 || emit_err "iptables blacklist_add failed (mac-only path, see apply.log)"
         fi
         # 2. json: bl_add 维护 blacklist 数组
-        sh "$JSON_SET" bl_add "$MAC" >/dev/null 2>&1
-        log "bl_add OK"
-        echo "ok"
+        # hotfix2: 不再忽略 JSON 写失败,避免 iptables 已生效但重启后状态丢失。
+        if sh "$JSON_SET" bl_add "$MAC" >/dev/null 2>&1; then
+            log "bl_add OK"
+            echo "ok"
+        else
+            log "bl_add applied to iptables but JSON bl_add failed"
+            echo "ok partial_json_fail=blacklist_add"
+        fi
         ;;
 
     bl_del)
@@ -406,9 +411,14 @@ case "$CMD" in
                 || log "iptables blacklist_remove warn (mac-only path)"
         fi
         # 2. json
-        sh "$JSON_SET" bl_del "$MAC" >/dev/null 2>&1
-        log "bl_del OK"
-        echo "ok"
+        # hotfix2: 不再忽略 JSON 写失败,避免 UI/持久化状态与 iptables 不一致。
+        if sh "$JSON_SET" bl_del "$MAC" >/dev/null 2>&1; then
+            log "bl_del OK"
+            echo "ok"
+        else
+            log "bl_del applied to iptables but JSON bl_del failed"
+            echo "ok partial_json_fail=blacklist_del"
+        fi
         ;;
 
     *)
