@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -587,7 +588,15 @@ func runBin(hncDir, script string, args ...string) (int, string) {
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
 		}
-		s = s[:cut] + "..."
+		// rc2 修 G6: cut==0 极端 fallback (病态输入前 1024 全是 continuation bytes,
+		// 实际上几乎不可能发生, 但 let's be defensive). 原代码 s[:0]+"..." = "...",
+		// 用户看到纯 "...", 诊断价值为零. 改用 ToValidUTF8 把无效序列替换成 U+FFFD
+		// 后硬切 1024, 至少保留可读前缀.
+		if cut == 0 {
+			s = strings.ToValidUTF8(s[:1024], "\uFFFD") + "..."
+		} else {
+			s = s[:cut] + "..."
+		}
 	}
 	return rc, s
 }
@@ -652,6 +661,16 @@ func runBinDetached(hncDir, script string, args ...string) error {
 		return err
 	}
 	// 不等, 让子进程继续
-	go func() { _ = cmd.Wait() }()
+	// rc2 修 G9: goroutine 里 cmd.Wait() 返回的 error 被丢弃没问题, 但如果 Wait 本身
+	// panic (已知的 Go runtime race — Windows 不会, Linux 罕见但可能在 exec.Cmd 内部
+	// state 被并发访问时 panic), 会杀掉整个 httpd 进程. 加 defer recover 隔离.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("runBinDetached: cmd.Wait panicked: %v", r)
+			}
+		}()
+		_ = cmd.Wait()
+	}()
 	return nil
 }

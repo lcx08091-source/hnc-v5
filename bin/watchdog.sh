@@ -230,6 +230,27 @@ HOTSPOTD_LAST_RESTART=0
 DETECT_LAST_RESTART=0
 RESTART_COOLDOWN=60  # 秒
 
+# rc2 修 S6: spawn_lock 陈旧检测.
+# 原代码 mkdir 失败直接 skip 本轮, 没有 stale detection — watchdog 上一次
+# 被 SIGKILL (OOM/用户 pkill) 时若正持锁, 目录遗留, 新 watchdog 永远拿不到锁,
+# 所有 daemon 重启动作被永久阻塞. 这里以 mtime 做 60 秒陈旧阈值: 超过就强释放.
+# 返回 0 = 拿到锁, 1 = 被正当持有(他方活跃, skip 本轮).
+SPAWN_LOCK_STALE_SEC=60
+try_spawn_lock() {
+    local lockdir=$1
+    if mkdir "$lockdir" 2>/dev/null; then
+        return 0
+    fi
+    local age
+    age=$(( $(date +%s) - $(stat -c %Y "$lockdir" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "$SPAWN_LOCK_STALE_SEC" ]; then
+        log "WARN: spawn lock $lockdir stale (${age}s > ${SPAWN_LOCK_STALE_SEC}s), forcibly releasing"
+        rmdir "$lockdir" 2>/dev/null
+        mkdir "$lockdir" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 check_services() {
     local restarted=0
     local now; now=$(date +%s 2>/dev/null) || now=0
@@ -265,7 +286,7 @@ check_services() {
             fi
             log "hotspotd dead, restarting (last=${HOTSPOTD_LAST_RESTART})..."
             local spawnlock="$RUN/daemon.spawn"
-            if ! mkdir "$spawnlock" 2>/dev/null; then
+            if ! try_spawn_lock "$spawnlock"; then
                 log "daemon spawn lock held, skip this round"
                 return 0
             fi
@@ -290,7 +311,26 @@ check_services() {
         else
             log "Detector dead, restarting..."
             local spawnlock="$RUN/daemon.spawn"
-            if mkdir "$spawnlock" 2>/dev/null; then
+            if try_spawn_lock "$spawnlock"; then
+                sh "$HNC_DIR/bin/device_detect.sh" daemon >> "$HNC_DIR/logs/detect.log" 2>&1 &
+                echo $! > "$RUN/detect.pid"
+                sleep 1
+                rmdir "$spawnlock" 2>/dev/null
+                DETECT_LAST_RESTART=$now
+                restarted=1
+            fi
+        fi
+    elif [ -z "$det_pid" ]; then
+        # rc2 修 S10: 两个 pid 文件都缺的兜底.
+        # 原来: hotspotd.pid 和 detect.pid 都不存在 → 函数 return 0, 什么都不做,
+        #       C daemon / shell fallback 都永远不起来. 真机事故: 用户手动 pkill + rm pid
+        #       后 watchdog 看着在跑但再也不恢复, 必须重启模块.
+        # 现在: 拉 device_detect daemon (自己会尝试起 C daemon, 失败回落 shell).
+        local since=$((now - DETECT_LAST_RESTART))
+        if [ $since -ge $RESTART_COOLDOWN ]; then
+            log "both hotspotd.pid and detect.pid missing, bootstrapping detector"
+            local spawnlock="$RUN/daemon.spawn"
+            if try_spawn_lock "$spawnlock"; then
                 sh "$HNC_DIR/bin/device_detect.sh" daemon >> "$HNC_DIR/logs/detect.log" 2>&1 &
                 echo $! > "$RUN/detect.pid"
                 sleep 1

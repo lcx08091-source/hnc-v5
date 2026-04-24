@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -310,11 +311,16 @@ func (s *server) apiLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // tailFile · 读文件末尾 N 行
+// rc2 修 G10: 加 3 秒 context 超时. 原代码无 timeout, 如果磁盘卡/fuse 挂起,
+// tail 子进程会永久 hang, 前端 /api/logs 请求就跟着挂, goroutine 泄漏到重启.
+// 3s 对正常 tail 绰绰有余 (就算 10MB 日志也远远够), 卡住的立即放行.
 func tailFile(path string, n int) string {
-	cmd := exec.Command("tail", "-n", intToStr(n), path)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tail", "-n", intToStr(n), path)
 	out, err := cmd.Output()
 	if err != nil {
-		// 读不到或文件不存在 - 返回空而不是 error
+		// 读不到或文件不存在或超时 - 返回空而不是 error
 		return ""
 	}
 	return string(out)

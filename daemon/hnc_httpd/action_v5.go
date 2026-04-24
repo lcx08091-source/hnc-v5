@@ -350,8 +350,9 @@ func actionPairNew(hncDir string) actionResp {
 func actionPairRevoke(hncDir string, p map[string]string) actionResp {
 	token := p["token"]
 	// rc3.1.14 修 P2 (review §校验): 加长度上下界, 防滥用 (空字符串绕过 / 超长输入).
-	// TokenID 是 16 字节 hex = 32 字符, 但 token 可能是 cookie value 形式更长.
-	// 给一个宽松上界 256, 严格下界 8 (任何合理短 token 都至少这么长).
+	// rc2 修 G12: TokenID 实际是 8 字节 random → base64url ~11 字符 (见 auth.go:5),
+	// 不是注释原说的 "16 字节 hex = 32 字符". 但 token 参数可能是完整 cookie
+	// (<TokenID>.<Secret> 形式, ~44 字符) 所以上界 256 仍合理, 下界 8 保留.
 	if len(token) < 8 || len(token) > 256 {
 		return actionResp{OK: false, Error: "bad params", Detail: "token length out of range (8-256)"}
 	}

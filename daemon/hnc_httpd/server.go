@@ -98,6 +98,24 @@ func (s *server) handler() http.Handler {
 
 // ═══ 静态资源 ═══════════════════════════════════════════════════
 
+// rc2 修 G8: serveIndex loopback 路径每请求 os.ReadFile 222KB, 前端 2.5s 轮询压榨 I/O.
+// 模块路径下的 index.html 在 httpd 生命周期内不变(reinstall 会重启 httpd), 启动后
+// 第一次读缓存即可. atomic.Value 避免多 goroutine 首读竞态, sync.Once 确保只读一次.
+var (
+	indexDiskOnce  sync.Once
+	indexDiskBytes []byte
+)
+
+func loadIndexDiskOnce() []byte {
+	indexDiskOnce.Do(func() {
+		const diskPath = "/data/adb/modules/hotspot_network_control/webroot/index.html"
+		if data, err := os.ReadFile(diskPath); err == nil && len(data) > 0 {
+			indexDiskBytes = data
+		}
+	})
+	return indexDiskBytes
+}
+
 func (s *server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -133,8 +151,8 @@ func (s *server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	// 注: 模块实际 install 路径是 /data/adb/modules/hotspot_network_control/webroot/,
 	// 但 data dir (s.hncDir) 是 /data/local/hnc, 两者不同。用 post-fs-data.sh 建 symlink 或
 	// 直接硬编码模块路径(更简单)
-	diskPath := "/data/adb/modules/hotspot_network_control/webroot/index.html"
-	if data, err := os.ReadFile(diskPath); err == nil && len(data) > 0 {
+	// rc2 修 G8: 首次 os.ReadFile 后缓存, 后续直接 memcpy 到 response (快 ~100x).
+	if data := loadIndexDiskOnce(); data != nil {
 		_, _ = w.Write(data)
 		return
 	}

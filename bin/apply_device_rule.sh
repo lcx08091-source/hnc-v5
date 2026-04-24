@@ -292,9 +292,24 @@ case "$CMD" in
     clear)
         IP=$(get_ip "$MAC")
         IFACE=$(sh "$DETECT" iface 2>/dev/null)
-        # mid 现在 rules.json 里. clear 路径 mid 必定已存在 (get_or_assign_mid 走第一
-        # 分支直接 echo, 不会进入 alloc 循环), 所以不需要 gate_lock.
-        MID=$(get_or_assign_mid "$MAC")
+        # rc2 修 S12: clear 之前先 device_get 看是否有 mid, 没有就不调 get_or_assign_mid
+        # (避免给 "从未限速过的设备" 分配一个立刻丢弃的 mid — 99 个 mid 很稀缺).
+        MID=$(sh "$JSON_SET" device_get "$MAC" mark_id 2>/dev/null)
+        if [ -z "$MID" ] || ! echo "$MID" | grep -qE '^[0-9]+$'; then
+            log "clear mac=$MAC: no existing mid, skipping tc/iptables (nothing to clear)"
+            # 即便没 mid, 也把 limit_enabled 归位, 保证 rules.json 一致
+            js_set_dev down_mbps 0
+            js_set_dev up_mbps 0
+            js_set_dev limit_enabled false
+            js_set_dev_flush
+            if [ -n "$JSON_FAILED" ]; then
+                log "clear mac=$MAC (no-mid path) partial JSON write failed: $JSON_FAILED"
+                echo "ok partial_json_fail=$JSON_FAILED"
+            else
+                echo "ok"
+            fi
+            exit 0
+        fi
         log "clear mac=$MAC ip=$IP mid=$MID iface=$IFACE"
         # 1. tc remove (即使 iface/IP 缺也尝试,失败不报错 — 可能本来就没 apply 过)
         if [ -n "$IFACE" ] && [ "$IFACE" != "wlan0" ]; then

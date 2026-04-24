@@ -341,10 +341,12 @@ func (s *server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if tidVal := r.Context().Value(ctxKeyTokenID); tidVal != nil {
 		if tid, ok := tidVal.(string); ok && tid != "" {
 			// 标记 revoked 并持久化
+			// rc2 修 G5: Put 内部已调 saveAtomicLocked (见 tokens.go:350), 再
+			// Flush 是第二次 saveAtomicLocked + fsync, 纯浪费. logout 单次请求
+			// 原来要两次 fsync, 在慢盘上对用户可见.
 			if tok, ok := s.tokens.Get(tid); ok {
 				tok.Revoked = true
 				_ = s.tokens.Put(tid, tok)
-				_ = s.tokens.Flush()
 				log.Printf("logout: revoked tid=%s", TokenIDLogPrefix(tid))
 			}
 		}

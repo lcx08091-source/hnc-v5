@@ -92,8 +92,11 @@ for entry in $PIDS_TO_WAIT; do
     fi
 done
 
-# 确保相关进程名也被清理
-for proc in device_detect watchdog hotspot_autostart; do
+# rc2 修 S9: pkill -f 用完整 bin/xxx.sh 前缀而不是裸名.
+#   原 "watchdog" 会匹配 cmdline 里任何含 "watchdog" 的进程 (例如用户在编辑器打开
+#   watchdog.sh, 或其他模块路径含 watchdog). "bin/watchdog.sh" 把误杀面收窄到实际
+#   含 HNC 脚本路径的进程.
+for proc in bin/device_detect.sh bin/watchdog.sh bin/hotspot_autostart.sh; do
     pkill -f "$proc" 2>/dev/null && log "pkill $proc"
 done
 fi  # end MODE=all|restart 的进程清理分支

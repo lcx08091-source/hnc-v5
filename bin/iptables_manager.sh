@@ -32,7 +32,7 @@
 #        所以保存到 conntrack 时 mark 0x1003B 会被截断为 0x003B，
 #        restore 后 tc fw filter 再也匹配不到 → v6 下行限速全部失效。
 #        在 v4 侧不易察觉是因为 v4 下行还有一条 -d IP 规则直接打全 mark 兜底。)
-#   4. ip6tables 不可用时优雅降级到纯 v4 模式（IPV6_OK=0，日志 warn）
+#   4. $IP6T 不可用时优雅降级到纯 v4 模式（IPV6_OK=0，日志 warn）
 #   5. 代码结构：引入 ipt_dual / ipt_dual_q / _ensure_chain / _ensure_link 助手
 #
 # 架构（v4+v6）:
@@ -80,14 +80,21 @@ MARK_BLACKLIST=0xDEAD
 # v3.4.1：从 0x1ffff 扩到 0xffffff，配合新 MARK_BASE 避开 Android netd 命名空间
 CONNMARK_MASK=0xffffff
 
+# rc2 修 S7: 全文件 iptables/ip6tables 走 $IPT/$IP6T, 统一带 -w 2 xtables 锁.
+# 没 -w 时 xtables 被占(watchdog + apply_device_rule 并发常见)会直接 EAGAIN 退,
+# 规则部分应用 / 静默失败. -w 2 等最多 2 秒, 覆盖瞬时竞争.
+# 例外: 下面 `command -v ip6tables` 探测必须用裸名, command -v 只能接 1 个 arg.
+IPT="iptables -w 2"
+IP6T="ip6tables -w 2"
+
 # ═══════════════════════════════════════════════════════════════
 # v3.3.4 双栈抽象
 # ═══════════════════════════════════════════════════════════════
 
-# 运行时检测 ip6tables 是否可用（部分裁剪内核可能没有 IPv6 netfilter）
+# 运行时检测 $IP6T 是否可用（部分裁剪内核可能没有 IPv6 netfilter）
 IPV6_OK=0
 if command -v ip6tables >/dev/null 2>&1 \
-    && ip6tables -t mangle -L -n >/dev/null 2>&1; then
+    && $IP6T -t mangle -L -n >/dev/null 2>&1; then
     IPV6_OK=1
 fi
 
@@ -96,43 +103,43 @@ fi
 # 调用方必须确保参数里不含 -s/-d 这种协议相关的地址参数
 # 返回值取 v4 的返回码；v6 失败仅记 warn 日志，不影响流程
 ipt_dual() {
-    iptables "$@"
+    $IPT "$@"
     local r4=$?
     if [ "$IPV6_OK" = "1" ]; then
         # v4.0 patch3.b.2: v6 失败不打 WARN(SD8 Elite/IPA 卸载下 v6 链可能不存在,这是常态不是错误)
         # apply.log/iptables.log 之前每次 mark 都 4 行 WARN 太脏
-        # 真要排查 v6, 直接看 ip6tables -t mangle -nL 就够
-        ip6tables "$@" 2>/dev/null || true
+        # 真要排查 v6, 直接看 $IP6T -t mangle -nL 就够
+        $IP6T "$@" 2>/dev/null || true
     fi
     return $r4
 }
 
 # 同上，但忽略所有错误（用于幂等删除/清理场景）
 ipt_dual_q() {
-    iptables "$@" 2>/dev/null
-    [ "$IPV6_OK" = "1" ] && ip6tables "$@" 2>/dev/null
+    $IPT "$@" 2>/dev/null
+    [ "$IPV6_OK" = "1" ] && $IP6T "$@" 2>/dev/null
     return 0
 }
 
 # 幂等创建并 flush 用户自定义链（v4+v6）
 _ensure_chain() {
     local table=$1 chain=$2
-    iptables -t "$table" -N "$chain" 2>/dev/null
-    iptables -t "$table" -F "$chain" 2>/dev/null
+    $IPT -t "$table" -N "$chain" 2>/dev/null
+    $IPT -t "$table" -F "$chain" 2>/dev/null
     if [ "$IPV6_OK" = "1" ]; then
-        ip6tables -t "$table" -N "$chain" 2>/dev/null
-        ip6tables -t "$table" -F "$chain" 2>/dev/null
+        $IP6T -t "$table" -N "$chain" 2>/dev/null
+        $IP6T -t "$table" -F "$chain" 2>/dev/null
     fi
 }
 
 # 幂等将用户链挂到 builtin 链（v4+v6 独立判断，避免一边重复挂另一边漏挂）
 _ensure_link() {
     local table=$1 parent=$2 child=$3 pos=${4:-1}
-    iptables -t "$table" -C "$parent" -j "$child" 2>/dev/null \
-        || iptables -t "$table" -I "$parent" "$pos" -j "$child"
+    $IPT -t "$table" -C "$parent" -j "$child" 2>/dev/null \
+        || $IPT -t "$table" -I "$parent" "$pos" -j "$child"
     if [ "$IPV6_OK" = "1" ]; then
-        ip6tables -t "$table" -C "$parent" -j "$child" 2>/dev/null \
-            || ip6tables -t "$table" -I "$parent" "$pos" -j "$child" 2>/dev/null
+        $IP6T -t "$table" -C "$parent" -j "$child" 2>/dev/null \
+            || $IP6T -t "$table" -I "$parent" "$pos" -j "$child" 2>/dev/null
     fi
 }
 
@@ -166,10 +173,10 @@ init_chains() {
     _ensure_link mangle FORWARD HNC_MARK 1
 
     # ── HNC_STATS (mangle/FORWARD): 流量字节数 (v4 only) ──────
-    iptables -t mangle -N HNC_STATS 2>/dev/null
-    iptables -t mangle -F HNC_STATS 2>/dev/null
-    iptables -t mangle -C FORWARD -j HNC_STATS 2>/dev/null \
-        || iptables -t mangle -I FORWARD 2 -j HNC_STATS
+    $IPT -t mangle -N HNC_STATS 2>/dev/null
+    $IPT -t mangle -F HNC_STATS 2>/dev/null
+    $IPT -t mangle -C FORWARD -j HNC_STATS 2>/dev/null \
+        || $IPT -t mangle -I FORWARD 2 -j HNC_STATS
 
     # ── HNC_SAVE (mangle/POSTROUTING): MARK → CONNMARK ────────
     # 上行新连接打完 mark 后存入 conntrack，下行回包才能 restore
@@ -216,15 +223,15 @@ mark_device() {
     _gc_stale_ips_for_mac "$mac" "$mark" "$ip"
 
     # ── 清除可能的旧规则（幂等)──
-    iptables -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
+    $IPT -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
         -j MARK --set-mark "$mark" 2>/dev/null
-    iptables -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
+    $IPT -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
     ipt_dual_q -t mangle -D HNC_MARK \
         -m mac --mac-source "$mac" -m mark --mark 0 \
         -j MARK --set-mark "$mark"
 
     # ── v4 上行：src IP + MAC（最精确）──
-    iptables -t mangle -A HNC_MARK \
+    $IPT -t mangle -A HNC_MARK \
         -s "$ip" -m mac --mac-source "$mac" \
         -j MARK --set-mark "$mark"
 
@@ -236,15 +243,15 @@ mark_device() {
 
     # ── v4 下行：dst IP ──
     # 不可省：CONNMARK restore 不一定覆盖所有情况（如新连接的第一个回包）
-    iptables -t mangle -A HNC_MARK \
+    $IPT -t mangle -A HNC_MARK \
         -d "$ip" -j MARK --set-mark "$mark"
 
     # ── v4 流量统计 ──
     # v6 无统计，因为需要跟踪动态地址（代价不值）
-    iptables -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    iptables -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
-    iptables -t mangle -A HNC_STATS -s "$ip" -j RETURN
-    iptables -t mangle -A HNC_STATS -d "$ip" -j RETURN
+    $IPT -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -A HNC_STATS -s "$ip" -j RETURN
+    $IPT -t mangle -A HNC_STATS -d "$ip" -j RETURN
 
     echo "$mark"
 }
@@ -259,14 +266,14 @@ _gc_stale_ips_for_mac() {
     local stale_ips ip_line
 
     # 步骤 1: 收集所有跟这个 mac/mark 关联的 IP(去重)
-    # iptables -S 输出格式示例:
+    # $IPT -S 输出格式示例:
     #   -A HNC_MARK -s 192.168.43.5/32 -m mac --mac-source aa:bb:cc:dd:ee:ff -j MARK --set-xmark 0x800001/0xffffffff
     #   -A HNC_MARK -d 192.168.43.5/32 -j MARK --set-xmark 0x800001/0xffffffff
     #
     # 用 awk 一次提取:
     #   - 含 --mac-source <mac> 的行 → 取 -s 后的 IP
     #   - 含 --set-xmark <mark> 但不含 --mac-source 的行 → 取 -d 后的 IP
-    stale_ips=$(iptables -t mangle -S HNC_MARK 2>/dev/null | awk -v m="$mac" -v mk="$mark" '
+    stale_ips=$($IPT -t mangle -S HNC_MARK 2>/dev/null | awk -v m="$mac" -v mk="$mark" '
         function strip_cidr(ip) { sub(/\/32$/, "", ip); return ip }
         {
             has_mac = 0; has_mark = 0; src_ip = ""; dst_ip = ""
@@ -285,7 +292,7 @@ _gc_stale_ips_for_mac() {
     ' | sort -u)
 
     # 步骤 2: 对每个非 cur_ip 的旧 IP,删除 src/dst/stats 规则
-    # 注意:这里用 pipe-while 是 OK 的(iptables -D 是直接 syscall,不依赖循环内变量),
+    # 注意:这里用 pipe-while 是 OK 的($IPT -D 是直接 syscall,不依赖循环内变量),
     # 但为了跟 device_detect.sh 风格一致 + 防御 ash subshell 的潜在问题,改用临时文件法
     [ -z "$stale_ips" ] && return 0
     local _gc_tmp=$HNC_DIR/run/.gc_$$
@@ -294,11 +301,11 @@ _gc_stale_ips_for_mac() {
         [ -z "$old_ip" ] && continue
         [ "$old_ip" = "$cur_ip" ] && continue
         log "GC stale IP: $old_ip (mac=$mac mark=$mark)"
-        iptables -t mangle -D HNC_MARK -s "$old_ip" -m mac --mac-source "$mac" \
+        $IPT -t mangle -D HNC_MARK -s "$old_ip" -m mac --mac-source "$mac" \
             -j MARK --set-mark "$mark" 2>/dev/null
-        iptables -t mangle -D HNC_MARK -d "$old_ip" -j MARK --set-mark "$mark" 2>/dev/null
-        iptables -t mangle -D HNC_STATS -s "$old_ip" -j RETURN 2>/dev/null
-        iptables -t mangle -D HNC_STATS -d "$old_ip" -j RETURN 2>/dev/null
+        $IPT -t mangle -D HNC_MARK -d "$old_ip" -j MARK --set-mark "$mark" 2>/dev/null
+        $IPT -t mangle -D HNC_STATS -s "$old_ip" -j RETURN 2>/dev/null
+        $IPT -t mangle -D HNC_STATS -d "$old_ip" -j RETURN 2>/dev/null
     done < "$_gc_tmp"
     rm -f "$_gc_tmp"
     return 0
@@ -314,23 +321,23 @@ unmark_device() {
     log "Unmarking $ip ($mac) mark=$mark"
 
     # v4.0 Patch 4.b hotfix: unmark 是幂等清理操作 — 规则不存在 == 已清理成功
-    # 之前函数最后一条 iptables -D 失败时 return 非 0,导致 WebUI clearLimit 上报失败给用户
+    # 之前函数最后一条 $IPT -D 失败时 return 非 0,导致 WebUI clearLimit 上报失败给用户
     # 实际场景:热点已关 / 链已被 cleanup / 这条规则之前根本没挂上 — 都不该是错误
     # 所有 -D 命令都 2>/dev/null,失败也继续,最后强制 return 0
 
-    # v3.4.0：先清 v6 filter（trick：clear_one 从 iptables 反查 mark_id，
-    # 必须在删 iptables 规则之前调用，否则它找不到 mark）
+    # v3.4.0：先清 v6 filter（trick：clear_one 从 $IPT 反查 mark_id，
+    # 必须在删 $IPT 规则之前调用，否则它找不到 mark）
     sh "$HNC_DIR/bin/v6_sync.sh" clear "$mac" 2>/dev/null || true
 
-    iptables -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
+    $IPT -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
         -j MARK --set-mark "$mark" 2>/dev/null
-    iptables -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
+    $IPT -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
     ipt_dual_q -t mangle -D HNC_MARK \
         -m mac --mac-source "$mac" -m mark --mark 0 \
         -j MARK --set-mark "$mark"
 
-    iptables -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    iptables -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
 
     return 0
 }
@@ -355,21 +362,21 @@ blacklist_add() {
 
     # 仅 v4：按 IP 的 DROP（双向都拦）
     if [ -n "$ip" ]; then
-        iptables -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
-        iptables -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
-        iptables -t filter -A HNC_CTRL -s "$ip" -j DROP
-        iptables -t filter -A HNC_CTRL -d "$ip" -j DROP
+        $IPT -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
+        $IPT -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
+        $IPT -t filter -A HNC_CTRL -s "$ip" -j DROP
+        $IPT -t filter -A HNC_CTRL -d "$ip" -j DROP
     fi
 
     # TCP RESET 立即断现有连接（v4 + v6 独立处理，有 DROP 降级）
-    iptables -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" \
+    $IPT -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" \
         -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null \
-        || iptables -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" -p tcp -j DROP
+        || $IPT -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" -p tcp -j DROP
 
     if [ "$IPV6_OK" = "1" ]; then
-        ip6tables -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" \
+        $IP6T -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" \
             -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null \
-            || ip6tables -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" -p tcp -j DROP 2>/dev/null
+            || $IP6T -t filter -I HNC_CTRL 1 -m mac --mac-source "$mac" -p tcp -j DROP 2>/dev/null
     fi
 }
 
@@ -383,8 +390,8 @@ blacklist_remove() {
     ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" -p tcp -j DROP
 
     if [ -n "$ip" ]; then
-        iptables -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
-        iptables -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
+        $IPT -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
+        $IPT -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
     fi
     # Patch 4.b: blacklist_remove 是幂等清理 — 同 unmark_device,强制 return 0
     return 0
@@ -400,8 +407,8 @@ whitelist_mode_on() {
 }
 
 whitelist_mode_off() {
-    iptables -t filter -F HNC_WHITELIST 2>/dev/null
-    [ "$IPV6_OK" = "1" ] && ip6tables -t filter -F HNC_WHITELIST 2>/dev/null
+    $IPT -t filter -F HNC_WHITELIST 2>/dev/null
+    [ "$IPV6_OK" = "1" ] && $IP6T -t filter -F HNC_WHITELIST 2>/dev/null
     log "Whitelist mode OFF"
 }
 
@@ -409,14 +416,14 @@ whitelist_add() {
     local ip=$1 mac=$2
     ipt_dual_q -t filter -D HNC_WHITELIST -m mac --mac-source "$mac" -j ACCEPT
     ipt_dual    -t filter -I HNC_WHITELIST 1 -m mac --mac-source "$mac" -j ACCEPT
-    [ -n "$ip" ] && iptables -t filter -I HNC_WHITELIST 1 -s "$ip" -j ACCEPT
+    [ -n "$ip" ] && $IPT -t filter -I HNC_WHITELIST 1 -s "$ip" -j ACCEPT
     log "Whitelist add: $ip ($mac)"
 }
 
 whitelist_remove() {
     local ip=$1 mac=$2
     ipt_dual_q -t filter -D HNC_WHITELIST -m mac --mac-source "$mac" -j ACCEPT
-    [ -n "$ip" ] && iptables -t filter -D HNC_WHITELIST -s "$ip" -j ACCEPT 2>/dev/null
+    [ -n "$ip" ] && $IPT -t filter -D HNC_WHITELIST -s "$ip" -j ACCEPT 2>/dev/null
     log "Whitelist remove: $ip ($mac)"
     return 0  # Patch 4.b: 幂等清理强制返 0,见 unmark_device
 }
@@ -428,15 +435,15 @@ get_stats() {
     local ip=$1
     # v3.4.4：修复 src/dst 写反 bug。
     # rx=download=设备是 dst($9),tx=upload=设备是 src($8)
-    local upload; upload=$(iptables -t mangle -L HNC_STATS -nvx 2>/dev/null \
+    local upload; upload=$($IPT -t mangle -L HNC_STATS -nvx 2>/dev/null \
         | awk -v ip="$ip" 'NF>8 && $8==ip {sum+=$2} END{print sum+0}')
-    local download; download=$(iptables -t mangle -L HNC_STATS -nvx 2>/dev/null \
+    local download; download=$($IPT -t mangle -L HNC_STATS -nvx 2>/dev/null \
         | awk -v ip="$ip" 'NF>8 && $9==ip {sum+=$2} END{print sum+0}')
     echo "{\"upload_bytes\":$upload,\"download_bytes\":$download}"
 }
 
 reset_counters() {
-    iptables -t mangle -Z HNC_STATS 2>/dev/null
+    $IPT -t mangle -Z HNC_STATS 2>/dev/null
     log "Counters reset"
 }
 
@@ -455,31 +462,31 @@ cleanup() {
         "filter FORWARD     HNC_CTRL"    \
         "filter FORWARD     HNC_WHITELIST"; do
         set -- $entry
-        iptables -t "$1" -D "$2" -j "$3" 2>/dev/null
-        [ "$IPV6_OK" = "1" ] && ip6tables -t "$1" -D "$2" -j "$3" 2>/dev/null
+        $IPT -t "$1" -D "$2" -j "$3" 2>/dev/null
+        [ "$IPV6_OK" = "1" ] && $IP6T -t "$1" -D "$2" -j "$3" 2>/dev/null
     done
     # HNC_STATS 仅 v4
-    iptables -t mangle -D FORWARD -j HNC_STATS 2>/dev/null
+    $IPT -t mangle -D FORWARD -j HNC_STATS 2>/dev/null
 
     # flush + delete 所有用户链（v4）
     for chain in HNC_RESTORE HNC_MARK HNC_STATS HNC_SAVE; do
-        iptables -t mangle -F "$chain" 2>/dev/null
-        iptables -t mangle -X "$chain" 2>/dev/null
+        $IPT -t mangle -F "$chain" 2>/dev/null
+        $IPT -t mangle -X "$chain" 2>/dev/null
     done
     for chain in HNC_CTRL HNC_WHITELIST; do
-        iptables -t filter -F "$chain" 2>/dev/null
-        iptables -t filter -X "$chain" 2>/dev/null
+        $IPT -t filter -F "$chain" 2>/dev/null
+        $IPT -t filter -X "$chain" 2>/dev/null
     done
 
     # flush + delete 所有用户链（v6）
     if [ "$IPV6_OK" = "1" ]; then
         for chain in HNC_RESTORE HNC_MARK HNC_SAVE; do
-            ip6tables -t mangle -F "$chain" 2>/dev/null
-            ip6tables -t mangle -X "$chain" 2>/dev/null
+            $IP6T -t mangle -F "$chain" 2>/dev/null
+            $IP6T -t mangle -X "$chain" 2>/dev/null
         done
         for chain in HNC_CTRL HNC_WHITELIST; do
-            ip6tables -t filter -F "$chain" 2>/dev/null
-            ip6tables -t filter -X "$chain" 2>/dev/null
+            $IP6T -t filter -F "$chain" 2>/dev/null
+            $IP6T -t filter -X "$chain" 2>/dev/null
         done
     fi
 
@@ -499,7 +506,7 @@ cleanup() {
 #
 #   ensure_stats <ip>
 #     给某 IP 在 HNC_STATS 链里添加 -s/-d RETURN 规则。
-#     用 iptables -C 检查规则是否已存在,避免重复添加导致双倍计数。
+#     用 $IPT -C 检查规则是否已存在,避免重复添加导致双倍计数。
 #     mark_device 已经在添加同样规则,先检查再加完全幂等。
 #
 #   stats_all
@@ -513,16 +520,16 @@ ensure_stats() {
     local ip=$1
     [ -z "$ip" ] && return 1
     # v3.4.6 防御:HNC_STATS 链不存在则跳过(避免 cleanup 后调用报错)
-    iptables -t mangle -L HNC_STATS -n >/dev/null 2>&1 || return 1
-    iptables -t mangle -C HNC_STATS -s "$ip" -j RETURN 2>/dev/null \
-        || iptables -t mangle -A HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    iptables -t mangle -C HNC_STATS -d "$ip" -j RETURN 2>/dev/null \
-        || iptables -t mangle -A HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -L HNC_STATS -n >/dev/null 2>&1 || return 1
+    $IPT -t mangle -C HNC_STATS -s "$ip" -j RETURN 2>/dev/null \
+        || $IPT -t mangle -A HNC_STATS -s "$ip" -j RETURN 2>/dev/null
+    $IPT -t mangle -C HNC_STATS -d "$ip" -j RETURN 2>/dev/null \
+        || $IPT -t mangle -A HNC_STATS -d "$ip" -j RETURN 2>/dev/null
 }
 
 stats_all() {
-    iptables -t mangle -L HNC_STATS -nvx 2>/dev/null | awk '
-    # iptables -nvx 数据行:
+    $IPT -t mangle -L HNC_STATS -nvx 2>/dev/null | awk '
+    # $IPT -nvx 数据行:
     #   $1=pkts $2=bytes $3=target $4=prot $5=opt $6=in $7=out $8=source $9=destination
     # 跳过表头(第 1-2 行)和占位行 0.0.0.0/0 → 0.0.0.0/0
     $1 ~ /^[0-9]+$/ && NF >= 9 {
@@ -646,12 +653,12 @@ case "$1" in
         echo "运行时检测：IPV6_OK=$IPV6_OK"
         echo ""
         echo "验证命令："
-        echo "  iptables  -t mangle -L HNC_MARK    -nv    # v4 MARK 规则"
-        echo "  ip6tables -t mangle -L HNC_MARK    -nv    # v6 MARK 规则"
-        echo "  iptables  -t mangle -L HNC_RESTORE -nv    # v4 CONNMARK restore"
-        echo "  ip6tables -t mangle -L HNC_RESTORE -nv    # v6 CONNMARK restore"
-        echo "  iptables  -t mangle -L HNC_SAVE    -nv    # v4 CONNMARK save"
-        echo "  ip6tables -t mangle -L HNC_SAVE    -nv    # v6 CONNMARK save"
-        echo "  iptables  -t mangle -L HNC_STATS   -nvx   # v4 流量统计(v3.4.4+)"
+        echo "  $IPT  -t mangle -L HNC_MARK    -nv    # v4 MARK 规则"
+        echo "  $IP6T -t mangle -L HNC_MARK    -nv    # v6 MARK 规则"
+        echo "  $IPT  -t mangle -L HNC_RESTORE -nv    # v4 CONNMARK restore"
+        echo "  $IP6T -t mangle -L HNC_RESTORE -nv    # v6 CONNMARK restore"
+        echo "  $IPT  -t mangle -L HNC_SAVE    -nv    # v4 CONNMARK save"
+        echo "  $IP6T -t mangle -L HNC_SAVE    -nv    # v6 CONNMARK save"
+        echo "  $IPT  -t mangle -L HNC_STATS   -nvx   # v4 流量统计(v3.4.4+)"
         exit 1 ;;
 esac

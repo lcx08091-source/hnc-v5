@@ -19,11 +19,12 @@ mkdir -p $HNC_DIR/logs $RUN
 # (KSU / SukiSU / Magisk 的 MODDIR 路径不一样, 不能硬编码)
 echo "$MODDIR" > "$RUN/service.path" 2>/dev/null
 
-# ── 退出时自动清理（模块卸载/系统关机）──────────────────────
-cleanup_on_exit() {
-    sh $HNC_DIR/bin/cleanup.sh 2>/dev/null
-}
-trap cleanup_on_exit TERM INT
+# rc2 修 S8: 删除死 trap.
+# 原有 trap cleanup_on_exit TERM INT + cleanup_on_exit() 函数是死代码:
+# Magisk/KSU 的 post-fs-data/service 脚本是被 init 以 daemonize 方式拉起, init 不会
+# 给 service.sh 发 TERM/INT (模块卸载走 uninstall.sh 钩子, 系统关机 init 发 KILL).
+# 这段保留了几年没起过作用, 还给读代码的人"有清理保证"的错觉. 真清理在
+# cleanup.sh 和 uninstall.sh, 不在这里.
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [HNC] $1" >> $LOG
