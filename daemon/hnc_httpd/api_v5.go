@@ -25,14 +25,14 @@ import (
 // ── /api/config ────────────────────────────────────────────────
 
 type configResp struct {
-	AuthRequired       bool   `json:"auth_required"`
-	WhitelistMode      bool   `json:"whitelist_mode"`
-	RemoteEnabled      bool   `json:"remote_enabled"`
+	AuthRequired  bool `json:"auth_required"`
+	WhitelistMode bool `json:"whitelist_mode"`
+	RemoteEnabled bool `json:"remote_enabled"`
 	// v5.1 P2-1: 字段对齐 shell (rules.json 里实际用 hotspot_auto/_pass/_delay)
 	// 前端/JSON 输出保持向前兼容的 hotspot_autostart/hotspot_delay_sec 名字
-	HotspotAutostart   bool   `json:"hotspot_autostart"`
-	HotspotSSID        string `json:"hotspot_ssid,omitempty"`
-	HotspotDelaySec    int    `json:"hotspot_delay_sec,omitempty"`
+	HotspotAutostart bool   `json:"hotspot_autostart"`
+	HotspotSSID      string `json:"hotspot_ssid,omitempty"`
+	HotspotDelaySec  int    `json:"hotspot_delay_sec,omitempty"`
 	// rc3.1.13.1 删 OffloadWarn (review §3 P0): 历史上后端读 rules.json
 	// 但从无写路径, 前端 toggle 只写 localStorage 自管, 字段始终死值 false.
 	// rc3.1.12 config.json 兜底分支删除后, 死状况暴露 — 不如直接清掉
@@ -65,7 +65,9 @@ func (s *server) apiConfig(w http.ResponseWriter, r *http.Request) {
 	// rc3.1.13: 删除 config.json 覆盖分支. config.json 已弃用, 由 post-fs-data.sh
 	// 启动时单向迁移 auth_required 到 rules.json 后删除. 字段单源化让 toggle / 后端
 	// 视角永远一致, 杜绝 rc3.1.9~12 那种"前端 ON 但 middleware 不认"的 skew.
-	w.Header().Set("Content-Type", "application/json")
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -118,7 +120,9 @@ func (s *server) apiTokens(w http.ResponseWriter, r *http.Request) {
 			Revoked:  t.Revoked,
 		})
 	}
-	w.Header().Set("Content-Type", "application/json")
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -185,7 +189,9 @@ func (s *server) apiIfaceInfo(w http.ResponseWriter, r *http.Request) {
 	// 不能从客户端 IP 推出主机 IP (客户端 .188 不代表主机 .1),
 	// 保留 iface/ip 为空, 让前端 fetchHnIp 回退到 '192.168.1.1' 兜底告知
 	// (用户会看到明显不对的值, 比无法访问更容易定位)
-	w.Header().Set("Content-Type", "application/json")
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -252,7 +258,9 @@ func (s *server) apiOffloadStatus(w http.ResponseWriter, r *http.Request) {
 	if !ready {
 		resp = offloadResp{Active: false, Detail: "PENDING"}
 	}
-	w.Header().Set("Content-Type", "application/json")
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -291,22 +299,30 @@ func (s *server) apiLogs(w http.ResponseWriter, r *http.Request) {
 	// 特殊: combined = 多个 log 合并
 	if file == "combined" {
 		combined := combinedLog(s.hncDir, n)
-		w.Header().Set("Content-Type", "application/json")
+		setNoStore(w)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_ = json.NewEncoder(w).Encode(logResp{File: "combined", Content: combined, Tail: n})
 		return
 	}
 	if !allowedLogs[file] {
+		setNoStore(w)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		http.Error(w, `{"error":"log file not in whitelist"}`, http.StatusBadRequest)
 		return
 	}
 	// 绝对路径 + 再 Clean 一次兜底 · 防 ../
 	abs := filepath.Join(s.hncDir, "logs", file)
 	if !strings.HasPrefix(abs, s.hncDir+"/logs/") {
+		setNoStore(w)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		http.Error(w, `{"error":"path escape detected"}`, http.StatusBadRequest)
 		return
 	}
 	content := tailFile(abs, n)
-	w.Header().Set("Content-Type", "application/json")
+	setNoStore(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(logResp{File: file, Content: content, Tail: n})
 }
 

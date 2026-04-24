@@ -36,6 +36,16 @@ var statsRange = 'today';
 var statsData = { buckets: [] };
 var devicesData = [];
 
+// UI sync/perf hotfix: avoid overlapping polls and stale slow responses.
+// Mobile browsers may take >5s on bad links; without this, old /api/devices
+// responses can overwrite newer state and repeated DOM rebuilds cause jank.
+var devicesReqSeq = 0;
+var devicesInFlight = false;
+var devicesLastSig = '';
+var devicesLastMacSig = '';
+var statsReqSeq = 0;
+var statsInFlight = false;
+
 function $(id) { return document.getElementById(id); }
 
 // ── tab 切换 ─────────────────────────────────────────────
@@ -50,8 +60,18 @@ window.switchTab = function(name) {
 };
 
 // ── 设备列表 ─────────────────────────────────────────────
-function loadDevices() {
-  return fetch('/api/devices')
+function deviceListSignature(list) {
+  try { return JSON.stringify(list || []); } catch (_) { return String(Date.now()); }
+}
+function deviceMacSignature(list) {
+  return (list || []).map(function(d){ return d && d.mac || ''; }).sort().join('|');
+}
+function loadDevices(opts) {
+  opts = opts || {};
+  if (devicesInFlight && !opts.force) return Promise.resolve(false);
+  devicesInFlight = true;
+  var seq = ++devicesReqSeq;
+  return fetch('/api/devices', { cache: 'no-store', credentials: 'same-origin' })
     .then(function(r){
       if (r.status === 503) {
         // httpd 启动了但 data 还没准备好(典型场景: devices.json 不存在)
@@ -64,12 +84,24 @@ function loadDevices() {
       return r.json();
     })
     .then(function(data){
-      devicesData = (data && data.devices) || [];
-      renderDevices();
+      if (seq !== devicesReqSeq) return false; // stale slow response
+      var next = (data && data.devices) || [];
+      var sig = deviceListSignature(next);
+      var macSig = deviceMacSignature(next);
+      devicesData = next;
+      if (opts.force || sig !== devicesLastSig) {
+        renderDevices();
+        devicesLastSig = sig;
+      }
       setStatus(true);
-      populateDevSelect();
+      if (opts.force || macSig !== devicesLastMacSig) {
+        populateDevSelect();
+        devicesLastMacSig = macSig;
+      }
+      return true;
     })
     .catch(function(e){
+      if (seq !== devicesReqSeq) return false;
       setStatus(false, e.message);
       var hint = '';
       if (/503/.test(e.message)) {
@@ -79,6 +111,14 @@ function loadDevices() {
                '检查手机端 /data/local/hnc/logs/httpd.log</span>';
       }
       $('devices-list').innerHTML = '<div class="empty">加载失败: '+esc(e.message)+hint+'</div>';
+      return false;
+    })
+    .then(function(v){
+      if (seq === devicesReqSeq) devicesInFlight = false;
+      return v;
+    }, function(e){
+      if (seq === devicesReqSeq) devicesInFlight = false;
+      throw e;
     });
 }
 
@@ -175,18 +215,33 @@ function renderCard(d) {
 }
 
 // ── 流量统计 ─────────────────────────────────────────────
-function loadStats() {
+function loadStats(opts) {
+  opts = opts || {};
+  if (statsInFlight && !opts.force) return Promise.resolve(false);
+  statsInFlight = true;
+  var seq = ++statsReqSeq;
   var mac = ($('stats-dev')||{}).value || '';
-  var url = '/api/stats?range=' + statsRange + (mac ? '&mac='+mac : '');
-  return fetch(url)
-    .then(function(r){ return r.json(); })
+  var url = '/api/stats?range=' + statsRange + (mac ? '&mac='+encodeURIComponent(mac) : '');
+  return fetch(url, { cache: 'no-store', credentials: 'same-origin' })
+    .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
     .then(function(data){
+      if (seq !== statsReqSeq) return false;
       statsData = data || { buckets: [] };
       renderStatsChart();
+      return true;
     })
     .catch(function(e){
+      if (seq !== statsReqSeq) return false;
       statsData = { buckets: [] };
       renderStatsChart();
+      return false;
+    })
+    .then(function(v){
+      if (seq === statsReqSeq) statsInFlight = false;
+      return v;
+    }, function(e){
+      if (seq === statsReqSeq) statsInFlight = false;
+      throw e;
     });
 }
 
@@ -388,8 +443,8 @@ function showToast(text, kind) {
 function handleActionResult(r, successMsg) {
   if (r.ok) {
     showToast('✓ ' + (successMsg || r.detail || '已生效'), 'ok');
-    // 触发一次刷新,让用户看到变化(虽然后端实际生效要 60s,至少 rules.json 改了)
-    setTimeout(loadDevices, 500);
+    // 触发一次强制刷新,同时丢弃任何旧的轮询响应,避免旧数据覆盖刚写入的状态。
+    setTimeout(function(){ loadDevices({force:true}); }, 500);
     return true;
   }
   var msg = r.error || '操作失败';
@@ -594,8 +649,13 @@ window.actionClearDelay = async function(mac, name) {
 
 
 // ── 启动 ─────────────────────────────────────────────────
-loadDevices();
-setInterval(loadDevices, 5000);  // 每 5 秒刷新设备列表
+loadDevices({force:true});
+setInterval(function(){
+  if (document.hidden) return;
+  loadDevices();
+  var statsTab = document.getElementById('tab-stats');
+  if (statsTab && statsTab.style.display !== 'none') loadStats();
+}, 5000);  // 每 5 秒刷新设备列表; 若上轮未完成则跳过
 
 // v4.0 Patch 3.b: 卡片 action 按钮走 event delegation
 // 所有写操作按钮用 data-act/data-mac/data-name 属性, 这里统一 dispatch

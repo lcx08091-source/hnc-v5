@@ -84,7 +84,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/api/tokens", s.apiTokens)
 	mux.HandleFunc("/api/iface_info", s.apiIfaceInfo)
 	mux.HandleFunc("/api/logs", s.apiLogs)
-	mux.HandleFunc("/api/offload_status", s.apiOffloadStatus)  // v5.1 P2-6
+	mux.HandleFunc("/api/offload_status", s.apiOffloadStatus) // v5.1 P2-6
 	// v5.0 serve 磁盘 webroot/changelog.html
 	mux.HandleFunc("/changelog.html", s.serveChangelog)
 
@@ -265,11 +265,14 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 
 	// 合并
 	out := make([]map[string]interface{}, 0, len(devicesMap))
+	seen := make(map[string]bool, len(devicesMap))
 	for mac, devRaw := range devicesMap {
 		dev, _ := devRaw.(map[string]interface{})
 		if dev == nil {
 			continue
 		}
+		macKey := strings.ToLower(mac)
+		seen[macKey] = true
 		merged := map[string]interface{}{
 			"mac": mac,
 		}
@@ -352,7 +355,54 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, merged)
 	}
 
-	// 更新快照 (只保留本轮出现的 MAC, 过期的自动丢弃)
+	// UI sync hotfix: devices.json only contains currently discovered clients.
+	// A device with persistent rules/blacklist can disappear from devices.json after
+	// disconnect, making the remote UI look out of sync with rules.json. Append
+	// rule-only / blacklist-only entries as offline rows so the UI still shows the
+	// configured state and can clear it.
+	appendRuleOnly := func(mac string, rule map[string]interface{}) {
+		mac = strings.ToLower(strings.TrimSpace(mac))
+		if mac == "" || seen[mac] {
+			return
+		}
+		seen[mac] = true
+		merged := map[string]interface{}{
+			"mac":    mac,
+			"ip":     "-",
+			"online": false,
+			"rx_bps": int64(0),
+			"tx_bps": int64(0),
+		}
+		if rule != nil {
+			for _, k := range []string{"ip", "mark_id", "down_mbps", "up_mbps", "delay_ms",
+				"jitter_ms", "loss_pct", "limit_enabled", "delay_enabled"} {
+				if v, exists := rule[k]; exists {
+					merged[k] = v
+				}
+			}
+		}
+		if nm, ok := namesMap[mac].(string); ok && nm != "" {
+			merged["hostname"] = nm
+			merged["hostname_src"] = "manual"
+		}
+		if blSet[mac] {
+			merged["status"] = "blocked"
+		} else {
+			merged["status"] = "allowed"
+		}
+		out = append(out, merged)
+	}
+	if deviceRules != nil {
+		for mac, ruleRaw := range deviceRules {
+			rule, _ := ruleRaw.(map[string]interface{})
+			appendRuleOnly(mac, rule)
+		}
+	}
+	for mac := range blSet {
+		appendRuleOnly(mac, nil)
+	}
+
+	// 更新快照 (只保留本轮真实出现的 MAC, 过期的自动丢弃)
 	s.lastSamples = newSamples
 	s.rateMu.Unlock()
 
@@ -379,9 +429,9 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"devices":         out,
-		"whitelist_mode":  rulesMap["whitelist_mode"],
-		"remote_enabled":  rulesMap["remote_enabled"],
+		"devices":        out,
+		"whitelist_mode": rulesMap["whitelist_mode"],
+		"remote_enabled": rulesMap["remote_enabled"],
 	})
 }
 
@@ -477,7 +527,16 @@ func readJSONL(path string) []map[string]interface{} {
 	return out
 }
 
+func setNoStore(w http.ResponseWriter) {
+	// UI sync hotfix: all API responses are live state. Do not let WebView/browser
+	// heuristic caching serve stale devices/rules/stats after writes.
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	setNoStore(w)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)

@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix2
-versionCode=50902
+version=v5.1.0-rc1-hotfix3
+versionCode=50903
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix2 · BPF LSM Limit Map Guard (拦截 framework enforce, 真正关闭 BPF tethering offload fast path) · scheduler 周期重探 cold-start race fix · netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix3 · BPF LSM Limit Map Guard (拦截 framework enforce, 真正关闭 BPF tethering offload fast path) · scheduler 周期重探 cold-start race fix · netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

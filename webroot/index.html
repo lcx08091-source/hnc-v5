@@ -2642,7 +2642,7 @@ body.kb-open .container {
     // curl: -s 静默 -f 失败返非 0 (仅 HTTP >=400)
     // 响应体走 stdout, HTTP status 通过 exit code 反映
     const url = API_BASE + p;
-    const cmd = "curl -sS --max-time 10 " + sq(url);
+    const cmd = "curl -sS --max-time 10 -H " + sq('Cache-Control: no-cache') + " " + sq(url);
     const raw = await kexec(cmd);
     if (!raw) return {};
     let obj;
@@ -2779,9 +2779,16 @@ body.kb-open .container {
 
   /* fetchDevices · v5 改走 /api/devices (Go 已合并 devices+rules+names+blacklist+online)
    * 前端只做字段映射到 v9 期望的结构 (cls/emoji/status/mark etc) */
-  async function fetchDevices() {
+  let __fetchDevicesSeq = 0;
+  let __fetchDevicesInFlight = false;
+  async function fetchDevices(opts) {
+    opts = opts || {};
+    if (__fetchDevicesInFlight && !opts.force) return false;
+    __fetchDevicesInFlight = true;
+    const seq = ++__fetchDevicesSeq;
     try {
       const data = await apiGet('/api/devices');
+      if (seq !== __fetchDevicesSeq) return false;  // stale slow response, do not overwrite UI model
       // Go 返回: { devices: [...] }  每项含 mac/ip/hostname/status/online/rx_bps/tx_bps 等合并后字段
       const list = Array.isArray(data.devices) ? data.devices : [];
       DEVICES.length = 0;
@@ -2800,7 +2807,7 @@ body.kb-open .container {
           cls: classInfo.cls,
           emoji: classInfo.emoji,
           status,
-          limited: !!d.limit_enabled,
+          limited: !!d.limit_enabled && ((Number(d.down_mbps) || 0) > 0 || (Number(d.up_mbps) || 0) > 0),
           rx: d.rx_bps || 0,  // Go 已计算 · 修 Bug B
           tx: d.tx_bps || 0,
           // 前端显示 Mbps (UI 和后端单位统一, 修 Bug K)
@@ -2812,7 +2819,13 @@ body.kb-open .container {
           mark: d.mark_id ? ('0x' + Number(d.mark_id).toString(16).padStart(6,'0')) : '—'
         });
       });
-    } catch (e) { dbg('fetchDevices err: ' + e.message); }
+      return true;
+    } catch (e) {
+      if (seq === __fetchDevicesSeq) dbg('fetchDevices err: ' + e.message);
+      return false;
+    } finally {
+      if (seq === __fetchDevicesSeq) __fetchDevicesInFlight = false;
+    }
   }
 
   /* ═══════════════════════════════════════════════════════════════
@@ -2968,7 +2981,7 @@ body.kb-open .container {
   function updateRemoteUrlPanel(force) {
     const togEl  = document.querySelector('[data-action="toggle-remote"]');
     const remote = !!(togEl && togEl.classList.contains('on'));
-    const count  = (typeof DEVICES !== 'undefined' && DEVICES) ? DEVICES.length : 0;
+    const count  = (typeof DEVICES !== 'undefined' && DEVICES) ? DEVICES.filter(d => d.status === 'online').length : 0;
     const sig    = (remote ? '1' : '0') + ':' + count;
     if (!force && sig === __urlPanelLastSig) return;
     const prevSig = __urlPanelLastSig;
@@ -3078,7 +3091,11 @@ body.kb-open .container {
      POLLING · 2 秒刷一次设备
      ═══════════════════════════════════════════════════════════════ */
   let __pollTimer = null;
+  let __pollBusy = false;
   async function tickPoll() {
+    if (__pollBusy || document.hidden) return;
+    __pollBusy = true;
+    try {
     // rc3.1.17: fetchDevices 始终拉 (让设置 tab 上的远程访问 url 卡片
     // 也能感知 0→N 客户端边沿). render 部分按 tab gate, 不增加 DOM 工作量.
     const oldMacs = DEVICES.map(d => d.mac).sort().join('|');
@@ -3090,7 +3107,9 @@ body.kb-open .container {
 
     // 设备 tab 才走重渲染
     const onDevicesTab = $('#page-devices') && $('#page-devices').classList.contains('active');
-    if (!onDevicesTab) return;
+    if (!onDevicesTab) {
+      return;
+    }
 
     // 若设备列表数量/MAC 变了, 走全量 renderDeviceList (重建 DOM)
     // 否则走 updateCardInPlace 差分更新 (保留展开/input)
@@ -3117,6 +3136,9 @@ body.kb-open .container {
     // 速率 / 计数总是更新 (不影响 input)
     updateCounters();
     updateHero();
+    } finally {
+      __pollBusy = false;
+    }
   }
   function startPolling() {
     if (__pollTimer) return;
@@ -4066,7 +4088,7 @@ body.kb-open .container {
         btn.classList.remove('holding');
         const card = btn.closest('.device-card');
         const mac = card.dataset.mac;
-        addBlacklistBackend(mac).then(() => fetchDevices()).then(() => {
+        addBlacklistBackend(mac).then(() => fetchDevices({force:true})).then(() => {
           renderDeviceList();
           toast('已封锁 ' + mac, 'err');
         }).catch(err => {
@@ -4137,7 +4159,7 @@ body.kb-open .container {
         const ops = targets.map(mac => clearDelayBackend(mac).catch(() => null));
         Promise.allSettled(ops).then(results => {
           const ok = results.filter(r => r.status === 'fulfilled' && r.value !== null).length;
-          return fetchDevices().then(() => {
+          return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已清除 ${ok}/${targets.length} 台设备延迟`, 'ok');
             exitBatchMode();
@@ -4162,7 +4184,7 @@ body.kb-open .container {
         const ops = blocked.map(mac => rmBlacklistBackend(mac));
         Promise.allSettled(ops).then(results => {
           const ok = results.filter(r => r.status === 'fulfilled').length;
-          return fetchDevices().then(() => {
+          return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已解除 ${ok}/${blocked.length} 台设备封锁`, 'ok');
             exitBatchMode();
@@ -4184,7 +4206,7 @@ body.kb-open .container {
     Promise.allSettled(ops).then(results => {
       const ok = results.filter(r => r.status === 'fulfilled').length;
       const fail = results.length - ok;
-      return fetchDevices().then(() => {
+      return fetchDevices({force:true}).then(() => {
         renderDeviceList();
         if (fail > 0) toast(`完成 ${ok}/${results.length}, ${fail} 失败`, 'warn');
         else toast(`已对 ${ok} 台应用: ${tpl.name}`, 'ok');
@@ -4206,7 +4228,7 @@ body.kb-open .container {
         const ops = targets.map(mac => clearLimitBackend(mac));
         Promise.allSettled(ops).then(results => {
           const ok = results.filter(r => r.status === 'fulfilled').length;
-          return fetchDevices().then(() => {
+          return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已清除 ${ok}/${targets.length} 台设备限速`, 'ok');
             exitBatchMode();
@@ -4229,7 +4251,7 @@ body.kb-open .container {
         const ops = targets.map(mac => addBlacklistBackend(mac));
         Promise.allSettled(ops).then(results => {
           const ok = results.filter(r => r.status === 'fulfilled').length;
-          return fetchDevices().then(() => {
+          return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已封锁 ${ok}/${targets.length} 台设备`, 'err');
             exitBatchMode();
@@ -4489,11 +4511,11 @@ body.kb-open .container {
     /* 全局操作 */
     if (e.target.closest('[data-action="manual-refresh"]')) {
       toast('正在刷新设备列表…', 'ok');
-      manualRefreshBackend().then(() => fetchDevices()).then(() => {
+      manualRefreshBackend().then(() => fetchDevices({force:true})).then(() => {
         renderDeviceList();
         toast('已刷新', 'ok');
       }).catch(e => {
-        fetchDevices().then(() => renderDeviceList());
+        fetchDevices({force:true}).then(() => renderDeviceList());
         toast('刷新提示: ' + e.message, 'warn');
       });
       return;
@@ -4505,7 +4527,7 @@ body.kb-open .container {
         message: '将移除全部限速/延迟/黑名单规则。<br>设备保持在线,但所有 TC/iptables 规则都会被清除',
         okText: '确认清空', okKind: 'btn-warn',
         onOk: () => {
-          clearAllRulesBackend().then(() => fetchDevices()).then(() => {
+          clearAllRulesBackend().then(() => fetchDevices({force:true})).then(() => {
             renderDeviceList();
             toast('所有规则已清空', 'ok');
           }).catch(e => toast('失败: ' + e.message, 'err'));
@@ -4582,7 +4604,7 @@ body.kb-open .container {
     if (unblockBtn) {
       const card = unblockBtn.closest('.device-card');
       const mac = card.dataset.mac;
-      rmBlacklistBackend(mac).then(() => fetchDevices()).then(() => {
+      rmBlacklistBackend(mac).then(() => fetchDevices({force:true})).then(() => {
         toast('已解除封锁: ' + mac, 'ok');
         renderDeviceList();
       }).catch(e => { toast('解除失败: ' + e.message, 'err'); });
@@ -4807,7 +4829,7 @@ body.kb-open .container {
       const rates = readLimitInputs(card);
       btn.disabled = true; btn.classList.add('loading');
       applyLimitBackend(mac, rates.down, rates.up).then(() => {
-        return fetchDevices();
+        return fetchDevices({force:true});
       }).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('限速已应用: ↓' + mbpsToMBsStr(rates.down) + ' ↑' + mbpsToMBsStr(rates.up) + ' MB/s', 'ok');
@@ -4822,7 +4844,7 @@ body.kb-open .container {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
       btn.disabled = true; btn.classList.add('loading');
-      clearLimitBackend(mac).then(() => fetchDevices()).then(() => {
+      clearLimitBackend(mac).then(() => fetchDevices({force:true})).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('限速已清除', 'ok');
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
@@ -4839,7 +4861,7 @@ body.kb-open .container {
       const jitter = parseInt((card.querySelector('input[data-field="jitter"]')||{}).value || 0, 10);
       const loss = parseFloat((card.querySelector('input[data-field="loss"]')||{}).value || 0);
       btn.disabled = true; btn.classList.add('loading');
-      applyDelayBackend(mac, delay, jitter, loss).then(() => fetchDevices()).then(() => {
+      applyDelayBackend(mac, delay, jitter, loss).then(() => fetchDevices({force:true})).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('延迟已注入: ' + delay + 'ms ±' + jitter + 'ms ' + loss + '%', 'warn');
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
@@ -4853,7 +4875,7 @@ body.kb-open .container {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
       btn.disabled = true; btn.classList.add('loading');
-      clearDelayBackend(mac).then(() => fetchDevices()).then(() => {
+      clearDelayBackend(mac).then(() => fetchDevices({force:true})).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('延迟已清除', 'ok');
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
@@ -4974,7 +4996,7 @@ body.kb-open .container {
     // 省 ~300-500ms (1 次 curl+TLS 串行往返 / KSU bridge fork+exec)
     let initOk = true;
     let cfg = {};
-    const devicesP = fetchDevices().catch(e => {
+    const devicesP = fetchDevices({force:true}).catch(e => {
       initOk = false;
       dbg('init fetchDevices err: ' + e.message);
     });

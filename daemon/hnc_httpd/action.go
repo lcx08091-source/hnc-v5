@@ -103,9 +103,9 @@ func readHotspotIfaceMAC(hncDir string) string {
 // ── 最小速率阈值(防自锁) ────────────────────────────────────
 
 const (
-	minRateKbit     = 64                 // 不允许设成 < 64kbit, 防用户把自己限速到 0
-	maxRateKbit     = 10 * 1024 * 1024   // 10 Gbit 上限, 防整数溢出 + tc 爆参数 (Gemini 审查建议)
-	execTimeoutSec  = 10                 // exec shell 最长等待秒数
+	minRateKbit    = 64               // 不允许设成 < 64kbit, 防用户把自己限速到 0
+	maxRateKbit    = 10 * 1024 * 1024 // 10 Gbit 上限, 防整数溢出 + tc 爆参数 (Gemini 审查建议)
+	execTimeoutSec = 10               // exec shell 最长等待秒数
 )
 
 // ── action 请求/响应 struct ──────────────────────────────────
@@ -382,10 +382,12 @@ func rateToKbit(r string) (string, error) {
 }
 
 // rateToMbpsStr · v5.1 P2-8: 保留小数精度把速率转 mbps 字符串.
-//   "500kbit"  → "0.5"
-//   "5120kbit" → "5.12"
-//   "10mbit"   → "10"
-//   "" 或 "0"  → "0"
+//
+//	"500kbit"  → "0.5"
+//	"5120kbit" → "5.12"
+//	"10mbit"   → "10"
+//	"" 或 "0"  → "0"
+//
 // shell 侧 mbps_to_rate 用 awk 浮点能接 "0.5" → 500kbit, 精度无损.
 // 前端 rules.json.down_mbps 也保持小数 (0.5 mbps), 读取时 Number() 直接用.
 func rateToMbpsStr(r string) (string, error) {
@@ -603,7 +605,9 @@ func runBin(hncDir, script string, args ...string) (int, string) {
 
 // writeActionResp 响应 JSON
 func writeActionResp(w http.ResponseWriter, status int, r actionResp) {
+	setNoStore(w)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(r)
 }
