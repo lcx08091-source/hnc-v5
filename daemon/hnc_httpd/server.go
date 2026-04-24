@@ -31,6 +31,11 @@ type server struct {
 	tokens       *TokensStore
 	limiter      *RateLimiter
 	writeCounter *WriteCounter // Patch 3.a per-token write rate limit
+	// hotfix4: serialize state-changing actions and keep /api/devices from
+	// reading rules.json/devices.json while an httpd-originated write chain is running.
+	// This is deliberately coarse-grained: tc/iptables/json_set actions are short,
+	// and preserving operation order is safer than introducing parallel shell workers.
+	stateMu sync.RWMutex
 	// v5.1 · P1-1 修复: 速率差分. 每次 /api/devices 被调用时用当前
 	// rx_bytes/tx_bytes 和上一轮做差, 得到 rx_bps/tx_bps.
 	rateMu      sync.Mutex
@@ -219,6 +224,12 @@ func (s *server) apiHealth(w http.ResponseWriter, r *http.Request) {
 // 跟 WebUI 的 readAndRender 做同样的事,但在后端合并,前端只渲染
 
 func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
+	// hotfix4: avoid observing half-written state from /api/action. External writers
+	// such as hotspotd/watchdog can still update files, but httpd no longer races
+	// with its own shell write chain.
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+
 	devicesPath := filepath.Join(s.hncDir, "data", "devices.json")
 	rulesPath := filepath.Join(s.hncDir, "data", "rules.json")
 	namesPath := filepath.Join(s.hncDir, "data", "device_names.json")

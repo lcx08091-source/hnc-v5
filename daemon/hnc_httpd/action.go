@@ -203,8 +203,20 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// dispatch
-	resp := dispatchAction(s.hncDir, req.Action, req.Params, tid == "loopback")
+	// hotfix4: serialize state-changing actions. The underlying shell scripts mutate
+	// tc, iptables and JSON files in several steps; concurrent writes from two
+	// remote clients can interleave and leave UI/API state out of sync. Keep reads
+	// via /api/devices behind the same RW lock in server.go.
+	waitStart := time.Now()
+	s.stateMu.Lock()
+	waited := time.Since(waitStart)
+	if waited > 200*time.Millisecond {
+		log.Printf("handleAction: queued action=%s waited=%s", req.Action, waited)
+	}
+	resp := func() actionResp {
+		defer s.stateMu.Unlock()
+		return dispatchAction(s.hncDir, req.Action, req.Params, tid == "loopback")
+	}()
 	result := "ok"
 	if !resp.OK {
 		result = "error"

@@ -48,6 +48,30 @@ var statsInFlight = false;
 
 function $(id) { return document.getElementById(id); }
 
+// hotfix4: bounded async transport. fetch() can stay pending for a long time
+// on unstable mobile links, keeping in-flight flags true and making the UI look
+// frozen. AbortController is available on modern Android WebView; fallback keeps
+// compatibility on older engines.
+function fetchWithTimeout(url, opts, timeoutMs) {
+  opts = opts || {};
+  timeoutMs = timeoutMs || 10000;
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, opts);
+  }
+  var ctrl = new AbortController();
+  var t = setTimeout(function(){ try { ctrl.abort(); } catch (_) {} }, timeoutMs);
+  var nextOpts = {};
+  Object.keys(opts).forEach(function(k){ nextOpts[k] = opts[k]; });
+  nextOpts.signal = ctrl.signal;
+  return fetch(url, nextOpts).then(function(r){
+    clearTimeout(t);
+    return r;
+  }, function(e){
+    clearTimeout(t);
+    throw e;
+  });
+}
+
 // ── tab 切换 ─────────────────────────────────────────────
 window.switchTab = function(name) {
   document.querySelectorAll('.tab').forEach(function(t){
@@ -71,7 +95,7 @@ function loadDevices(opts) {
   if (devicesInFlight && !opts.force) return Promise.resolve(false);
   devicesInFlight = true;
   var seq = ++devicesReqSeq;
-  return fetch('/api/devices', { cache: 'no-store', credentials: 'same-origin' })
+  return fetchWithTimeout('/api/devices', { cache: 'no-store', credentials: 'same-origin' }, 9000)
     .then(function(r){
       if (r.status === 503) {
         // httpd 启动了但 data 还没准备好(典型场景: devices.json 不存在)
@@ -222,7 +246,7 @@ function loadStats(opts) {
   var seq = ++statsReqSeq;
   var mac = ($('stats-dev')||{}).value || '';
   var url = '/api/stats?range=' + statsRange + (mac ? '&mac='+encodeURIComponent(mac) : '');
-  return fetch(url, { cache: 'no-store', credentials: 'same-origin' })
+  return fetchWithTimeout(url, { cache: 'no-store', credentials: 'same-origin' }, 9000)
     .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
     .then(function(data){
       if (seq !== statsReqSeq) return false;
@@ -402,22 +426,40 @@ window.hideTip = function() {
 
 // ── v4.0 Patch 3.b: 远端写操作 ────────────────────────────
 // 所有写操作走 POST /api/action, 带 X-HNC-CSRF: 1 header
+var actionInFlight = {};
+function actionKey(action, params) {
+  params = params || {};
+  return params.mac ? ('dev:' + String(params.mac)) : ('global:' + String(action || ''));
+}
 async function callAction(action, params) {
+  params = params || {};
+  var key = actionKey(action, params);
+  if (actionInFlight[key]) {
+    return {status: 409, ok: false, error: 'busy', detail: 'same action is already running'};
+  }
+  actionInFlight[key] = true;
   try {
-    var resp = await fetch('/api/action', {
+    var resp = await fetchWithTimeout('/api/action', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         'X-HNC-CSRF': '1'
       },
-      body: JSON.stringify({action: action, params: params || {}})
-    });
+      body: JSON.stringify({action: action, params: params})
+    }, 15000);
     var data = {};
     try { data = await resp.json(); } catch(_) {}
     return {status: resp.status, ok: data.ok === true, error: data.error || '', detail: data.detail || ''};
   } catch (e) {
-    return {status: 0, ok: false, error: 'network', detail: String(e && e.message || e)};
+    var msg = String(e && e.message || e);
+    if (e && e.name === 'AbortError') msg = 'request timeout';
+    // The server-side shell action may still finish after a client timeout. Refresh
+    // shortly so the UI converges instead of staying stale.
+    setTimeout(function(){ loadDevices({force:true}); }, 1200);
+    return {status: 0, ok: false, error: 'network', detail: msg};
+  } finally {
+    delete actionInFlight[key];
   }
 }
 

@@ -2658,10 +2658,25 @@ body.kb-open .container {
     return obj;
   }
 
+  const __apiActionInFlight = new Set();
+  function apiActionKey(action, params) {
+    params = params || {};
+    return params.mac ? ('dev:' + String(params.mac)) : ('global:' + String(action || ''));
+  }
   async function apiAction(action, params) {
+    // hotfix4: avoid duplicate writes from fast taps/toggles. The Go backend also
+    // serializes writes, but preventing duplicate ksu.exec curl calls keeps the
+    // on-device WebUI responsive and avoids queueing stale operations.
+    params = params || {};
+    const actionKey = apiActionKey(action, params);
+    if (__apiActionInFlight.has(actionKey)) {
+      throw new Error('同一设备/操作正在执行,请稍后');
+    }
+    __apiActionInFlight.add(actionKey);
+    try {
     // v5.1 修 P0-2: Go handleAction 期望 nested {action, params: {}}
     // 之前 Object.assign 扁平展开, Go 的 DisallowUnknownFields 拒绝
-    const body = { action: action, params: params || {} };
+    const body = { action: action, params: params };
     const json = JSON.stringify(body);
     // POST application/json, 带 X-HNC-CSRF header
     // shell-escape JSON: 用单引号外包, JSON 内的单引号替换成 '\\''
@@ -2697,6 +2712,9 @@ body.kb-open .container {
       throw err;
     }
     return obj;
+    } finally {
+      __apiActionInFlight.delete(actionKey);
+    }
   }
 
   /* 内部 dbg buffer — 错误信息显示在底部 dbgbar, 不刷屏 */
