@@ -263,6 +263,32 @@ case "$CMD" in
         fi
         ;;
 
+    alloc_mid)
+        # rc2 修 G3: 只分配 mark_id + iptables mark, 不触 tc / 不写 limit_enabled
+        # 用途: delay_set 需要 mid 把包分流到 netem class, 但不想污染 limit 状态.
+        # 之前 actionDelaySet 借用 "limit 0 0" 分配 mid, 副作用:
+        #   rules.json 被写成 limit_enabled=true, down_mbps=0, up_mbps=0
+        #   → UI 显示"已限速到 0", 用户误解 / 下次 restore 行为乱
+        # 幂等: get_or_assign_mid 已分配过直接返回旧值, iptables mark_device 自带
+        #       -D 后 -A 清理, 重复调用无副作用. stdout 只出 mid (整数, 供 caller 取).
+        IP=$(get_ip "$MAC")
+        if [ -z "$IP" ]; then
+            emit_err "device not found in devices.json (mac=$MAC)"
+        fi
+        gate_lock || emit_err "gate_lock timeout (5s)"
+        MID=$(get_or_assign_mid "$MAC")
+        if ! sh "$JSON_SET" device "$MAC" mark_id "$MID" >> "$LOG" 2>&1; then
+            gate_unlock
+            emit_err "failed to write mark_id=$MID to rules.json (mid alloc race risk)"
+        fi
+        gate_unlock
+        log "alloc_mid mac=$MAC ip=$IP mid=$MID"
+        sh "$IPT" mark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 \
+            || emit_err "iptables mark failed (mid=$MID)"
+        # stdout 纯净给 Go caller 用 strconv.Itoa 解析
+        echo "$MID"
+        ;;
+
     clear)
         IP=$(get_ip "$MAC")
         IFACE=$(sh "$DETECT" iface 2>/dev/null)
@@ -337,6 +363,6 @@ case "$CMD" in
         ;;
 
     *)
-        emit_err "unknown cmd: $CMD (expected: limit|clear|bl_add|bl_del)"
+        emit_err "unknown cmd: $CMD (expected: limit|alloc_mid|clear|bl_add|bl_del)"
         ;;
 esac

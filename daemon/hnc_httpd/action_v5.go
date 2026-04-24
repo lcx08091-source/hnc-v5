@@ -71,22 +71,18 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 	rcM, outM := runBin(hncDir, "json_set.sh", "device_get", mac, "mark_id")
 	mid := strings.TrimSpace(outM)
 	if rcM != 0 || mid == "" {
-		// 没分配过: 先跑 limit 0 0 让 apply_device_rule.sh 分配 mark_id
-		rc0, out0 := runBin(hncDir, "apply_device_rule.sh", "limit", mac, "0", "0")
+		// rc2 修 G3: 没分配过 → 调 alloc_mid 专用子命令, 只分配 mid + iptables mark,
+		//          不触 tc 也不写 limit_enabled/down_mbps/up_mbps (之前借 "limit 0 0"
+		//          会污染 rules.json, UI 显示"已限速到 0" 误导用户).
+		rc0, out0 := runBin(hncDir, "apply_device_rule.sh", "alloc_mid", mac)
 		if rc0 != 0 {
 			return actionResp{OK: false, Error: "mid assign failed", Detail: out0}
 		}
-		rc2, out2 := runBin(hncDir, "json_set.sh", "device_get", mac, "mark_id")
-		if rc2 != 0 {
-			log.Printf("WARN: delay_set device_get mark_id rc=%d out=%q", rc2, out2)
-		}
-		mid = strings.TrimSpace(out2)
-		// rc3.1.33 修 #2: 之前只兜底 mid==""; 但 device_get 失败可能 stdout 有
-		// 垃圾输出 (awk error / 错位字段) → mid 非空但非整数 → 下游 set_delay
-		// printf %d 解析失败 → tc 命令带 class_id=0 错乱. 强制白名单.
+		mid = strings.TrimSpace(out0)
+		// rc3.1.33 修 #2: alloc_mid stdout 应为纯整数 mid, 白名单确认 (防 awk 错位输出).
 		if !intRE.MatchString(mid) {
 			return actionResp{OK: false, Error: "mid assign failed",
-				Detail: "device_get returned non-integer mid: " + mid}
+				Detail: "alloc_mid returned non-integer mid: " + mid}
 		}
 	}
 

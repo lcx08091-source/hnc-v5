@@ -189,21 +189,32 @@ int hnc_lsm_init(const char *bpf_object_path,
 
     libbpf_set_print(libbpf_log_cb);
 
-    /* ─── Step 1: 检测 BPF LSM 可用 ─────────────────────── */
+    /* ─── Step 1: 检测 BPF LSM 可用(仅 info,不 gate) ─────
+     * rc2 修 B4:
+     *   原代码:probe 不到 BPF LSM → return -2 → kprobe 路径被堵死.
+     *   这与 Plan B 的存在理由矛盾 (见 hnc_limit_map_guard.bpf.c 头注释):
+     *   kprobe 依赖 CONFIG_KPROBES (ColorOS 保留), 不需要 BPF LSM
+     *   在 /sys/kernel/security/lsm 里.
+     *   现在: probe 只打日志, 失败不返回, 让 Step 7 attach_kprobe 自己决定. */
     int rc = probe_bpf_lsm_active();
     if (rc < 0) {
         if (mount("none", "/sys/kernel/security", "securityfs", 0, NULL) != 0
             && errno != EBUSY) {
-            set_fail("securityfs mount: %s", strerror(errno));
-            return -2;
+            fprintf(stderr, "[lsm] step1: securityfs mount failed: %s "
+                            "(continuing, Plan B does not require it)\n",
+                    strerror(errno));
+        } else {
+            rc = probe_bpf_lsm_active();
         }
-        rc = probe_bpf_lsm_active();
     }
-    if (rc != 1) {
-        set_fail("BPF LSM not in /sys/kernel/security/lsm");
-        return -2;
+    if (rc == 1) {
+        fprintf(stderr, "[lsm] step1: BPF LSM present in kernel (info)\n");
+    } else {
+        fprintf(stderr, "[lsm] step1: BPF LSM NOT listed in "
+                        "/sys/kernel/security/lsm; Plan B uses kprobe, "
+                        "continuing to Step 7\n");
     }
-    fprintf(stderr, "[lsm] step1: BPF LSM active in kernel\n"); fflush(stderr);
+    fflush(stderr);
 
     /* ─── Step 2: 拿目标 limit_map 的 map_id ───────────── */
     int fd = bpf_obj_get(target_limit_map_path);

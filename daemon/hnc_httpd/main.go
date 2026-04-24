@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -285,9 +284,12 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 }
 
 func ipOnly(addr string) string {
-	// "192.168.43.102:43210" → "192.168.43.102"
-	if idx := strings.LastIndex(addr, ":"); idx > 0 {
-		return addr[:idx]
+	// rc2 修 G11: 用 net.SplitHostPort 正确处理 IPv6
+	//   IPv4:  "192.168.43.102:43210"     → "192.168.43.102"
+	//   IPv6:  "[::1]:43210"               → "::1"      (原来 LastIndex(":") 切成 "[::1")
+	//   裸 IP: 无端口的罕见 fallback       → 原样返回
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
 	}
 	return addr
 }

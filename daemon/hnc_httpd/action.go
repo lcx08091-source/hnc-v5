@@ -174,6 +174,9 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 解码 body
+	// rc2 修 G7: 16KB 上限, 防止大 body 耗内存
+	//          action 请求最大的是 hotspot_save (SSID/pass + 其他字段), 远 <1KB
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	var req actionReq
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -227,7 +230,7 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 
 // dispatchAction 按 action 白名单分发(已通过 auth + rate limit + CSRF)
 func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool) actionResp {
-	// rc5.1.1 audit: 这三个管理类 action 会影响其他 token, 只允许本机 loopback 调用
+	// rc2 修 G1: loopback-only guard 合并为单 switch (rc5.1.1 只合了注释没合代码)
 	switch action {
 	case "pair_revoke", "auth_required_set", "remote_enabled_set":
 		if !isLoopback {
@@ -235,19 +238,6 @@ func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool)
 		}
 	}
 
-	switch action {
-	case "pair_revoke", "auth_required_set", "remote_enabled_set":
-		if !isLoopback {
-			return actionResp{OK: false, Error: "forbidden", Detail: "this action is loopback-only (use the on-device KSU WebUI)"}
-		}
-	}
-	// rc5.1.1 audit: 这三个管理类 action 会影响其他 token,只允许本机 loopback 调用
-	switch action {
-	case "pair_revoke", "auth_required_set", "remote_enabled_set":
-		if !isLoopback {
-			return actionResp{OK: false, Error: "forbidden", Detail: "this action is loopback-only (use the on-device KSU WebUI)"}
-		}
-	}
 	switch action {
 	case "rule_set":
 		return actionRuleSet(hncDir, p)
@@ -540,7 +530,9 @@ func validateRate(r string) error {
 	case "kbit":
 		kbit = num
 	case "mbit":
-		kbit = num * 1024
+		// rc2 修 G4: 1000 不是 1024. tc k/m 后缀是十进制 (iproute2 约定),
+		//          且本文件 line 382 的 mbit→k 转换也是 *1000, 统一.
+		kbit = num * 1000
 	default:
 		return fmt.Errorf("unit must be kbit or mbit")
 	}

@@ -12,7 +12,7 @@
 
 | ROM | 设备 | Android | 内核 | Root | 热点 iface | 下行限速 | 上行限速 | BPF LSM | 自愈 tc | 备注 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **ColorOS 16** | realme GT 7 Pro (RMX5010) | 16 | 6.6.102 | SukiSU Ultra | wlan2 | ✅ | ✅ | ✅ kprobe | ✅ | 主测设备,全功能 |
+| **ColorOS 16** | realme GT 7 Pro (RMX5010) | 16 | 6.6.102 | SukiSU Ultra | wlan2 | ✅ | ✅ | ❓ kprobe 未证实 | ✅ | 主测设备,限速/自愈全功能。BPF LSM guard 在 ColorOS 上实际 attach 状态待核(`/sys/kernel/security/lsm` 是否含 `bpf`)。主路径不依赖 guard,guard 只在 framework BPF offload 触发时起作用,日常使用无感。|
 
 ---
 

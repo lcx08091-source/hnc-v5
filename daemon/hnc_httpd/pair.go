@@ -146,6 +146,9 @@ func (s *server) handlePairVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// rc2 修 G7: 4KB 上限, 防止 malicious client 喂大 body 耗内存
+	//          PIN 验证只用 pin= 字段 (6 位数字), 4KB 远远够
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
 		writePairError(w, http.StatusBadRequest, "bad form")
 		return

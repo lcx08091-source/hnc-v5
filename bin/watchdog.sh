@@ -584,7 +584,11 @@ ensure_httpd_running 2>/dev/null || log "bootstrap: ensure_httpd_running failed 
 # ─── v5.1 RC1 主动 uplink health check ─────────────────────────
 # 每 60s 轮询一次, 不触发 full_restore, 直接 inline 修复
 ensure_tc_uplink_healthy() {
-    local iface="${IFACE:-wlan2}"
+    # rc2 修 S2: rc5.1.1 只改了注释没改变量, ${IFACE:-wlan2} 里 IFACE 全文件从未赋值,
+    #          永远 fallback 到 wlan2. 现在真调 get_iface (本文件 line 87 的 5 分钟缓存).
+    local iface
+    iface=$(get_iface)
+    [ -z "$iface" ] && iface="wlan2"
     # 1. ifb0 root 必须是 htb
     local _ifb_root
     _ifb_root=$(tc qdisc show dev ifb0 2>/dev/null | awk '$4 == "root" {print $2; exit}')
@@ -684,6 +688,11 @@ while true; do
             # 不做 migrate(不知道迁移到哪),也不 full_restore(规则挂的
             # iface 已经 down, 没意义)。下轮再探。
             # 不 log(避免每 60s 刷屏),除非这是第一次发现
+            # rc2 修 S4: continue 前先跑 check_services/heartbeat/rotate_logs_periodic,
+            #          否则热点关着时这些 housekeeping 全被跳, watchdog 看着像挂了
+            check_services
+            heartbeat
+            rotate_logs_periodic
             continue
         fi
 

@@ -10,8 +10,14 @@ export GOARCH=arm64
 export CGO_ENABLED=0
 
 # rc5.1.1 修 X-G2: 从 module.prop 读 version 注入 binary, 消除硬编码
+# rc2 修 N4: 读不到 module.prop 直接失败, 不静默 fallback 到 "dev"
+#          ("dev" 暴露给前端比老的硬编码版本更没信息量)
 VERSION=$(grep "^version=" ../../module.prop 2>/dev/null | cut -d= -f2)
-[ -z "$VERSION" ] && VERSION="dev"
+if [ -z "$VERSION" ]; then
+    echo "ERROR: module.prop version= not found (cwd=$(pwd))" >&2
+    echo "       run build.sh from daemon/hnc_httpd/ with module.prop at ../../" >&2
+    exit 1
+fi
 
 echo "Building hnc_httpd for android/arm64 (version=$VERSION)..."
 go build -ldflags="-s -w -X main.version=$VERSION" -o hnc_httpd .

@@ -11,6 +11,8 @@ HNC=/data/local/hnc
 mkdir -p /data/local/hnc_backup
 [ -f "$HNC/data/rules.json" ] && cp "$HNC/data/rules.json" /data/local/hnc_backup/rules.json.last 2>/dev/null
 [ -f "$HNC/data/device_names.json" ] && cp "$HNC/data/device_names.json" /data/local/hnc_backup/device_names.json.last 2>/dev/null
+# rc2 修 N3: 备 tokens.json 让重装后已配对客户端/远程 token 不丢
+[ -f "$HNC/data/tokens.json" ] && cp "$HNC/data/tokens.json" /data/local/hnc_backup/tokens.json.last 2>/dev/null
 
 # 删除运行状态 (pid / lock / pair pending)
 rm -rf "$HNC/run" 2>/dev/null
