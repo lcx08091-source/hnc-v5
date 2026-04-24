@@ -1146,7 +1146,7 @@ restore_rules() {
                     i++
                 }
                 block = substr($0, start, i - start - 1)
-                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"
+                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"; loss = "0"
                 n = split(block, parts, ",")
                 for (j = 1; j <= n; j++) {
                     if (match(parts[j], /"mark_id"[[:space:]]*:[[:space:]]*[0-9]+/)) {
@@ -1167,10 +1167,16 @@ restore_rules() {
                     } else if (match(parts[j], /"jitter_ms"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*/, "", s); jitter = s
+                    } else if (match(parts[j], /"loss_pct"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
+                        # rc5.1.1 修 S1: restore_rules 之前忽略了 loss_pct,
+                        # 导致用户设置的丢包率每次重启都被清零 (下面 set_all
+                        # 调用硬编码 "0"). 现在正确解析并传递.
+                        s = substr(parts[j], RSTART, RLENGTH)
+                        sub(/.*:[[:space:]]*/, "", s); loss = s
                     }
                 }
                 if (mark_id != "") {
-                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter
+                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter "|" loss
                     exit
                 }
             }
@@ -1183,6 +1189,7 @@ restore_rules() {
         local up;      up=$(echo      "$fields" | cut -d'|' -f4)
         local delay;   delay=$(echo   "$fields" | cut -d'|' -f5)
         local jitter;  jitter=$(echo  "$fields" | cut -d'|' -f6)
+        local loss;    loss=$(echo    "$fields" | cut -d'|' -f7)
         [ -z "$mark_id" ] && continue
 
         # rc3.1.30 Bug B: 优先用 devices.json 里的实时 IP.
@@ -1201,9 +1208,9 @@ restore_rules() {
             log "  no live IP for $mac in devices.json, using stale rules.json($ip)"
         fi
 
-        log "Restoring: $mac mark=$mark_id ip=$ip dn=${down}M up=${up}M delay=${delay}ms"
+        log "Restoring: $mac mark=$mark_id ip=$ip dn=${down}M up=${up}M delay=${delay}ms loss=${loss}%"
         sh "$HNC_DIR/bin/iptables_manager.sh" mark "$ip" "$mac" "$mark_id"
-        set_all "$iface" "$mark_id" "${down:-0}" "${up:-0}" "${delay:-0}" "${jitter:-0}" "0" "$ip"
+        set_all "$iface" "$mark_id" "${down:-0}" "${up:-0}" "${delay:-0}" "${jitter:-0}" "${loss:-0}" "$ip"
     done
 
     # 恢复黑名单

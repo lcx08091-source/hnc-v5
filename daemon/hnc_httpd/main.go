@@ -39,7 +39,10 @@ var (
 	flagVersion = flag.Bool("version", false, "print version and exit")
 )
 
-const version = "v4.1.0-rc3.1.14"
+// rc5.1.1 修 X-G2: 之前硬编码 "v4.1.0-rc3.1.14", 每次发版都要手动改.
+// 改成 build 时 ldflags 注入(-X main.version=xxx). fallback 为 "dev".
+// build.sh 会在编译时读 module.prop 的 version 字段注入此变量.
+var version = "dev"
 
 func main() {
 	flag.Parse()

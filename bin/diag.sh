@@ -35,9 +35,13 @@ warn() { WARN=$((WARN+1)); RESULTS="$RESULTS$1|WARN|$2
 fail() { FAIL=$((FAIL+1)); RESULTS="$RESULTS$1|FAIL|$2
 "; [ $JSON_MODE -eq 0 ] && printf '  \033[31m✗\033[0m %-22s %s\n' "$1" "$2"; }
 
+# rc5.1.1 修 H2: 提前读 VER, 标题能显示实际版本
+MODDIR=/data/adb/modules/hotspot_network_control
+[ -f "$MODDIR/module.prop" ] && VER=$(grep "^version=" "$MODDIR/module.prop" | cut -d= -f2) || VER="unknown"
+
 [ $JSON_MODE -eq 0 ] && {
     echo ""
-    echo "  HNC v3.8.6 自检"
+    echo "  HNC $VER 自检"
     echo "  ──────────────────────────────────────────────"
 }
 
@@ -83,16 +87,20 @@ else
 fi
 
 # ── [4/14] iptables 链 ──────────────────────────────────
-HAS_MARK=0; HAS_LIMIT_DOWN=0; HAS_LIMIT_UP=0; HAS_STATS=0
-iptables -t mangle -L HNC_MARK -n >/dev/null 2>&1 && HAS_MARK=1
-iptables -t mangle -L HNC_LIMIT_DOWN -n >/dev/null 2>&1 && HAS_LIMIT_DOWN=1
-iptables -t mangle -L HNC_LIMIT_UP -n >/dev/null 2>&1 && HAS_LIMIT_UP=1
-iptables -t mangle -L HNC_STATS -n >/dev/null 2>&1 && HAS_STATS=1
-SUM=$((HAS_MARK + HAS_LIMIT_DOWN + HAS_LIMIT_UP + HAS_STATS))
+# rc5.1.1 修 H1: 之前检查 HNC_LIMIT_DOWN/UP 两个链根本不存在, 结果永远
+# 只能命中 4 个里的 2 个, 永远报 WARN. 实际 iptables_manager.sh 创建的
+# 链是 HNC_RESTORE/HNC_MARK/HNC_SAVE/HNC_STATS (另外还有 HNC_CTRL/
+# HNC_WHITELIST 但非必须). 这里只检查核心 4 条.
+HAS_MARK=0; HAS_RESTORE=0; HAS_SAVE=0; HAS_STATS=0
+iptables -t mangle -L HNC_MARK    -n >/dev/null 2>&1 && HAS_MARK=1
+iptables -t mangle -L HNC_RESTORE -n >/dev/null 2>&1 && HAS_RESTORE=1
+iptables -t mangle -L HNC_SAVE    -n >/dev/null 2>&1 && HAS_SAVE=1
+iptables -t mangle -L HNC_STATS   -n >/dev/null 2>&1 && HAS_STATS=1
+SUM=$((HAS_MARK + HAS_RESTORE + HAS_SAVE + HAS_STATS))
 if [ "$SUM" -eq 4 ]; then
-    ok "iptables 链" "4 个 HNC 链都存在"
+    ok "iptables 链" "4 个 HNC 核心链都存在 (MARK/RESTORE/SAVE/STATS)"
 elif [ "$SUM" -gt 0 ]; then
-    warn "iptables 链" "$SUM/4 存在,可能未完全初始化"
+    warn "iptables 链" "$SUM/4 存在, 可能未完全初始化"
 else
     fail "iptables 链" "0/4 — HNC 后端未运行"
 fi
@@ -230,7 +238,7 @@ fi
 # ── 汇总输出 ────────────────────────────────────────────
 if [ $JSON_MODE -eq 1 ]; then
     # JSON 输出
-    printf '{"version":"v3.8.6","pass":%d,"warn":%d,"fail":%d,"checks":[' "$PASS" "$WARN" "$FAIL"
+    printf '{"version":"%s","pass":%d,"warn":%d,"fail":%d,"checks":[' "$VER" "$PASS" "$WARN" "$FAIL"
     FIRST=1
     echo "$RESULTS" | while IFS='|' read -r name status detail; do
         [ -z "$name" ] && continue

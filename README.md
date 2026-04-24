@@ -1,87 +1,128 @@
-# HNC v5.1 Plan B — kprobe + counter-write
+# Hotspot Network Control (HNC)
 
-## 根因
-ColorOS kernel 6.6.102 禁用 `CONFIG_FUNCTION_TRACER`(反 root 加固),
-BPF LSM / fentry / fexit 均依赖 trampoline → 全部 `-ENOTSUPP`。
+> 给 Android 个人热点加上**对每台连接客户端**的限速、延迟、黑名单管理。
 
-kprobe 走另一套机制(`CONFIG_KPROBES=y`,ColorOS 保留),**可以 attach**。
+**[截图占位:WebUI 设备列表]**
 
-## 策略
-- `SEC("kprobe/security_bpf")`:kprobe hook 到 kernel `security_bpf()` 入口
-- BPF 程序:检测 `cmd=BPF_MAP_UPDATE_ELEM + target_map + U64_MAX + 非 hotspotd` 
-  → 发 ringbuf 事件
-- Userspace:ringbuf consumer 收到事件 → **立刻** `bpf_map_update_elem(limit_map, ifindex, 0)` 盖掉
+---
 
-**相对 LSM active 差一个 kernel→userspace→kernel 的往返(~100μs 级)。
-实际 framework 的 U64_MAX 短暂存在几十到几百微秒,fast path 来不及激活。**
+## 这是给谁的
 
-## 修改文件
-1. `daemon/hotspotd/lsm/hnc_limit_map_guard.bpf.c` (141 行)
-   - SEC 改 `kprobe/security_bpf`
-   - 函数签名改 `BPF_KPROBE(hnc_check_bpf, cmd, attr, size)` (3 参数,无 prev_ret)
-   - 去掉 `return -EPERM` 逻辑,kprobe retval 无效
+**适合你**,如果:
 
-2. `daemon/hotspotd/lsm/hnc_lsm_loader.c` (411 行)
-   - `bpf_program__attach_lsm` → `bpf_program__attach_kprobe(prog, false, "security_bpf")`
-   - `ringbuf_handle_event` 加 counter-write:收到事件立刻 `bpf_map_update_elem(limit_map, ifindex, 0)`
-   - 日志新增 `[lsm] COUNTER-WRITE: ... latency=NNNus` 看实际延迟
+- 你经常开热点给别人用,想限制某些设备占带宽
+- 你有 root(KernelSU / SukiSU Ultra / Magisk)
+- 你能接受一个还在迭代中的工具
 
-## 装机
-```sh
-cd ~/hnc-v5
-cp /sdcard/Download/HNC-v5_1-planB.zip .
-unzip -o HNC-v5_1-planB.zip
-rm HNC-v5_1-planB.zip
+**不适合你**,如果:
 
-# 重编 BPF .o (用 local clang 或让 CI 重编)
-# 在 Termux:
-pkg install clang -y 2>/dev/null   # 如果没装
-cd daemon/hotspotd/lsm
-clang -O2 -g -target bpf -D__TARGET_ARCH_arm64 \
-      -I../../../third_party_prebuilt/libelf/include \
-      -I. \
-      -c hnc_limit_map_guard.bpf.c \
-      -o ../../../bpf/hnc_limit_map_guard.bpf.o
-llvm-strip -g ../../../bpf/hnc_limit_map_guard.bpf.o 2>/dev/null || true
-cd ~/hnc-v5
+- 你没有 root,或不想刷面具
+- 你想要"装了就永远 work"的商用级产品
+- 你的设备是冷门 OEM 且不愿配合 debug
 
-# 或者只 push, 让 CI 重编
-git add -A
-git commit -m "v5.1 Plan B: kprobe + counter-write (ColorOS LSM workaround)
+---
 
-ColorOS disables CONFIG_FUNCTION_TRACER, blocking BPF LSM / fentry
-trampoline (-ENOTSUPP). Switch to kprobe/security_bpf (CONFIG_KPROBES=y
-preserved). Since kprobe cannot deny, use counter-write: BPF detects
-suspicious write, emits ringbuf event, userspace rewrites limit_map to
-0 within microseconds. Fast path fails to sustain; framework's U64_MAX
-is overwritten before tethering BPF sees stable state."
-git push
-```
+## 能做什么
 
-## 期望日志
-```
-[lsm] step1: BPF LSM active in kernel
-[lsm] step2: target limit_map id=3
-[lsm] step3: open OK
-[lsm] step4: load OK
-[lsm] step5: prog + maps resolved
-[lsm] step6: ctrl populated
-[lsm] step7: bpf_program__attach_kprobe(security_bpf)
-[lsm] step7: kprobe attached to security_bpf       ← 关键, 这次应该成
-[lsm] step8: ringbuf consumer started
-[lsm] ACTIVE. protecting map_id=3 ifindex=22 hotspotd_pid=NNNN
-```
+- 看到每台连热点的设备:MAC、IP、品牌(OUI 数据库)、hostname(DHCP / mDNS 解析)
+- 给单个设备限**下载 / 上传**速度(基于 tc HTB + BPF LSM 双重拦截)
+- 给单个设备加**延迟 / 丢包**(弱网模拟)
+- **拉黑**设备(iptables REJECT)
+- **白名单模式**(仅允许指定 MAC 连接)
+- 实时流量统计、按日历史曲线
+- **远程 WebUI**(手机在别处时,电脑浏览器远程管理)
 
-当 framework 写 limit_map 时:
-```
-[lsm] COUNTER-WRITE: comm=system_server pid=NNNN ifindex=22 val=0xffffffffffffffff rewrite=OK latency=150us
-```
+**[截图占位:限速面板]**
 
-## 故障模式
-- **如果 kprobe attach 也失败** (极少数):报 "cannot find kernel btf id" 或
-  "No such file or directory" → kprobe event_id 没建好,需要 `echo 1 >
-  /sys/kernel/tracing/tracing_on` 或类似
-- **如果 attach 成功但没收到事件**:可能 BPF_CORE_READ 字段偏移错
-  (libbpf 做 CO-RE 重定位,应该对,但 ColorOS kernel 可能魔改 struct)
-- **如果 counter-write 报 EPERM**:limit_map 白名单限制 hotspotd,
-  需要 v5.2 确认
+---
+
+## 它独特在哪
+
+| 特性 | 说明 |
+|---|---|
+| **BPF 内核级拦截** | LSM kprobe 监视 `security_bpf`,在 Android framework 试图开启 BPF offload 绕过时 100μs 内回写拦截 |
+| **自愈式网络栈** | ColorOS / MIUI 等 OEM 会私自清外部 tc 规则,HNC 三层防御(set_limit 前自检 + watchdog 60 秒巡检 + full_restore 兜底) |
+| **双向精准限速** | 下行走 tc HTB + iptables MARK,上行走 wlan2 ingress pref 1 mirred → ifb0 htb,测速精度 ±2% |
+| **真正认真的远程访问** | 自签 ECDSA P-256 证书 + bcrypt + Token/Secret 分离 + SameSite + CSRF + DNS rebinding 防御 |
+| **零依赖** | 不需要装额外 App、不需要 Xposed、不需要云服务 |
+
+---
+
+## 不能做什么(重要)
+
+- **iOS 的"私有 WiFi 地址"** 会用随机 MAC,每次连接看起来是不同设备 → 限速规则失效
+- **限速对 QUIC 的弹性大**(YouTube / Google),实际感受可能比设定数字松一点
+- 同一时刻只管一个热点 SSID(不支持双频段并发)
+- 限速精度约 **±10% in-app, ±2% speedtest**,不是商用 QoS 级
+- 不能识别"哪个 App 在用流量",只能识别哪个**设备**在用
+
+---
+
+## 兼容性
+
+| 维度 | 要求 |
+|---|---|
+| Android | 13+(需 BPF + cgroup v2) |
+| 内核 | 5.10+,启用 `CONFIG_NET_SCH_HTB`、`CONFIG_NETFILTER_XT_TARGET_MARK`、`CONFIG_KPROBES` |
+| Root | KernelSU 11485+ / SukiSU Ultra / Magisk 26+ |
+| 架构 | arm64(armv8) |
+
+**ROM 实测情况(持续更新)**: 见 [COMPATIBILITY.md](COMPATIBILITY.md)。
+
+如果你的 ROM 没在表里,先装上看看 WebUI 顶部的**能力提示条** —— 它会告诉你当前设备实际能用哪些功能。
+
+---
+
+## 安装
+
+1. 从 [Releases](https://github.com/lcx08091-source/hnc-v5/releases) 下载最新 zip
+2. 在 KernelSU / Magisk Manager 里"从本地安装",选 zip
+3. 重启
+4. 手机浏览器打开 `http://127.0.0.1:8444/`(或通过 KSU WebUI 入口)
+5. 第一次会提示配对 —— 按屏幕提示走
+
+---
+
+## 第一次用(3 步)
+
+**[GIF 占位 或 3 张连续截图]**
+
+---
+
+## 出问题了
+
+1. **收集诊断**:
+   ```sh
+   su -c 'sh /data/local/hnc/bin/diag.sh' > /sdcard/hnc_diag.txt
+   ```
+2. 在 [Issues](https://github.com/lcx08091-source/hnc-v5/issues) 开一个 bug,附 `hnc_diag.txt`
+3. 说明:
+   - 哪个 ROM / 哪台设备 / 内核版本
+   - 做了什么操作之后出现了什么现象
+   - 预期行为是什么
+
+---
+
+## 隐私
+
+- 所有数据(MAC、hostname、流量统计)**只存本地** `/data/local/hnc/`
+- 模块**不向任何外部服务器发送任何数据**
+- 远程 WebUI 默认只监听 `127.0.0.1`,需要你手动在设置里开启 LAN 访问
+- 开启 LAN 访问后必须 token 配对(bcrypt + 一次性 PIN + 速率限制)
+
+---
+
+## 项目状态
+
+- **版本**: v5.1.0-rc2(2026-04-24)
+- **主测设备**: realme GT 7 Pro / ColorOS 16 / kernel 6.6.102 / SukiSU Ultra
+- **代码规模**: C 7K + Go 4.4K + Shell 6.5K + HTML/JS 7K ≈ 2.5 万行
+- 由 **Ling** 维护。架构和大量代码与 Claude(Anthropic)协作完成,详见 [HACKING.md](HACKING.md) 的开发笔记。
+
+---
+
+## 贡献
+
+欢迎 bug 报告、兼容性反馈、PR。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+安全漏洞请**不要**在公开 issue 报告,按 [SECURITY.md](SECURITY.md) 的流程私下沟通。
