@@ -146,8 +146,12 @@ tc_leaf_ensure() {
 tc_filter_fw_set() {
     local dev=$1 mark=$2 flowid=$3
     tc filter del dev "$dev" parent 1: pref "$FILTER_PRIO_FW" handle "$mark" fw 2>/dev/null || true
-    tc filter add dev "$dev" parent 1: pref "$FILTER_PRIO_FW" handle "$mark" fw \
-        flowid "$flowid" 2>/dev/null || true
+    if tc filter add dev "$dev" parent 1: pref "$FILTER_PRIO_FW" handle "$mark" fw \
+        flowid "$flowid" 2>/dev/null; then
+        return 0
+    fi
+    log_error "fw filter add failed on $dev mark=$mark flowid=$flowid"
+    return 1
 }
 
 # u32 dst IP filter（下载方向：热点→设备，按 dst IP 分类）
@@ -284,9 +288,13 @@ ensure_device_class() {
     # rate 用备份值（如果之前 set_limit 设过）或 DEFAULT_RATE（首次建）
     # cburst 必须显式设，否则内核默认 1600 字节
     local use_rate="${saved_rate:-$DEFAULT_RATE}"
-    tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
-        htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null \
-        && log "  Created class 1:$class_id on $dev (rate=$use_rate)"
+    if tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
+        htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+        log "  Created class 1:$class_id on $dev (rate=$use_rate)"
+    else
+        log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
+        return 1
+    fi
 
     # 3. 重建 leaf netem，恢复延迟参数（如果有的话）
     # limit 100 包 ≈ 150 KB，避免 buffer bloat 卡死 TCP
@@ -296,21 +304,31 @@ ensure_device_class() {
         [ -n "$saved_jitter" ] && netem_args="$netem_args $saved_jitter"
     fi
     # shellcheck disable=SC2086
-    tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
-        netem $netem_args limit 100 2>/dev/null \
-        && log "  Created leaf netem ${leaf_handle}: ($netem_args)"
+    if tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
+        netem $netem_args limit 100 2>/dev/null; then
+        log "  Created leaf netem ${leaf_handle}: ($netem_args)"
+    else
+        log_error "ensure_device_class: leaf netem add failed dev=$dev class=1:$class_id"
+        return 1
+    fi
 
     # 4. 创建 u32 filter（若有 IP）
+    local u32_ok=0
     if [ -n "$ip" ]; then
         if [ "$direction" = "src" ]; then
-            tc_filter_u32_src "$dev" "$prio" "$ip" "1:$class_id"
+            tc_filter_u32_src "$dev" "$prio" "$ip" "1:$class_id" && u32_ok=1 || \
+                log_error "ensure_device_class: u32 src filter failed dev=$dev ip=$ip class=1:$class_id"
         else
-            tc_filter_u32_dst "$dev" "$prio" "$ip" "1:$class_id"
+            tc_filter_u32_dst "$dev" "$prio" "$ip" "1:$class_id" && u32_ok=1 || \
+                log_error "ensure_device_class: u32 dst filter failed dev=$dev ip=$ip class=1:$class_id"
         fi
     fi
 
-    # 5. 创建 fw 备用 filter
-    tc_filter_fw_set "$dev" "$mark" "1:$class_id"
+    # 5. 创建 fw 备用 filter。若没有 IP/u32,fw filter 是唯一分类路径,失败必须上报。
+    if ! tc_filter_fw_set "$dev" "$mark" "1:$class_id"; then
+        [ "$u32_ok" = "1" ] || return 1
+    fi
+    return 0
 }
 
 # 仅修改 class 的 rate/ceil/burst（不动 leaf qdisc）
@@ -892,31 +910,31 @@ set_limit() {
 
     # ── Egress（下载：热点→设备）──────────────────────────────
     if gt0 "$down_mbps"; then
-        ensure_device_class "$iface" "$class_id" "$ip"
+        ensure_device_class "$iface" "$class_id" "$ip" || return 1
         local dn_rate;  dn_rate=$(mbps_to_rate "$down_mbps")
         local dn_burst; dn_burst=$(burst_for_rate "$down_mbps")
-        set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst"
+        set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst" || { log_error "set_limit: egress rate set failed dev=$iface class=1:$class_id"; return 1; }
         log "  Egress 1:$class_id @ $dn_rate burst $dn_burst"
     else
         # 关限速：只重置 rate，保留 leaf netem（可能承载延迟）
         if class_exists "$iface" "$class_id"; then
-            set_rate_only "$iface" "$class_id" "$DEFAULT_RATE" 200k
+            set_rate_only "$iface" "$class_id" "$DEFAULT_RATE" 200k || { log_error "set_limit: egress rate clear failed dev=$iface class=1:$class_id"; return 1; }
             log "  Egress 1:$class_id rate cleared (leaf preserved)"
         fi
     fi
 
-    ensure_ifb_root_v1
-    ensure_ingress_mirred_v1 "$iface"
+    ensure_ifb_root_v1 || return 1
+    ensure_ingress_mirred_v1 "$iface" || return 1
     # ── Ingress（上传：设备→热点，通过 ifb0）────────────────
     if gt0 "$up_mbps"; then
-        ensure_device_class "$IFB_IFACE" "$class_id" "$ip"
+        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         local up_rate;  up_rate=$(mbps_to_rate "$up_mbps")
         local up_burst; up_burst=$(burst_for_rate "$up_mbps")
-        set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst"
+        set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst" || { log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
         log "  Ingress(ifb0) 1:$class_id @ $up_rate burst $up_burst"
     else
         if class_exists "$IFB_IFACE" "$class_id"; then
-            set_rate_only "$IFB_IFACE" "$class_id" "$DEFAULT_RATE" 200k
+            set_rate_only "$IFB_IFACE" "$class_id" "$DEFAULT_RATE" 200k || { log_error "set_limit: ingress rate clear failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
             log "  Ingress(ifb0) 1:$class_id rate cleared (leaf preserved)"
         fi
     fi
@@ -976,27 +994,31 @@ set_delay() {
     # 修复:入口判断改为 delay/jitter/loss 任一 > 0 都进入"启用"分支
     if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
         # 双向都建 class（若尚未建立）
-        ensure_device_class "$iface"     "$class_id" "$ip"
-        ensure_device_class "$IFB_IFACE" "$class_id" "$ip"
+        ensure_device_class "$iface"     "$class_id" "$ip" || return 1
+        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         # v3.8.5: delay 除以 2 分给两方向(egress=down, ingress=up)
         # jitter/loss 依然是每方向原值(见上面函数注释说明)
-        set_netem_only "$iface"     "$class_id" "$delay_eg" "$jitter_ms" "$loss"
-        set_netem_only "$IFB_IFACE" "$class_id" "$delay_ig" "$jitter_ms" "$loss"
+        set_netem_only "$iface"     "$class_id" "$delay_eg" "$jitter_ms" "$loss" || { log_error "set_delay: egress netem set failed dev=$iface class=1:$class_id"; return 1; }
+        set_netem_only "$IFB_IFACE" "$class_id" "$delay_ig" "$jitter_ms" "$loss" || { log_error "set_delay: ingress netem set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
         log "  Netem applied: RTT ${delay_ms}ms (eg=${delay_eg}ms + ig=${delay_ig}ms) jitter=${jitter_ms}ms loss=${loss}%"
     else
         # 关延迟：把 leaf netem 重置为无延迟，class 及 rate 不动
         if class_exists "$iface" "$class_id"; then
-            set_netem_only "$iface" "$class_id" 0 0 0
+            set_netem_only "$iface" "$class_id" 0 0 0 || { log_error "set_delay: egress netem clear failed dev=$iface class=1:$class_id"; return 1; }
             log "  Delay cleared on $iface 1:$class_id (class+rate preserved)"
         fi
         if class_exists "$IFB_IFACE" "$class_id"; then
-            set_netem_only "$IFB_IFACE" "$class_id" 0 0 0
+            set_netem_only "$IFB_IFACE" "$class_id" 0 0 0 || { log_error "set_delay: ingress netem clear failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
             log "  Delay cleared on $IFB_IFACE 1:$class_id (class+rate preserved)"
         fi
     fi
 }
 
-set_all() { set_limit "$1" "$2" "$3" "$4" "${8:-}"; set_delay "$1" "$2" "$5" "${6:-0}" "${7:-0}" "${8:-}"; }
+set_all() {
+    set_limit "$1" "$2" "$3" "$4" "${8:-}" || return $?
+    set_delay "$1" "$2" "$5" "${6:-0}" "${7:-0}" "${8:-}" || return $?
+    return 0
+}
 
 # ─── 移除设备所有规则 ────────────────────────────────────────
 remove_device() {

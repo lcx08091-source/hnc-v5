@@ -154,6 +154,35 @@ static int limited_set_remove(const char *mac)
     return 0;
 }
 
+
+/* 精确判断 JSON block 内的布尔字段是否为 true。
+ * 避免旧逻辑 `strstr(block, "true")` 把 delay_enabled:true 误判为 limit_enabled:true。
+ * block 必须是临时 NUL-terminated 的对象片段。
+ */
+static int json_bool_true_in_block(const char *block, const char *key)
+{
+    if (block == NULL || key == NULL) return 0;
+
+    char needle[96];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+
+    const char *p = block;
+    while ((p = strstr(p, needle)) != NULL) {
+        const char *q = p + strlen(needle);
+        while (*q && isspace((unsigned char)*q)) q++;
+        if (*q != ':') { p = q; continue; }
+        q++;
+        while (*q && isspace((unsigned char)*q)) q++;
+        if (strncmp(q, "true", 4) == 0) {
+            char end = q[4];
+            if (end == '\0' || end == ',' || end == '}' || isspace((unsigned char)end))
+                return 1;
+        }
+        p = q;
+    }
+    return 0;
+}
+
 /* ══════════════════════════════════════════════════════════
  * v5.0 alpha.3 P0-B: 启动时从 rules.json 重建 limited_macs
  *
@@ -264,11 +293,10 @@ static int rebuild_from_rules(void)
         }
         if (!block_end) break;
 
-        /* 在 block 内找 "limit_enabled":true */
+        /* 在 block 内精确找 "limit_enabled": true */
         char saved = *(block_end + 1);
         *(block_end + 1) = '\0';
-        int has_limit = (strstr(block_open, "\"limit_enabled\"") != NULL) &&
-                        (strstr(block_open, "true") != NULL);
+        int has_limit = json_bool_true_in_block(block_open, "limit_enabled");
         *(block_end + 1) = saved;
 
         if (has_limit) {

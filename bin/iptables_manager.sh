@@ -121,6 +121,20 @@ ipt_dual_q() {
     return 0
 }
 
+# v5.1.0-rc1 hotfix: 删除旧规则时循环 -D 直到不存在,避免历史重复规则残留。
+ipt_del_all() {
+    local cmd=$1
+    shift
+    while $cmd "$@" 2>/dev/null; do :; done
+    return 0
+}
+
+ipt_dual_del_all() {
+    ipt_del_all "$IPT" "$@"
+    [ "$IPV6_OK" = "1" ] && ipt_del_all "$IP6T" "$@"
+    return 0
+}
+
 # 幂等创建并 flush 用户自定义链（v4+v6）
 _ensure_chain() {
     local table=$1 chain=$2
@@ -223,10 +237,10 @@ mark_device() {
     _gc_stale_ips_for_mac "$mac" "$mark" "$ip"
 
     # ── 清除可能的旧规则（幂等)──
-    $IPT -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
-        -j MARK --set-mark "$mark" 2>/dev/null
-    $IPT -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
-    ipt_dual_q -t mangle -D HNC_MARK \
+    ipt_del_all "$IPT" -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
+        -j MARK --set-mark "$mark"
+    ipt_del_all "$IPT" -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark"
+    ipt_dual_del_all -t mangle -D HNC_MARK \
         -m mac --mac-source "$mac" -m mark --mark 0 \
         -j MARK --set-mark "$mark"
 
@@ -248,8 +262,8 @@ mark_device() {
 
     # ── v4 流量统计 ──
     # v6 无统计，因为需要跟踪动态地址（代价不值）
-    $IPT -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    $IPT -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -s "$ip" -j RETURN
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -d "$ip" -j RETURN
     $IPT -t mangle -A HNC_STATS -s "$ip" -j RETURN
     $IPT -t mangle -A HNC_STATS -d "$ip" -j RETURN
 
@@ -301,11 +315,11 @@ _gc_stale_ips_for_mac() {
         [ -z "$old_ip" ] && continue
         [ "$old_ip" = "$cur_ip" ] && continue
         log "GC stale IP: $old_ip (mac=$mac mark=$mark)"
-        $IPT -t mangle -D HNC_MARK -s "$old_ip" -m mac --mac-source "$mac" \
-            -j MARK --set-mark "$mark" 2>/dev/null
-        $IPT -t mangle -D HNC_MARK -d "$old_ip" -j MARK --set-mark "$mark" 2>/dev/null
-        $IPT -t mangle -D HNC_STATS -s "$old_ip" -j RETURN 2>/dev/null
-        $IPT -t mangle -D HNC_STATS -d "$old_ip" -j RETURN 2>/dev/null
+        ipt_del_all "$IPT" -t mangle -D HNC_MARK -s "$old_ip" -m mac --mac-source "$mac" \
+            -j MARK --set-mark "$mark"
+        ipt_del_all "$IPT" -t mangle -D HNC_MARK -d "$old_ip" -j MARK --set-mark "$mark"
+        ipt_del_all "$IPT" -t mangle -D HNC_STATS -s "$old_ip" -j RETURN
+        ipt_del_all "$IPT" -t mangle -D HNC_STATS -d "$old_ip" -j RETURN
     done < "$_gc_tmp"
     rm -f "$_gc_tmp"
     return 0
@@ -329,15 +343,15 @@ unmark_device() {
     # 必须在删 $IPT 规则之前调用，否则它找不到 mark）
     sh "$HNC_DIR/bin/v6_sync.sh" clear "$mac" 2>/dev/null || true
 
-    $IPT -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
-        -j MARK --set-mark "$mark" 2>/dev/null
-    $IPT -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark" 2>/dev/null
-    ipt_dual_q -t mangle -D HNC_MARK \
+    ipt_del_all "$IPT" -t mangle -D HNC_MARK -s "$ip" -m mac --mac-source "$mac" \
+        -j MARK --set-mark "$mark"
+    ipt_del_all "$IPT" -t mangle -D HNC_MARK -d "$ip" -j MARK --set-mark "$mark"
+    ipt_dual_del_all -t mangle -D HNC_MARK \
         -m mac --mac-source "$mac" -m mark --mark 0 \
         -j MARK --set-mark "$mark"
 
-    $IPT -t mangle -D HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    $IPT -t mangle -D HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -s "$ip" -j RETURN
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -d "$ip" -j RETURN
 
     return 0
 }
@@ -352,18 +366,18 @@ blacklist_add() {
     log "Blacklist add: $ip ($mac)"
 
     # 清旧（幂等）
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" -j DROP
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" \
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" -j DROP
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" \
         -p tcp -j REJECT --reject-with tcp-reset
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" -p tcp -j DROP
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" -p tcp -j DROP
 
     # v4+v6：MAC DROP
     ipt_dual -t filter -A HNC_CTRL -m mac --mac-source "$mac" -j DROP
 
     # 仅 v4：按 IP 的 DROP（双向都拦）
     if [ -n "$ip" ]; then
-        $IPT -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
-        $IPT -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
+        ipt_del_all "$IPT" -t filter -D HNC_CTRL -s "$ip" -j DROP
+        ipt_del_all "$IPT" -t filter -D HNC_CTRL -d "$ip" -j DROP
         $IPT -t filter -A HNC_CTRL -s "$ip" -j DROP
         $IPT -t filter -A HNC_CTRL -d "$ip" -j DROP
     fi
@@ -384,14 +398,14 @@ blacklist_remove() {
     local ip=$1 mac=$2
     log "Blacklist remove: $ip ($mac)"
 
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" -j DROP
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" \
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" -j DROP
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" \
         -p tcp -j REJECT --reject-with tcp-reset
-    ipt_dual_q -t filter -D HNC_CTRL -m mac --mac-source "$mac" -p tcp -j DROP
+    ipt_dual_del_all -t filter -D HNC_CTRL -m mac --mac-source "$mac" -p tcp -j DROP
 
     if [ -n "$ip" ]; then
-        $IPT -t filter -D HNC_CTRL -s "$ip" -j DROP 2>/dev/null
-        $IPT -t filter -D HNC_CTRL -d "$ip" -j DROP 2>/dev/null
+        ipt_del_all "$IPT" -t filter -D HNC_CTRL -s "$ip" -j DROP
+        ipt_del_all "$IPT" -t filter -D HNC_CTRL -d "$ip" -j DROP
     fi
     # Patch 4.b: blacklist_remove 是幂等清理 — 同 unmark_device,强制 return 0
     return 0

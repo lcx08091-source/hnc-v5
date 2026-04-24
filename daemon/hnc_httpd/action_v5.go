@@ -25,6 +25,24 @@ import (
 var intRE = regexp.MustCompile(`^[0-9]+$`)
 var floatRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
+func lookupCurrentDeviceIP(hncDir, mac string) string {
+	raw, err := readJSON(hncDir + "/data/devices.json")
+	if err != nil {
+		return ""
+	}
+	devices, _ := raw.(map[string]interface{})
+	dev, _ := devices[mac].(map[string]interface{})
+	if dev == nil {
+		return ""
+	}
+	ip, _ := dev["ip"].(string)
+	ip = strings.TrimSpace(ip)
+	if ip != "" && ipv4RE.MatchString(ip) {
+		return ip
+	}
+	return ""
+}
+
 func atoiClamp(s string, min, max int) (int, bool) {
 	if !intRE.MatchString(s) {
 		return 0, false
@@ -88,8 +106,10 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 
 	// rc3 修 N-1: tc_manager.sh 实际子命令是 set_delay, 不是 set_netem
 	// 签名: set_delay <iface> <mark_id> <delay_ms> <jitter_ms> <loss_pct> [ip]
+	// v5.1.0-rc1 hotfix: delay-only 场景也传当前 IP,确保 ifb0 u32 src filter 能创建。
+	ip := lookupCurrentDeviceIP(hncDir, mac)
 	rc3, out3 := runBin(hncDir, "tc_manager.sh", "set_delay", iface, mid,
-		strconv.Itoa(delay), strconv.Itoa(jitter), lossStr)
+		strconv.Itoa(delay), strconv.Itoa(jitter), lossStr, ip)
 	if rc3 != 0 {
 		return actionResp{OK: false, Error: "netem apply failed", Detail: out3}
 	}

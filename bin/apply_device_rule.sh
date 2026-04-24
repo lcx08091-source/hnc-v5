@@ -50,6 +50,12 @@ emit_err() {
     exit 1
 }
 
+# v5.1.0-rc1 hotfix: busybox ash 安全数值判断,支持整数/小数。
+# 用于 clear 判断 delay/jitter/loss 是否仍然启用。
+num_gt0() {
+    awk -v v="${1:-0}" 'BEGIN{exit !(v+0 > 0)}'
+}
+
 # ── helper: 读 devices.json 拿 IP ─────────────────────────────────
 get_ip() {
     local mac=$1
@@ -116,21 +122,22 @@ get_or_assign_mid() {
         }
     }
     ' "$RULES" 2>/dev/null | sort -u)
-    # 哈希起点 = (last_byte * 256 + ?) % 98 + 1 — 这里简化用 last byte
+    # 哈希起点 = last byte % 99 + 1, 覆盖完整 1..99 mark_id 池。
     local lb=$(echo "$mac" | awk -F: '{print $6}')
     # base16 → dec
-    local start=$((0x${lb:-1} % 98 + 1))
+    local start=$((0x${lb:-1} % 99 + 1))
     local k=0
-    while [ $k -lt 98 ]; do
-        local cand=$(((start - 1 + k) % 98 + 1))
+    while [ $k -lt 99 ]; do
+        local cand=$(((start - 1 + k) % 99 + 1))
         if ! echo "$used" | grep -qx "$cand"; then
             echo "$cand"
-            return
+            return 0
         fi
         k=$((k + 1))
     done
-    # 全占满, 回退 start
-    echo "$start"
+    # v5.1.0-rc1 hotfix: mark_id 用尽时必须失败,不能回退复用 start。
+    log "ERROR: mark_id exhausted for mac=$mac (all 1..99 are used)"
+    return 1
 }
 
 # ── helper: 累计 json_set 失败 (rc3.1.33 修 #18) ─────────────────
@@ -229,7 +236,10 @@ case "$CMD" in
         fi
         # rc3.1.33 修 #19: 在 gate_lock 内 alloc + 立即写 mark_id, 防并发分配冲突
         gate_lock || emit_err "gate_lock timeout (5s), another global op in progress"
-        MID=$(get_or_assign_mid "$MAC")
+        if ! MID=$(get_or_assign_mid "$MAC"); then
+            gate_unlock
+            emit_err "mark_id exhausted; too many devices with persistent rules"
+        fi
         # 立即写 mark_id 到 rules.json, 让其他并发 alloc 看到这个 mid 已被占用
         # (get_or_assign_mid 下一次扫 rules.json 会把它纳入 used 集合).
         # 这一处用 sh 直接调而不是 js_set_dev, 因为失败要立即 abort 整个 limit.
@@ -276,7 +286,10 @@ case "$CMD" in
             emit_err "device not found in devices.json (mac=$MAC)"
         fi
         gate_lock || emit_err "gate_lock timeout (5s)"
-        MID=$(get_or_assign_mid "$MAC")
+        if ! MID=$(get_or_assign_mid "$MAC"); then
+            gate_unlock
+            emit_err "mark_id exhausted; too many devices with persistent rules"
+        fi
         if ! sh "$JSON_SET" device "$MAC" mark_id "$MID" >> "$LOG" 2>&1; then
             gate_unlock
             emit_err "failed to write mark_id=$MID to rules.json (mid alloc race risk)"
@@ -311,15 +324,36 @@ case "$CMD" in
             exit 0
         fi
         log "clear mac=$MAC ip=$IP mid=$MID iface=$IFACE"
-        # 1. tc remove (即使 iface/IP 缺也尝试,失败不报错 — 可能本来就没 apply 过)
-        if [ -n "$IFACE" ] && [ "$IFACE" != "wlan0" ]; then
-            sh "$TC" remove "$IFACE" "$MID" >> "$LOG" 2>&1 || log "tc remove warn (mid=$MID may not be applied)"
-        fi
-        # v5.0: tc 规则已清, 通知 scheduler 可能恢复 offload
-        notify_offload "$MAC" 0
-        # 2. iptables unmark
-        if [ -n "$IP" ]; then
-            sh "$IPT" unmark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 || log "iptables unmark warn"
+        # v5.1.0-rc1 hotfix: clear 是“清限速”,不能误删 delay/netem。
+        # 如果 delay/jitter/loss 仍启用,只把 HTB rate 复位为默认,保留 class、netem、iptables mark 和 offload disable。
+        DELAY_ENABLED=$(sh "$JSON_SET" device_get "$MAC" delay_enabled 2>/dev/null)
+        DELAY_MS=$(sh "$JSON_SET" device_get "$MAC" delay_ms 2>/dev/null)
+        JITTER_MS=$(sh "$JSON_SET" device_get "$MAC" jitter_ms 2>/dev/null)
+        LOSS_PCT=$(sh "$JSON_SET" device_get "$MAC" loss_pct 2>/dev/null)
+        HAS_DELAY=0
+        [ "$DELAY_ENABLED" = "true" ] && HAS_DELAY=1
+        num_gt0 "$DELAY_MS" && HAS_DELAY=1
+        num_gt0 "$JITTER_MS" && HAS_DELAY=1
+        num_gt0 "$LOSS_PCT" && HAS_DELAY=1
+
+        if [ "$HAS_DELAY" = "1" ]; then
+            if [ -n "$IFACE" ] && [ "$IFACE" != "wlan0" ]; then
+                sh "$TC" set_limit "$IFACE" "$MID" 0 0 "$IP" >> "$LOG" 2>&1 \
+                    || log "tc set_limit clear-rate warn (mid=$MID, delay preserved)"
+            else
+                log "clear warn: no active iface, preserved iptables mark because delay is still enabled"
+            fi
+            log "clear limit only: delay/netem preserved (mac=$MAC mid=$MID)"
+        else
+            # 没有 delay 时才允许完整删除 TC class/filter/qdisc 和 iptables mark。
+            if [ -n "$IFACE" ] && [ "$IFACE" != "wlan0" ]; then
+                sh "$TC" remove "$IFACE" "$MID" >> "$LOG" 2>&1 || log "tc remove warn (mid=$MID may not be applied)"
+            fi
+            # v5.0: tc 规则已清, 通知 scheduler 可能恢复 offload
+            notify_offload "$MAC" 0
+            if [ -n "$IP" ]; then
+                sh "$IPT" unmark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 || log "iptables unmark warn"
+            fi
         fi
         # 3. 写 rules.json: 清空 down_mbps/up_mbps + limit_enabled=false
         # rc3.1.33 修 #18: 累计失败. 如果 limit_enabled 写失败但 tc 已清, 下次 watchdog

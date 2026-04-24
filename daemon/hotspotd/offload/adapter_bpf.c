@@ -65,6 +65,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -238,6 +239,13 @@ static struct {
     .globally_disabled  = 0,
 };
 
+/* v5.1.0-rc1 hotfix: adapter 状态 s 和缓存 fd 可能被 scheduler worker、
+ * status API、shutdown 路径并发访问,必须统一加锁。
+ */
+static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+#define BPF_LOCK()   pthread_mutex_lock(&s_lock)
+#define BPF_UNLOCK() pthread_mutex_unlock(&s_lock)
+
 /* ══════════════════════════════════════════════════════════
  * fd 自愈: 打开 / 重新打开
  * ══════════════════════════════════════════════════════════ */
@@ -359,10 +367,17 @@ static int bpf_probe(void)
 
 static offload_err_t bpf_init(void)
 {
-    if (s.initialized) return OFFLOAD_OK;
+    offload_err_t ret = OFFLOAD_OK;
+    BPF_LOCK();
+    if (s.initialized) {
+        BPF_UNLOCK();
+        return OFFLOAD_OK;
+    }
 
     if (ensure_limit_fd() != 0) {
-        return errno_to_offload(errno);
+        ret = errno_to_offload(errno);
+        BPF_UNLOCK();
+        return ret;
     }
     if (ensure_stats_fd() != 0) {
         /* stats fd 失败不致命, refresh_active 会再试 */
@@ -375,16 +390,22 @@ static offload_err_t bpf_init(void)
     s.initialized = 1;
     fprintf(stderr, "[bpf] init OK (limit_fd=%d stats_fd=%d error_fd=%d)\n",
             s.fd_limit, s.fd_stats, s.fd_error);
-    return OFFLOAD_OK;
+    BPF_UNLOCK();
+    return ret;
 }
 
 static void bpf_shutdown(void)
 {
-    if (!s.initialized) return;
+    BPF_LOCK();
+    if (!s.initialized) {
+        BPF_UNLOCK();
+        return;
+    }
     if (s.fd_limit >= 0) { close(s.fd_limit); s.fd_limit = -1; }
     if (s.fd_stats >= 0) { close(s.fd_stats); s.fd_stats = -1; }
     if (s.fd_error >= 0) { close(s.fd_error); s.fd_error = -1; }
     s.initialized = 0;
+    BPF_UNLOCK();
 }
 
 /* self_check: 验证 limit_map schema 与编译期假设一致
@@ -393,7 +414,13 @@ static void bpf_shutdown(void)
  */
 static offload_err_t bpf_self_check(void)
 {
-    if (ensure_limit_fd() != 0) return errno_to_offload(errno);
+    offload_err_t ret = OFFLOAD_OK;
+    BPF_LOCK();
+    if (ensure_limit_fd() != 0) {
+        ret = errno_to_offload(errno);
+        BPF_UNLOCK();
+        return ret;
+    }
 
     struct bpf_map_info info;
     memset(&info, 0, sizeof(info));
@@ -401,6 +428,7 @@ static offload_err_t bpf_self_check(void)
 
     if (bpf_obj_get_info_by_fd(s.fd_limit, &info, &info_len) != 0) {
         fprintf(stderr, "[bpf] self_check: get_info_by_fd errno=%d\n", errno);
+        BPF_UNLOCK();
         return OFFLOAD_EINTERNAL;
     }
 
@@ -409,14 +437,17 @@ static offload_err_t bpf_self_check(void)
             "[bpf] self_check FAIL: limit_map schema drift "
             "(key_size=%u expected 4, value_size=%u expected 8)\n",
             info.key_size, info.value_size);
+        BPF_UNLOCK();
         return OFFLOAD_EINTERNAL;
     }
-    return OFFLOAD_OK;
+    BPF_UNLOCK();
+    return ret;
 }
 
 static void bpf_status(offload_status_t *out)
 {
     if (out == NULL) return;
+    BPF_LOCK();
     memset(out, 0, sizeof(*out));
     out->active            = s.cached_active;
     out->last_refresh_ts   = s.cached_refresh_ts;
@@ -430,6 +461,7 @@ static void bpf_status(offload_status_t *out)
     if (n > cap) n = cap;
     for (int i = 0; i < n; i++)
         out->disabled_upstream_ifindex[i] = s.disabled_upstream_ifindex[i];
+    BPF_UNLOCK();
 }
 
 /* refresh_active: 5s 双采样 stats_map
@@ -445,15 +477,19 @@ static void bpf_status(offload_status_t *out)
  */
 static offload_err_t bpf_refresh_active(void)
 {
+    BPF_LOCK();
     uint64_t t1 = stats_total_bytes();
     if (t1 == 0 && s.fd_stats < 0) {
         /* stats_map 不可用 */
         s.cached_active = 0;
+        BPF_UNLOCK();
         return OFFLOAD_ENOENT;
     }
+    BPF_UNLOCK();
 
     sleep(ACTIVE_SAMPLE_INTERVAL);
 
+    BPF_LOCK();
     uint64_t t2 = stats_total_bytes();
     uint64_t delta = (t2 >= t1) ? (t2 - t1) : 0;
 
@@ -461,6 +497,7 @@ static offload_err_t bpf_refresh_active(void)
     s.cached_active      = (delta >= ACTIVE_THRESHOLD_BYTES) ? 1 : 0;
     s.cached_refresh_ts  = (int64_t)time(NULL);
     s.cached_last_total  = t2;
+    BPF_UNLOCK();
     return OFFLOAD_OK;
 }
 
@@ -474,8 +511,10 @@ static offload_err_t bpf_refresh_active(void)
  */
 static offload_err_t bpf_disable_upstream(int ifindex)
 {
+    offload_err_t ret = OFFLOAD_OK;
     if (ifindex <= 0) return OFFLOAD_EINVAL;
-    if (ensure_limit_fd() != 0) return errno_to_offload(errno);
+    BPF_LOCK();
+    if (ensure_limit_fd() != 0) { ret = errno_to_offload(errno); goto out; }
 
     uint32_t key = (uint32_t)ifindex;
     uint64_t val = BPF_LIMIT_ZERO;
@@ -483,17 +522,21 @@ static offload_err_t bpf_disable_upstream(int ifindex)
     /* 先 BPF_EXIST (常见路径) */
     if (bpf_map_update_elem(s.fd_limit, &key, &val, BPF_EXIST) == 0) {
         disabled_set_add(ifindex);
-        return OFFLOAD_OK;
+        ret = OFFLOAD_OK;
+        goto out;
     }
 
     int e1 = errno;
     if (e1 == EBADF) {
         /* fd 失效自愈 */
-        if (reopen_fd(&s.fd_limit, BPF_LIMIT_MAP) != 0)
-            return errno_to_offload(errno);
+        if (reopen_fd(&s.fd_limit, BPF_LIMIT_MAP) != 0) {
+            ret = errno_to_offload(errno);
+            goto out;
+        }
         if (bpf_map_update_elem(s.fd_limit, &key, &val, BPF_EXIST) == 0) {
             disabled_set_add(ifindex);
-            return OFFLOAD_OK;
+            ret = OFFLOAD_OK;
+            goto out;
         }
         e1 = errno;
     }
@@ -502,37 +545,48 @@ static offload_err_t bpf_disable_upstream(int ifindex)
         /* entry 不存在, 创建 */
         if (bpf_map_update_elem(s.fd_limit, &key, &val, BPF_ANY) == 0) {
             disabled_set_add(ifindex);
-            return OFFLOAD_OK;
+            ret = OFFLOAD_OK;
+            goto out;
         }
         fprintf(stderr, "[bpf] disable_upstream: BPF_ANY also failed errno=%d\n", errno);
-        return errno_to_offload(errno);
+        ret = errno_to_offload(errno);
+        goto out;
     }
 
     fprintf(stderr, "[bpf] disable_upstream(%d) errno=%d %s\n",
             ifindex, e1, strerror(e1));
-    return errno_to_offload(e1);
+    ret = errno_to_offload(e1);
+out:
+    BPF_UNLOCK();
+    return ret;
 }
 
 static offload_err_t bpf_restore_upstream(int ifindex)
 {
+    offload_err_t ret = OFFLOAD_OK;
     if (ifindex <= 0) return OFFLOAD_EINVAL;
-    if (ensure_limit_fd() != 0) return errno_to_offload(errno);
+    BPF_LOCK();
+    if (ensure_limit_fd() != 0) { ret = errno_to_offload(errno); goto out; }
 
     uint32_t key = (uint32_t)ifindex;
     uint64_t val = BPF_LIMIT_NONE;
 
     if (bpf_map_update_elem(s.fd_limit, &key, &val, BPF_EXIST) == 0) {
         disabled_set_remove(ifindex);
-        return OFFLOAD_OK;
+        ret = OFFLOAD_OK;
+        goto out;
     }
 
     int e = errno;
     if (e == EBADF) {
-        if (reopen_fd(&s.fd_limit, BPF_LIMIT_MAP) != 0)
-            return errno_to_offload(errno);
+        if (reopen_fd(&s.fd_limit, BPF_LIMIT_MAP) != 0) {
+            ret = errno_to_offload(errno);
+            goto out;
+        }
         if (bpf_map_update_elem(s.fd_limit, &key, &val, BPF_EXIST) == 0) {
             disabled_set_remove(ifindex);
-            return OFFLOAD_OK;
+            ret = OFFLOAD_OK;
+            goto out;
         }
         e = errno;
     }
@@ -540,12 +594,16 @@ static offload_err_t bpf_restore_upstream(int ifindex)
     if (e == ENOENT) {
         /* entry 不在, 那本来就没 disable 状态, 当作成功 */
         disabled_set_remove(ifindex);
-        return OFFLOAD_OK;
+        ret = OFFLOAD_OK;
+        goto out;
     }
 
     fprintf(stderr, "[bpf] restore_upstream(%d) errno=%d %s\n",
             ifindex, e, strerror(e));
-    return errno_to_offload(e);
+    ret = errno_to_offload(e);
+out:
+    BPF_UNLOCK();
+    return ret;
 }
 
 /* disable_global: 遍历 limit_map 所有 entry, 全写 0
@@ -556,13 +614,16 @@ static offload_err_t bpf_restore_upstream(int ifindex)
  */
 static offload_err_t bpf_disable_global(void)
 {
-    if (ensure_limit_fd() != 0) return errno_to_offload(errno);
+    offload_err_t ret = OFFLOAD_OK;
+    BPF_LOCK();
+    if (ensure_limit_fd() != 0) { ret = errno_to_offload(errno); goto out; }
 
     uint32_t key = 0, next_key = 0;
     uint64_t val = BPF_LIMIT_ZERO;
     int has_prev = 0;
     int touched = 0;
     int errs = 0;
+    int iter_errno = 0;
 
     while (1) {
         int rc = bpf_map_get_next_key(s.fd_limit,
@@ -570,7 +631,9 @@ static offload_err_t bpf_disable_global(void)
                                        &next_key);
         if (rc != 0) {
             if (errno == ENOENT) break;
-            fprintf(stderr, "[bpf] disable_global get_next_key errno=%d\n", errno);
+            iter_errno = errno;
+            errs++;
+            fprintf(stderr, "[bpf] disable_global get_next_key errno=%d\n", iter_errno);
             break;
         }
 
@@ -590,21 +653,27 @@ static offload_err_t bpf_disable_global(void)
     s.globally_disabled = (touched > 0 && errs == 0) ? 1 : s.globally_disabled;
     fprintf(stderr, "[bpf] disable_global: touched=%d errs=%d\n", touched, errs);
 
-    if (touched == 0 && errs == 0) return OFFLOAD_OK;       /* 空表 */
-    if (errs == 0)                  return OFFLOAD_OK;
-    if (touched > 0)                return OFFLOAD_OK;       /* 部分成功 */
-    return OFFLOAD_EINTERNAL;
+    if (errs == 0)                  ret = OFFLOAD_OK;
+    else if (iter_errno != 0 && touched == 0) ret = errno_to_offload(iter_errno);
+    else if (touched > 0)           ret = OFFLOAD_OK;       /* 部分成功 */
+    else                            ret = OFFLOAD_EINTERNAL;
+out:
+    BPF_UNLOCK();
+    return ret;
 }
 
 static offload_err_t bpf_restore_global(void)
 {
-    if (ensure_limit_fd() != 0) return errno_to_offload(errno);
+    offload_err_t ret = OFFLOAD_OK;
+    BPF_LOCK();
+    if (ensure_limit_fd() != 0) { ret = errno_to_offload(errno); goto out; }
 
     uint32_t key = 0, next_key = 0;
     uint64_t val = BPF_LIMIT_NONE;
     int has_prev = 0;
     int touched = 0;
     int errs = 0;
+    int iter_errno = 0;
 
     while (1) {
         int rc = bpf_map_get_next_key(s.fd_limit,
@@ -612,7 +681,9 @@ static offload_err_t bpf_restore_global(void)
                                        &next_key);
         if (rc != 0) {
             if (errno == ENOENT) break;
-            fprintf(stderr, "[bpf] restore_global get_next_key errno=%d\n", errno);
+            iter_errno = errno;
+            errs++;
+            fprintf(stderr, "[bpf] restore_global get_next_key errno=%d\n", iter_errno);
             break;
         }
 
@@ -621,6 +692,8 @@ static offload_err_t bpf_restore_global(void)
             touched++;
         } else {
             errs++;
+            fprintf(stderr, "[bpf] restore_global update ifindex=%u errno=%d\n",
+                    next_key, errno);
         }
 
         key = next_key;
@@ -633,9 +706,13 @@ static offload_err_t bpf_restore_global(void)
     }
     fprintf(stderr, "[bpf] restore_global: touched=%d errs=%d\n", touched, errs);
 
-    if (errs == 0)                  return OFFLOAD_OK;
-    if (touched > 0)                return OFFLOAD_OK;
-    return OFFLOAD_EINTERNAL;
+    if (errs == 0)                  ret = OFFLOAD_OK;
+    else if (iter_errno != 0 && touched == 0) ret = errno_to_offload(iter_errno);
+    else if (touched > 0)           ret = OFFLOAD_OK;
+    else                            ret = OFFLOAD_EINTERNAL;
+out:
+    BPF_UNLOCK();
+    return ret;
 }
 
 /* ══════════════════════════════════════════════════════════
