@@ -43,6 +43,46 @@ func lookupCurrentDeviceIP(hncDir, mac string) string {
 	return ""
 }
 
+func lookupRuleDeviceField(hncDir, mac, field string) string {
+	rc, out := runBin(hncDir, "json_set.sh", "device_get", mac, field)
+	if rc != 0 {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+func ruleNumberPositive(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.Trim(s, `"`)
+	s = strings.TrimSuffix(s, "mbit")
+	s = strings.TrimSuffix(s, "kbit")
+	s = strings.TrimSuffix(s, "m")
+	s = strings.TrimSuffix(s, "k")
+	if s == "" {
+		return false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	return err == nil && v > 0
+}
+
+func deviceHasPositiveLimit(hncDir, mac string) bool {
+	if lookupRuleDeviceField(hncDir, mac, "limit_enabled") != "true" {
+		return false
+	}
+	return ruleNumberPositive(lookupRuleDeviceField(hncDir, mac, "down_mbps")) ||
+		ruleNumberPositive(lookupRuleDeviceField(hncDir, mac, "up_mbps"))
+}
+
+func notifyOffloadLimit(hncDir, mac string, enabled bool) {
+	flag := "0"
+	if enabled {
+		flag = "1"
+	}
+	if rc, out := runBin(hncDir, "hnc_ipc", "OFFLOAD_NOTIFY_LIMIT", mac, flag); rc != 0 {
+		log.Printf("WARN: OFFLOAD_NOTIFY_LIMIT mac=%s flag=%s failed rc=%d out=%q", mac, flag, rc, out)
+	}
+}
+
 func atoiClamp(s string, min, max int) (int, bool) {
 	if !intRE.MatchString(s) {
 		return 0, false
@@ -88,6 +128,7 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 	// rc3 修 N-1: mark_id 是 per-device, 不是顶层. 用新加的 device_get.
 	rcM, outM := runBin(hncDir, "json_set.sh", "device_get", mac, "mark_id")
 	mid := strings.TrimSpace(outM)
+	newMid := false
 	if rcM != 0 || mid == "" {
 		// rc2 修 G3: 没分配过 → 调 alloc_mid 专用子命令, 只分配 mid + iptables mark,
 		//          不触 tc 也不写 limit_enabled/down_mbps/up_mbps (之前借 "limit 0 0"
@@ -97,6 +138,7 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 			return actionResp{OK: false, Error: "mid assign failed", Detail: out0}
 		}
 		mid = strings.TrimSpace(out0)
+		newMid = true
 		// rc3.1.33 修 #2: alloc_mid stdout 应为纯整数 mid, 白名单确认 (防 awk 错位输出).
 		if !intRE.MatchString(mid) {
 			return actionResp{OK: false, Error: "mid assign failed",
@@ -111,8 +153,17 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 	rc3, out3 := runBin(hncDir, "tc_manager.sh", "set_delay", iface, mid,
 		strconv.Itoa(delay), strconv.Itoa(jitter), lossStr, ip)
 	if rc3 != 0 {
+		if newMid {
+			rollbackIP := ip
+			if rollbackIP == "" {
+				rollbackIP = lookupRuleDeviceField(hncDir, mac, "ip")
+			}
+			runBin(hncDir, "iptables_manager.sh", "unmark", rollbackIP, mac, mid)
+			runBin(hncDir, "json_set.sh", "device", mac, "mark_id", "0")
+		}
 		return actionResp{OK: false, Error: "netem apply failed", Detail: out3}
 	}
+	notifyOffloadLimit(hncDir, mac, true)
 	// rc3.1.13.2 修 P1 (review §一致性-1): 之前 4 次 json_set 用 _, _= 吞错,
 	// 任意一次失败 → JSON 半状态 (tc 应用了但 rules.json 部分字段没更新),
 	// 下次 watchdog restore 行为不可预测. 现在累计失败再上报.
@@ -129,9 +180,9 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 		}
 	}
 	if len(failed) > 0 {
-		// tc 已应用但 JSON 部分字段写失败 — 不回滚 (回滚可能让状态进一步分裂),
-		// 但明确告诉前端. 用户可以再点一次"应用"重试整个流程.
-		return actionResp{OK: true, Detail: "delay injected (tc OK), but JSON partial write failed: " + strings.Join(failed, "; ") + " — please retry to converge state"}
+		// tc 已应用但 JSON 部分字段写失败。返回失败让 UI 不显示“假成功”，
+		// 用户可再次点击应用来收敛 rules.json。
+		return actionResp{OK: false, Error: "partial json write failed", Detail: strings.Join(failed, "; ")}
 	}
 	return actionResp{OK: true, Detail: "delay injected"}
 }
@@ -161,24 +212,40 @@ func actionDelayClear(hncDir string, p map[string]string) actionResp {
 		return actionResp{OK: false, Error: "mid invalid",
 			Detail: "device_get returned non-integer mid: " + mid}
 	}
-	// rc3 修 N-1: set_delay 0 0 0 走 tc_manager.sh 内的清除分支
-	rc2, out2 := runBin(hncDir, "tc_manager.sh", "set_delay", iface, mid, "0", "0", "0")
-	if rc2 != 0 {
-		return actionResp{OK: false, Error: "netem clear failed", Detail: out2}
+	hasLimit := deviceHasPositiveLimit(hncDir, mac)
+	ip := lookupCurrentDeviceIP(hncDir, mac)
+	if ip == "" {
+		ip = lookupRuleDeviceField(hncDir, mac, "ip")
 	}
-	// rc3.1.32 reviewer 隐患 1 修: 之前 4 次 _, _ = runBin 全部吞了错误 · Go 层
-	// 对应 shell 层 2>/dev/null 反模式, 任何一次 json_set 失败用户都看不到. 不
-	// fail 请求 (tc 已清, 即使 json 写失败, 回滚也没意义) 但 log 出来方便排障.
+
+	// 有限速时只清 netem，保留 class/rate；delay-only 时清理整套 tc/iptables，避免残留 mark/class。
+	if hasLimit {
+		rc2, out2 := runBin(hncDir, "tc_manager.sh", "set_delay", iface, mid, "0", "0", "0", ip)
+		if rc2 != 0 {
+			return actionResp{OK: false, Error: "netem clear failed", Detail: out2}
+		}
+	} else {
+		if rc2, out2 := runBin(hncDir, "tc_manager.sh", "remove", iface, mid); rc2 != 0 {
+			log.Printf("WARN: delay_clear remove tc failed rc=%d out=%q", rc2, out2)
+		}
+		runBin(hncDir, "iptables_manager.sh", "unmark", ip, mac, mid)
+		notifyOffloadLimit(hncDir, mac, false)
+	}
+
 	clearFields := []struct{ key, val string }{
 		{"delay_enabled", "false"},
 		{"delay_ms", "0"},
 		{"jitter_ms", "0"},
 		{"loss_pct", "0"},
 	}
+	var failed []string
 	for _, f := range clearFields {
 		if rcJ, outJ := runBin(hncDir, "json_set.sh", "device", mac, f.key, f.val); rcJ != 0 {
-			log.Printf("WARN: delay_clear json_set %s=%s failed rc=%d out=%q", f.key, f.val, rcJ, outJ)
+			failed = append(failed, f.key+":"+strings.TrimSpace(outJ))
 		}
+	}
+	if len(failed) > 0 {
+		return actionResp{OK: false, Error: "partial json write failed", Detail: strings.Join(failed, "; ")}
 	}
 	return actionResp{OK: true, Detail: "delay cleared"}
 }

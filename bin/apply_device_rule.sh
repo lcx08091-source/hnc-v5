@@ -82,6 +82,13 @@ get_ip() {
     ' "$DEVICES"
 }
 
+# rules.json fallback IP, used when the device is offline but old IP-specific
+# iptables DROP/MARK rules need cleanup.
+get_rule_ip() {
+    local mac=$1
+    sh "$JSON_SET" device_get "$mac" ip 2>/dev/null | awk 'NR==1{print; exit}'
+}
+
 # ── helper: 读/分配 mark_id ──────────────────────────────────────
 # 1. 优先复用 rules.json 里 devices.<mac>.mark_id
 # 2. 没有就按 MAC 后两字节哈希算起点, 在 1-99 范围线性探测避开已用
@@ -253,13 +260,27 @@ case "$CMD" in
         sh "$IPT" mark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 \
             || emit_err "iptables mark failed (mid=$MID, see apply.log)"
         # 2. tc set_limit
-        if ! sh "$TC" set_limit "$IFACE" "$MID" "$DN_MBPS" "$UP_MBPS" "$IP" >> "$LOG" 2>&1; then
+        # hotfix6: capture tc_manager output so partial uplink failure can still keep
+        # a working downlink limit. This avoids UI freeze/fail on ColorOS IFB/mirred
+        # races when the user sets both download and upload rates.
+        TC_OUT=$(sh "$TC" set_limit "$IFACE" "$MID" "$DN_MBPS" "$UP_MBPS" "$IP" 2>&1)
+        TC_RC=$?
+        [ -n "$TC_OUT" ] && log "tc set_limit output rc=$TC_RC: $TC_OUT"
+        if [ $TC_RC -ne 0 ] && [ $TC_RC -ne 8 ]; then
             # hotfix5: avoid half-applied state. The mark was already installed, but
             # rules.json has not been updated yet; remove the packet mark so traffic
             # is not left classified into a failed/partial tc setup.
             log "tc set_limit failed, rolling back iptables mark (mid=$MID)"
             sh "$IPT" unmark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 || log "rollback iptables unmark warn (mid=$MID)"
             emit_err "tc set_limit failed"
+        fi
+        PARTIAL_TC=""
+        if [ $TC_RC -eq 8 ]; then
+            # Downlink was applied but uplink IFB/mirred failed. Persist only the
+            # actually-applied downlink rate so UI and restore do not lie about uplink.
+            PARTIAL_TC="uplink"
+            UP_MBPS=0
+            log "tc set_limit partial: uplink failed, downlink kept (mac=$MAC mid=$MID)"
         fi
         # v5.0: tc 规则就位, 通知 scheduler 决定是否触发 BPF offload disable
         notify_offload "$MAC" 1
@@ -272,10 +293,16 @@ case "$CMD" in
         js_set_dev_flush
         if [ -n "$JSON_FAILED" ]; then
             log "limit applied (tc/iptables OK) but partial JSON write failed: $JSON_FAILED"
-            echo "ok partial_json_fail=$JSON_FAILED"
+            echo "error: partial_json_fail=$JSON_FAILED"
+            exit 8
         else
-            log "limit applied OK"
-            echo "ok"
+            if [ -n "$PARTIAL_TC" ]; then
+                log "limit applied with partial tc warning: $PARTIAL_TC"
+                echo "ok partial_tc_fail=$PARTIAL_TC"
+            else
+                log "limit applied OK"
+                echo "ok"
+            fi
         fi
         ;;
 
@@ -323,7 +350,8 @@ case "$CMD" in
             js_set_dev_flush
             if [ -n "$JSON_FAILED" ]; then
                 log "clear mac=$MAC (no-mid path) partial JSON write failed: $JSON_FAILED"
-                echo "ok partial_json_fail=$JSON_FAILED"
+                echo "error: partial_json_fail=$JSON_FAILED"
+                exit 8
             else
                 echo "ok"
             fi
@@ -370,7 +398,8 @@ case "$CMD" in
         js_set_dev_flush
         if [ -n "$JSON_FAILED" ]; then
             log "clear applied (tc/iptables OK) but partial JSON write failed: $JSON_FAILED"
-            echo "ok partial_json_fail=$JSON_FAILED"
+            echo "error: partial_json_fail=$JSON_FAILED"
+            exit 8
         else
             log "clear OK"
             echo "ok"
@@ -401,12 +430,14 @@ case "$CMD" in
             echo "ok"
         else
             log "bl_add applied to iptables but JSON bl_add failed"
-            echo "ok partial_json_fail=blacklist_add"
+            echo "error: partial_json_fail=blacklist_add"
+            exit 8
         fi
         ;;
 
     bl_del)
         IP=$(get_ip "$MAC")
+        [ -z "$IP" ] && IP=$(get_rule_ip "$MAC")
         log "bl_del mac=$MAC ip=${IP:-(no-ip)}"
         # rc3.1.34 修 #23: 同 bl_add, 不传 0.0.0.0 字面值
         if [ -n "$IP" ]; then
@@ -423,7 +454,8 @@ case "$CMD" in
             echo "ok"
         else
             log "bl_del applied to iptables but JSON bl_del failed"
-            echo "ok partial_json_fail=blacklist_del"
+            echo "error: partial_json_fail=blacklist_del"
+            exit 8
         fi
         ;;
 

@@ -4238,7 +4238,7 @@ body.kb-open .container {
       const fail = targets.length - ok;
       return fetchDevices({force:true}).then(() => {
         renderDeviceList();
-        if (fail > 0) toast(`完成 ${ok}/${results.length}, ${fail} 失败`, 'warn');
+        if (fail > 0) toast(`完成 ${ok}/${targets.length}, ${fail} 失败`, 'warn');
         else toast(`已对 ${ok} 台应用: ${tpl.name}`, 'ok');
         exitBatchMode();
       });

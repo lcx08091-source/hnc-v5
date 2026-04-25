@@ -8,7 +8,7 @@
 HNC=${HNC:-/data/local/hnc}
 RULES=$HNC/data/rules.json
 TMP=$HNC/data/rules.tmp.batch.$$
-LOCK=$HNC/run/json_set.lock
+LOCK=$HNC/run/json.lock
 
 [ "$1" != "device" ] && { echo "usage: $0 device <MAC> <k> <v> [<k> <v> ...]" >&2; exit 2; }
 shift
@@ -16,13 +16,17 @@ MAC=$1; shift
 [ -z "$MAC" ] && { echo "missing MAC" >&2; exit 2; }
 [ $# -lt 2 ] || [ $(($# % 2)) -ne 0 ] && { echo "need k v pairs" >&2; exit 2; }
 
-# 用 mkdir 锁, 跟 json_set.sh 一致
+# 用 mkdir 锁, 与 json_set.sh 共用同一把锁，避免 batch 与单字段写并发覆盖。
+_short_sleep() {
+    usleep 50000 2>/dev/null && return 0
+    sleep 1
+}
 mkdir -p "$(dirname "$LOCK")" 2>/dev/null
 i=0
 while ! mkdir "$LOCK" 2>/dev/null; do
     i=$((i+1))
     [ $i -gt 50 ] && { echo "lock timeout" >&2; exit 3; }
-    sleep 0.05
+    _short_sleep
 done
 trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$TMP" 2>/dev/null' EXIT INT TERM
 
@@ -30,11 +34,18 @@ trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$TMP" 2>/dev/null' EXIT INT TERM
 KVS=""
 while [ $# -ge 2 ]; do
     K=$1; V=$2; shift 2
-    # JSON 编码: 数字/布尔不加引号, 其他加引号
+    # JSON 编码: 必须用严格数字判断。IP 地址 192.168.x.x 不能被当成数字。
     case "$V" in
-        true|false) JV="$V" ;;
-        ''|*[!0-9.-]*) JV="\"$V\"" ;;   # 含非数字字符: 字符串
-        *) JV="$V" ;;                    # 纯数字
+        true|false|null) JV="$V" ;;
+        '') JV='""' ;;
+        *)
+            if echo "$V" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+                JV="$V"
+            else
+                ESC=$(printf '%s' "$V" | sed 's/\\/\\\\/g; s/"/\\"/g')
+                JV="\"$ESC\""
+            fi
+            ;;
     esac
     # 用 ASCII 0x1F 当字段分隔符避免冲突
     KVS="${KVS}${K}$(printf '\037')${JV}$(printf '\036')"

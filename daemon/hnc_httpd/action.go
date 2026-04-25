@@ -344,8 +344,12 @@ func actionRuleSet(hncDir string, p map[string]string) actionResp {
 
 	// 一次 exec 完成完整链路 · 传字符串(整数或小数)
 	rc, out := runBin(hncDir, "apply_device_rule.sh", "limit", mac, dnMbps, upMbps)
+	detail := strings.TrimSpace(out)
 	if rc != 0 {
-		return actionResp{OK: false, Error: "apply failed", Detail: strings.TrimSpace(out)}
+		return actionResp{OK: false, Error: "apply failed", Detail: detail}
+	}
+	if strings.Contains(detail, "partial_tc_fail=uplink") {
+		return actionResp{OK: true, Detail: "download limit applied; uplink failed/disabled on this ROM, kept up=0"}
 	}
 	return actionResp{OK: true, Detail: "limit applied"}
 }

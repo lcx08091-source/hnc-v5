@@ -930,12 +930,29 @@ set_limit() {
     # best-effort clear an existing ifb class if it is present, but never fail the
     # whole downlink rule just because IFB is unavailable.
     if gt0 "$up_mbps"; then
-        ensure_ifb_root_v1 || return 1
-        ensure_ingress_mirred_v1 "$iface" || return 1
-        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
+        # hotfix6: use the robust ColorOS-aware mirred installer (netlink + async
+        # fallback) instead of the strict shell-only ensure_ingress_mirred_v1.
+        # If uplink fails while downlink was requested, keep downlink active and
+        # return rc=8 so apply_device_rule.sh can persist up_mbps=0 instead of
+        # failing the whole UI operation.
+        if ! ensure_ifb_root_v1 || ! install_ingress_mirred "$iface" || ! ensure_device_class "$IFB_IFACE" "$class_id" "$ip"; then
+            log_error "set_limit: ingress prepare failed dev=$IFB_IFACE class=1:$class_id"
+            if gt0 "$down_mbps"; then
+                echo "partial_up_failed=1"
+                return 8
+            fi
+            return 1
+        fi
         local up_rate;  up_rate=$(mbps_to_rate "$up_mbps")
         local up_burst; up_burst=$(burst_for_rate "$up_mbps")
-        set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst" || { log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
+        if ! set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst"; then
+            log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"
+            if gt0 "$down_mbps"; then
+                echo "partial_up_failed=1"
+                return 8
+            fi
+            return 1
+        fi
         log "  Ingress(ifb0) 1:$class_id @ $up_rate burst $up_burst"
     else
         if class_exists "$IFB_IFACE" "$class_id"; then
@@ -1000,8 +1017,11 @@ set_delay() {
     # 分支被当成"关闭延迟",把 netem 重置为 0 → loss 完全丢失。
     # 修复:入口判断改为 delay/jitter/loss 任一 > 0 都进入"启用"分支
     if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
-        # 双向都建 class（若尚未建立）
+        # 双向都建 class（若尚未建立）。hotfix6: delay-only 也需要准备 ifb0
+        # 和 ingress mirred，否则 IFB class 创建失败或流量绕过 netem。
         ensure_device_class "$iface"     "$class_id" "$ip" || return 1
+        ensure_ifb_root_v1 || return 1
+        install_ingress_mirred "$iface" || return 1
         ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         # v3.8.5: delay 除以 2 分给两方向(egress=down, ingress=up)
         # jitter/loss 依然是每方向原值(见上面函数注释说明)
@@ -1175,7 +1195,7 @@ restore_rules() {
                     i++
                 }
                 block = substr($0, start, i - start - 1)
-                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"; loss = "0"
+                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"; loss = "0"; limit_enabled = "false"; delay_enabled = "false"
                 n = split(block, parts, ",")
                 for (j = 1; j <= n; j++) {
                     if (match(parts[j], /"mark_id"[[:space:]]*:[[:space:]]*[0-9]+/)) {
@@ -1184,12 +1204,12 @@ restore_rules() {
                     } else if (match(parts[j], /"ip"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*"/, "", s); sub(/"$/, "", s); ip = s
-                    } else if (match(parts[j], /"down_mbps"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
+                    } else if (match(parts[j], /"down_mbps"[[:space:]]*:[[:space:]]*"?[0-9.]+[kKmM]?"?/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
-                        sub(/.*:[[:space:]]*/, "", s); down = s
-                    } else if (match(parts[j], /"up_mbps"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
+                        sub(/.*:[[:space:]]*"?/, "", s); sub(/"$/, "", s); down = s
+                    } else if (match(parts[j], /"up_mbps"[[:space:]]*:[[:space:]]*"?[0-9.]+[kKmM]?"?/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
-                        sub(/.*:[[:space:]]*/, "", s); up = s
+                        sub(/.*:[[:space:]]*"?/, "", s); sub(/"$/, "", s); up = s
                     } else if (match(parts[j], /"delay_ms"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*/, "", s); delay = s
@@ -1202,10 +1222,14 @@ restore_rules() {
                         # 调用硬编码 "0"). 现在正确解析并传递.
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*/, "", s); loss = s
+                    } else if (match(parts[j], /"limit_enabled"[[:space:]]*:[[:space:]]*true/)) {
+                        limit_enabled = "true"
+                    } else if (match(parts[j], /"delay_enabled"[[:space:]]*:[[:space:]]*true/)) {
+                        delay_enabled = "true"
                     }
                 }
                 if (mark_id != "") {
-                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter "|" loss
+                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter "|" loss "|" limit_enabled "|" delay_enabled
                     exit
                 }
             }
@@ -1219,6 +1243,8 @@ restore_rules() {
         local delay;   delay=$(echo   "$fields" | cut -d'|' -f5)
         local jitter;  jitter=$(echo  "$fields" | cut -d'|' -f6)
         local loss;    loss=$(echo    "$fields" | cut -d'|' -f7)
+        local limit_enabled; limit_enabled=$(echo "$fields" | cut -d'|' -f8)
+        local delay_enabled; delay_enabled=$(echo "$fields" | cut -d'|' -f9)
         [ -z "$mark_id" ] && continue
 
         # rc3.1.30 Bug B: 优先用 devices.json 里的实时 IP.
@@ -1235,6 +1261,16 @@ restore_rules() {
             ip="$live_ip"
         elif [ -z "$live_ip" ]; then
             log "  no live IP for $mac in devices.json, using stale rules.json($ip)"
+        fi
+
+        active=0
+        if [ "$limit_enabled" = "true" ] && { gt0 "${down:-0}" || gt0 "${up:-0}"; }; then active=1; fi
+        if [ "$delay_enabled" = "true" ] || gt0 "${delay:-0}" || gt0 "${jitter:-0}" || gt0 "${loss:-0}"; then active=1; fi
+        if [ "$active" != "1" ]; then
+            log "Restore skip inactive mark-only device: $mac mark=$mark_id ip=$ip"
+            [ -n "$ip" ] && sh "$HNC_DIR/bin/iptables_manager.sh" unmark "$ip" "$mac" "$mark_id" >/dev/null 2>&1 || true
+            [ -n "$iface" ] && remove_device "$iface" "$mark_id" >/dev/null 2>&1 || true
+            continue
         fi
 
         log "Restoring: $mac mark=$mark_id ip=$ip dn=${down}M up=${up}M delay=${delay}ms loss=${loss}%"

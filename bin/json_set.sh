@@ -356,12 +356,12 @@ EOF
 
 # ── 初始化目录结构 ────────────────────────────────────────
 init_dirs)
-    mkdir -p $HNC/{bin,api,webroot,data,logs,run}
-    chmod 755 $HNC $HNC/bin $HNC/api $HNC/webroot $HNC/data $HNC/logs $HNC/run
-    [ -f $RULES ] || cat > $RULES << 'EOF'
+    mkdir -p "$HNC/bin" "$HNC/api" "$HNC/webroot" "$HNC/data" "$HNC/logs" "$HNC/run"
+    chmod 755 "$HNC" "$HNC/bin" "$HNC/api" "$HNC/webroot" "$HNC/data" "$HNC/logs" "$HNC/run"
+    [ -f "$RULES" ] || cat > "$RULES" << 'EOF'
 {"version":1,"whitelist_mode":false,"devices":{},"blacklist":[],"whitelist":[]}
 EOF
-    chmod 644 $RULES
+    chmod 644 "$RULES"
     echo "HNC dirs initialized"
     ;;
 
