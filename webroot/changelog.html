@@ -1,5 +1,31 @@
 <!-- HNC v4.0 完整变更记录, 由 webroot/index.html lazy load -->
 
+<!-- v5.1.0-rc1-hotfix10 stale rules cleanup / hotspotd truncate fix -->
+      <div class="cl-item">
+        <div class="cl-left">
+          <div class="cl-dot"></div>
+          <div class="cl-line"></div>
+        </div>
+        <div class="cl-right">
+          <div class="cl-title">🧹 v5.1.0-rc1-hotfix10: stale rules 自动清理 / hotspotd 16KB 截断修复 &nbsp;<span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+          <div class="cl-tags">
+            <span class="cl-tag fix">rules.json</span>
+            <span class="cl-tag fix">hotspotd</span>
+            <span class="cl-tag fix">统计去重</span>
+            <span class="cl-tag fix">启动可靠性</span>
+          </div>
+          <ul class="cl-changes">
+            <li><b>🧹 stale rules 自动清理</b>:新增 <code>cleanup_stale_rules.sh</code>,默认清理 30 天未见且当前不在线的 <code>rules.json.devices[mac]</code> 规则记录,防止离线规则无限膨胀。不删除 blacklist / whitelist / device_names。</li>
+            <li><b>🕒 last_seen_persist</b>:限速与 delay-only 分配 mark_id 时写入持久 last_seen,作为后续安全清理依据。</li>
+            <li><b>🧱 C3</b>:<code>hotspotd.c write_json()</code> 从固定 <code>char buf[16384]</code> 改为动态读取 rules.json,上限 1MB,避免大 rules.json 截断 blacklist。</li>
+            <li><b>📊 S5</b>:<code>ensure_stats()</code> 去掉 <code>-C || -A</code> 竞态,先删除重复 RETURN 再添加唯一规则,避免统计翻倍。</li>
+            <li><b>🚀 S11</b>:<code>service.sh</code> 启动 hotspotd 后最多 5 秒轮询 pid,替代固定 <code>sleep 2</code>。</li>
+            <li><b>🛡️ C1</b>:<code>find_device()</code> 改为 <code>strcasecmp</code>,防御 MAC 大小写不一致。</li>
+            <li><b>📦 注意</b>:本轮修改 C 源码,必须重新编译 <code>bin/hotspotd</code>。</li>
+          </ul>
+        </div>
+      </div>
+
 <!-- v4.0.0-patch5.0 iOS 26 Liquid Glass WebUI 重设计 -->
       <div class="cl-item">
         <div class="cl-left">

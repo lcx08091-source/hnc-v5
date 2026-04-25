@@ -49,6 +49,7 @@ log_error() {
 # 每次主循环也顺便调用一次 log_rotate,防止任何 log 涨爆
 LAST_HEARTBEAT=0
 LAST_LOG_ROTATE=0
+LAST_STALE_CLEANUP_DAY=""   # hotfix10: 每天跑一次 stale rules cleanup
 HEARTBEAT_INTERVAL=300    # 5 分钟
 LOG_ROTATE_INTERVAL=300   # 5 分钟看一次(粒度足够,开销低)
 
@@ -73,6 +74,16 @@ rotate_logs_periodic() {
     fi
 }
 
+
+cleanup_stale_rules_daily() {
+    local day
+    day=$(date +%Y%m%d 2>/dev/null) || day=unknown
+    [ "$day" = "$LAST_STALE_CLEANUP_DAY" ] && return 0
+    LAST_STALE_CLEANUP_DAY="$day"
+    [ -x "$HNC_DIR/bin/cleanup_stale_rules.sh" ] || return 0
+    sh "$HNC_DIR/bin/cleanup_stale_rules.sh" >> "$HNC_DIR/logs/cleanup_stale.log" 2>&1 &
+    log "stale rules cleanup scheduled for day=$day"
+}
 # v4.0 Patch 1.6 意外退出 trap: watchdog 不应该正常退出,退出就是 bug
 # TERM/INT 是模块关闭(正常),设 flag 让 EXIT trap 知道是正常退出
 WDG_CLEAN_EXIT=0
@@ -684,6 +695,8 @@ while true; do
     fi
 
     # Doze 模式: 降频并跳过主动动作
+    cleanup_stale_rules_daily
+
     if is_doze; then
         INTERVAL=$INTERVAL_DOZE
         continue

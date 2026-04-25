@@ -6,17 +6,31 @@ on:
     branches:
       - main
       - master
-      - hotfix7
+      - hotfix10
+    tags:
+      - "v*"
+      - "hotfix*"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v6
         with:
           go-version-file: daemon/hnc_httpd/go.mod
           cache-dependency-path: daemon/hnc_httpd/go.sum
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          local-cache: true
+
       - name: Build hnc_httpd arm64
         working-directory: daemon/hnc_httpd
         env:
@@ -26,14 +40,68 @@ jobs:
         run: |
           go mod download
           go build -trimpath -ldflags="-s -w" -o hnc_httpd .
-      - name: Put hnc_httpd into bin
+          cp hnc_httpd ../../bin/hnc_httpd
+          chmod 755 ../../bin/hnc_httpd
+
+      - name: Build hotspotd arm64
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_NDK_HOME }}
         run: |
-          cp daemon/hnc_httpd/hnc_httpd bin/hnc_httpd
-          chmod 755 bin/hnc_httpd
+          bash daemon/hotspotd/build.sh arm64
+
+      - name: Build hnc_tc_ingress arm64
+        env:
+          ANDROID_NDK: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          bash daemon/tc_netlink/build.sh arm64
+
+      - name: Shell syntax check
+        run: |
+          find bin -name "*.sh" -print -exec sh -n {} \;
+          sh -n service.sh
+          sh -n post-fs-data.sh
+
       - name: Package module
         run: |
-          zip -r HNC-v5_1_0-rc1-hotfix7-arm64.zip . -x "*.git*" -x "daemon/hnc_httpd/hnc_httpd.exe"
-      - uses: actions/upload-artifact@v4
+          rm -f HNC-v5_1_0-rc1-hotfix10-arm64.zip
+          zip -r HNC-v5_1_0-rc1-hotfix10-arm64.zip \
+            META-INF \
+            module.prop \
+            customize.sh \
+            service.sh \
+            post-fs-data.sh \
+            uninstall.sh \
+            bin \
+            webroot \
+            daemon \
+            bpf \
+            data \
+            third_party_prebuilt \
+            third_party_build \
+            third_party \
+            CHANGELOG.md \
+            PATCH-NOTES-* \
+            README*.md \
+            HACKING.md \
+            INSTRUCTIONS.md \
+            COMPATIBILITY.md \
+            CONTRIBUTING.md \
+            INTEGRATION.md \
+            ROADMAP.md \
+            SECURITY.md \
+            STAGE-*.md \
+            -x "*.git*" \
+            -x "**/prebuilt/**" \
+            -x "**/out/**" \
+            -x "third_party_build/_libs_out/**"
+
+      - name: SHA256
+        run: sha256sum HNC-v5_1_0-rc1-hotfix10-arm64.zip > HNC-v5_1_0-rc1-hotfix10-arm64.zip.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: HNC-hotfix7-arm64
-          path: HNC-v5_1_0-rc1-hotfix7-arm64.zip
+          name: HNC-hotfix10-arm64
+          path: |
+            HNC-v5_1_0-rc1-hotfix10-arm64.zip
+            HNC-v5_1_0-rc1-hotfix10-arm64.zip.sha256

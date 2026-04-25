@@ -142,7 +142,7 @@ CMD=$1
 # 注意:device_patch 不在此列表 — 它内部递归调 `sh "$0" device`,
 # device 命令本身会 acquire_lock,加在外层会自己跟自己抢锁导致 5 秒超时回归
 case "$CMD" in
-    top|device|bl_add|bl_del|reset|cfg_set|name_set|name_del|tpl_set|tpl_del|token_revoke|token_revoke_all|token_prune)
+    top|device|device_remove|bl_add|bl_del|reset|cfg_set|name_set|name_del|tpl_set|tpl_del|token_revoke|token_revoke_all|token_prune)
         acquire_lock || { echo "json_set: lock timeout (5s)" >&2; exit 2; }
         ;;
 esac
@@ -271,6 +271,30 @@ device)
             print line
         }' "$RULES" > "$TMP" && atomic_write
     fi
+    ;;
+
+# ── 删除设备整条规则记录 ────────────────────────────────────
+# hotfix10: cleanup_stale_rules.sh 需要按 MAC 删除 rules.json.devices[mac]
+# 注意: 只删 devices 字典里的规则记录,不动 blacklist / whitelist / device_names。
+device_remove)
+    MAC=$2
+    [ -z "$MAC" ] && { echo "device_remove: mac required" >&2; exit 1; }
+    awk -v mac="$MAC" '
+    {
+        line=$0
+        pat="\"" mac "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}"
+        while (match(line, pat)) {
+            pre = substr(line, 1, RSTART-1)
+            post = substr(line, RSTART+RLENGTH)
+            if (substr(post, 1, 1) == ",") {
+                post = substr(post, 2)
+            } else if (substr(pre, length(pre), 1) == ",") {
+                pre = substr(pre, 1, length(pre)-1)
+            }
+            line = pre post
+        }
+        print line
+    }' "$RULES" > "$TMP" && atomic_write
     ;;
 
 # ── 批量更新设备多个字段（从 stdin 读 JSON patch）─────────
@@ -755,7 +779,7 @@ token_prune)
     ;;
 
 *)
-    echo "Usage: json_set.sh {device|bl_add|bl_del|reset|init_dirs|cfg_set|cfg_get|top|top_get|name_set|name_get|name_del|name_list|tpl_set|tpl_del|tpl_list|token_revoke|token_revoke_all|token_prune} [args...]"
+    echo "Usage: json_set.sh {device|device_remove|bl_add|bl_del|reset|init_dirs|cfg_set|cfg_get|top|top_get|name_set|name_get|name_del|name_list|tpl_set|tpl_del|tpl_list|token_revoke|token_revoke_all|token_prune} [args...]"
     exit 1
     ;;
 esac

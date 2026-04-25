@@ -120,9 +120,21 @@ fi
 log "Starting device detector (C daemon preferred)..."
 sh $HNC_DIR/bin/device_detect.sh daemon >> $HNC_DIR/logs/detect.log 2>&1 &
 DETECT_SHELL_PID=$!
-sleep 2
+# hotfix10 S11: 固定 sleep 2 在慢启动上会误判 shell fallback。
+# 最多等 5s,每 100ms poll 一次 hotspotd.pid。
+HPID=""
+i=0
+while [ $i -lt 50 ]; do
+    HPID=$(cat $RUN/hotspotd.pid 2>/dev/null)
+    [ -n "$HPID" ] && kill -0 "$HPID" 2>/dev/null && break
+    if usleep 100000 2>/dev/null; then
+        i=$((i + 1))
+    else
+        sleep 1
+        i=$((i + 10))
+    fi
+done
 # 检查 C daemon 是否接管了（hotspotd.pid 存在且进程活着）
-HPID=$(cat $RUN/hotspotd.pid 2>/dev/null)
 if [ -n "$HPID" ] && kill -0 "$HPID" 2>/dev/null; then
     log "C daemon hotspotd running (PID=$HPID)"
     # v3.5.2 P0-A:不再 echo $HPID > detect.pid。
@@ -137,6 +149,11 @@ fi
 log "Starting watchdog..."
 sh $HNC_DIR/bin/watchdog.sh >> $HNC_DIR/logs/watchdog.log 2>&1 &
 echo $! > $RUN/watchdog.pid
+
+# hotfix10: 启动后延迟清理一次长期未见的离线规则,防止 rules.json 膨胀。
+if [ -x "$HNC_DIR/bin/cleanup_stale_rules.sh" ]; then
+    (sleep 60 && sh "$HNC_DIR/bin/cleanup_stale_rules.sh") >> "$HNC_DIR/logs/cleanup_stale.log" 2>&1 &
+fi
 
 log "=== All services started ==="
 log "All services started. WebUI: open KernelSU manager → modules → HNC"

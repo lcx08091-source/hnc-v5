@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>  /* hotfix10 C1: strcasecmp */
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
@@ -152,7 +153,7 @@ static void hlog(const char *fmt, ...) {
 ══════════════════════════════════════════════════════════ */
 static Device *find_device(const char *mac) {
     for (int i = 0; i < MAX_DEVICES; i++)
-        if (g_devs[i].active && strcmp(g_devs[i].mac, mac) == 0)
+        if (g_devs[i].active && strcasecmp(g_devs[i].mac, mac) == 0)
             return &g_devs[i];
     return NULL;
 }
@@ -498,31 +499,48 @@ static void write_json(void) {
     int  nbl = 0;
     FILE *rf = fopen(RULES_JSON, "r");
     if (rf) {
-        char buf[16384];
-        size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
-        fclose(rf);
-        buf[n] = '\0';
+        /* hotfix10 C3: rules.json 可能超过 16KB。旧版 char buf[16384]
+         * 会截断末尾 blacklist / devices 字段,导致黑名单状态错乱。
+         * 这里按文件大小动态读取,设置 1MB 上限防止异常文件拖垮 daemon。 */
+        char *buf = NULL;
+        long sz = 0;
+        if (fseek(rf, 0, SEEK_END) == 0) {
+            sz = ftell(rf);
+            if (sz < 0) sz = 0;
+            rewind(rf);
+        }
+        if (sz > 0 && sz <= 1024 * 1024) {
+            buf = (char *)malloc((size_t)sz + 1);
+        }
+        if (buf) {
+            size_t n = fread(buf, 1, (size_t)sz, rf);
+            buf[n] = '\0';
 
-        /* 找 "blacklist": 然后从这个位置开始扫,到 ] 结束 */
-        char *bl_start = strstr(buf, "\"blacklist\"");
-        if (bl_start) {
-            char *bl_end = strchr(bl_start, ']');
-            if (bl_end) *bl_end = '\0';
+            /* 找 "blacklist": 然后从这个位置开始扫,到 ] 结束 */
+            char *bl_start = strstr(buf, "\"blacklist\"");
+            if (bl_start) {
+                char *bl_end = strchr(bl_start, ']');
+                if (bl_end) *bl_end = '\0';
 
-            /* 提取所有 "xx:xx:xx:xx:xx:xx" 子串 */
-            char *p = bl_start;
-            while ((p = strchr(p, '"')) != NULL) {
-                p++;
-                if (strlen(p) >= 17 && p[2] == ':' && p[5] == ':' &&
-                    p[8] == ':' && p[11] == ':' && p[14] == ':') {
-                    if (nbl < MAX_DEVICES) {
-                        strncpy(blacklist[nbl], p, 17);
-                        blacklist[nbl][17] = '\0';
-                        nbl++;
+                /* 提取所有 "xx:xx:xx:xx:xx:xx" 子串 */
+                char *p = bl_start;
+                while ((p = strchr(p, '"')) != NULL) {
+                    p++;
+                    if (strlen(p) >= 17 && p[2] == ':' && p[5] == ':' &&
+                        p[8] == ':' && p[11] == ':' && p[14] == ':') {
+                        if (nbl < MAX_DEVICES) {
+                            strncpy(blacklist[nbl], p, 17);
+                            blacklist[nbl][17] = '\0';
+                            nbl++;
+                        }
                     }
                 }
             }
+            free(buf);
+        } else if (sz > 1024 * 1024) {
+            hlog("WARN: rules.json too large (%ld bytes), skip blacklist parse", sz);
         }
+        fclose(rf);
     }
 
     /* v3.5.2 P0-A: tmp 路径带 PID 后缀,避免跟 shell daemon 冲突 */

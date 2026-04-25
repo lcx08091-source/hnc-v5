@@ -1,3 +1,24 @@
+## 🧹 v5.1.0-rc1-hotfix10 · stale rules 自动清理 / hotspotd 截断修复 · 2026-04-25
+
+**主题**: 补齐 hotfix9 后端 B 部分,并合入 round3 高优先级稳定性修复。
+
+### 修复
+
+- **stale rules 自动清理**:新增 `bin/cleanup_stale_rules.sh`,默认清理 30 天未见且当前不在线的 `rules.json.devices[mac]` 规则记录,防止 rules.json 无限膨胀。不删除 blacklist / whitelist / device_names。
+- **last_seen_persist**:`apply_device_rule.sh limit` 和 `alloc_mid` 写入持久 last_seen,覆盖普通限速和 delay-only 场景。
+- **json_set device_remove**:新增 `json_set.sh device_remove <mac>`,供清理脚本删除单个设备规则条目。
+- **C3**:`hotspotd.c write_json()` 从固定 `char buf[16384]` 改成动态读取 rules.json,上限 1MB,避免大 rules.json 截断 blacklist。
+- **S5**:`iptables_manager.sh ensure_stats()` 去掉 `-C || -A` TOCTOU,改成先删重复再加唯一 RETURN,避免统计翻倍。
+- **S11**:`service.sh` 启动 hotspotd 后从固定 `sleep 2` 改为最多 5 秒轮询 pid,提升启动可靠性。
+- **C1**:`find_device()` 改为 `strcasecmp`,防御 MAC 大小写不一致。
+
+### 说明
+
+- hotfix9 当前包中 `json_set_batch.sh` 的 IP 裸数字问题已经修复,本轮不重复处理。
+- 本轮修改了 `daemon/hotspotd/hotspotd.c`,必须重新编译 `bin/hotspotd` 后才算真正生效。
+
+---
+
 ## 🎯 v5.0.0-beta.1 · netlink 直通 tc · 2026-04-22
 
 **主题**: 从 alpha → beta. 解决 alpha.4 的最后一个痛点 — ColorOS 冷启动

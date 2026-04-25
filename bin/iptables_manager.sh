@@ -533,12 +533,13 @@ cleanup() {
 ensure_stats() {
     local ip=$1
     [ -z "$ip" ] && return 1
-    # v3.4.6 防御:HNC_STATS 链不存在则跳过(避免 cleanup 后调用报错)
+    # hotfix10 S5: 避免 -C || -A TOCTOU 并发重复 RETURN 规则。
+    # 先清理同 IP 现存重复规则,再追加唯一一对 -s/-d RETURN。
     $IPT -t mangle -L HNC_STATS -n >/dev/null 2>&1 || return 1
-    $IPT -t mangle -C HNC_STATS -s "$ip" -j RETURN 2>/dev/null \
-        || $IPT -t mangle -A HNC_STATS -s "$ip" -j RETURN 2>/dev/null
-    $IPT -t mangle -C HNC_STATS -d "$ip" -j RETURN 2>/dev/null \
-        || $IPT -t mangle -A HNC_STATS -d "$ip" -j RETURN 2>/dev/null
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -s "$ip" -j RETURN
+    ipt_del_all "$IPT" -t mangle -D HNC_STATS -d "$ip" -j RETURN
+    $IPT -t mangle -A HNC_STATS -s "$ip" -j RETURN 2>/dev/null || return 1
+    $IPT -t mangle -A HNC_STATS -d "$ip" -j RETURN 2>/dev/null || return 1
 }
 
 stats_all() {

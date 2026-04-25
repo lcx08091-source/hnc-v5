@@ -56,6 +56,10 @@ num_gt0() {
     awk -v v="${1:-0}" 'BEGIN{exit !(v+0 > 0)}'
 }
 
+now_ts() {
+    date +%s 2>/dev/null || echo 0
+}
+
 # ── helper: 读 devices.json 拿 IP ─────────────────────────────────
 get_ip() {
     local mac=$1
@@ -254,6 +258,7 @@ case "$CMD" in
             gate_unlock
             emit_err "failed to write mark_id=$MID to rules.json (mid alloc race risk)"
         fi
+        sh "$JSON_SET" device "$MAC" last_seen_persist "$(now_ts)" >> "$LOG" 2>&1 || log "WARN: failed to update last_seen_persist for $MAC"
         gate_unlock
         log "limit mac=$MAC ip=$IP mid=$MID dn=${DN_MBPS}mbps up=${UP_MBPS}mbps iface=$IFACE"
         # 1. iptables mark
@@ -290,6 +295,7 @@ case "$CMD" in
         js_set_dev down_mbps "$DN_MBPS"
         js_set_dev up_mbps "$UP_MBPS"
         js_set_dev limit_enabled true
+        js_set_dev last_seen_persist "$(now_ts)"
         js_set_dev_flush
         if [ -n "$JSON_FAILED" ]; then
             log "limit applied (tc/iptables OK) but partial JSON write failed: $JSON_FAILED"
@@ -327,6 +333,7 @@ case "$CMD" in
             gate_unlock
             emit_err "failed to write mark_id=$MID to rules.json (mid alloc race risk)"
         fi
+        sh "$JSON_SET" device "$MAC" last_seen_persist "$(now_ts)" >> "$LOG" 2>&1 || log "WARN: failed to update last_seen_persist for $MAC"
         gate_unlock
         log "alloc_mid mac=$MAC ip=$IP mid=$MID"
         sh "$IPT" mark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 \
