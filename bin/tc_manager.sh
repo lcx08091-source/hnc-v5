@@ -923,10 +923,15 @@ set_limit() {
         fi
     fi
 
-    ensure_ifb_root_v1 || return 1
-    ensure_ingress_mirred_v1 "$iface" || return 1
     # ── Ingress（上传：设备→热点，通过 ifb0）────────────────
+    # hotfix5: do not make downlink-only rules depend on IFB/mirred. Some Android
+    # kernels/ROM states cannot prepare IFB immediately; downlink shaping can still
+    # work, so only initialise IFB when an uplink limit is requested. When up=0,
+    # best-effort clear an existing ifb class if it is present, but never fail the
+    # whole downlink rule just because IFB is unavailable.
     if gt0 "$up_mbps"; then
+        ensure_ifb_root_v1 || return 1
+        ensure_ingress_mirred_v1 "$iface" || return 1
         ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         local up_rate;  up_rate=$(mbps_to_rate "$up_mbps")
         local up_burst; up_burst=$(burst_for_rate "$up_mbps")
@@ -934,8 +939,10 @@ set_limit() {
         log "  Ingress(ifb0) 1:$class_id @ $up_rate burst $up_burst"
     else
         if class_exists "$IFB_IFACE" "$class_id"; then
-            set_rate_only "$IFB_IFACE" "$class_id" "$DEFAULT_RATE" 200k || { log_error "set_limit: ingress rate clear failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
-            log "  Ingress(ifb0) 1:$class_id rate cleared (leaf preserved)"
+            set_rate_only "$IFB_IFACE" "$class_id" "$DEFAULT_RATE" 200k || log_error "set_limit: ingress rate clear best-effort failed dev=$IFB_IFACE class=1:$class_id"
+            log "  Ingress(ifb0) 1:$class_id rate cleared best-effort (leaf preserved)"
+        else
+            log "  Ingress(ifb0) skipped: up=0 and no existing class 1:$class_id"
         fi
     fi
 

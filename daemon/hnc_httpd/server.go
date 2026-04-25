@@ -224,9 +224,15 @@ func (s *server) apiHealth(w http.ResponseWriter, r *http.Request) {
 // 跟 WebUI 的 readAndRender 做同样的事,但在后端合并,前端只渲染
 
 func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
-	// hotfix4: avoid observing half-written state from /api/action. External writers
-	// such as hotspotd/watchdog can still update files, but httpd no longer races
-	// with its own shell write chain.
+	status, payload := s.buildDevicesPayload()
+	writeJSON(w, status, payload)
+}
+
+func (s *server) buildDevicesPayload() (int, map[string]interface{}) {
+	// hotfix5: build the whole snapshot under the RW lock, but do not hold the
+	// lock while writing the HTTP response. A slow remote client should not block
+	// later /api/action writes. External writers such as hotspotd/watchdog can
+	// still update files, but httpd no longer races with its own shell write chain.
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 
@@ -236,12 +242,15 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 
 	devicesRaw, err := readJSON(devicesPath)
 	if err != nil {
-		log.Printf("apiDevices: read devices.json: %v", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "devices.json not available"})
-		return
+		// hotfix5: devices.json can be temporarily missing while hotspotd starts or
+		// when the hotspot is off. Still return persistent rules/blacklist entries
+		// so the remote and on-device UI can show and clear configured state.
+		log.Printf("apiDevices: read devices.json failed, using empty device snapshot: %v", err)
+		devicesRaw = map[string]interface{}{}
 	}
 	devicesMap, _ := devicesRaw.(map[string]interface{})
 	if devicesMap == nil {
+		log.Printf("apiDevices: devices.json root is not an object, using empty device snapshot")
 		devicesMap = map[string]interface{}{}
 	}
 
@@ -293,7 +302,11 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		// 叠加 rules.json 里的规则
 		if deviceRules != nil {
-			if rule, ok := deviceRules[mac].(map[string]interface{}); ok {
+			ruleRaw, ok := deviceRules[mac]
+			if !ok {
+				ruleRaw = deviceRules[macKey]
+			}
+			if rule, ok := ruleRaw.(map[string]interface{}); ok {
 				for _, k := range []string{"mark_id", "down_mbps", "up_mbps", "delay_ms",
 					"jitter_ms", "loss_pct", "limit_enabled", "delay_enabled"} {
 					if v, exists := rule[k]; exists {
@@ -302,8 +315,13 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		// manual name 覆盖(最高优先级)
-		if nm, ok := namesMap[mac].(string); ok && nm != "" {
+		// manual name 覆盖(最高优先级). hotfix5: tolerate case differences
+		// between hotspotd's devices.json key and rules/names JSON keys.
+		nmRaw, ok := namesMap[mac]
+		if !ok {
+			nmRaw = namesMap[macKey]
+		}
+		if nm, ok := nmRaw.(string); ok && nm != "" {
 			merged["hostname"] = nm
 			merged["hostname_src"] = "manual"
 		}
@@ -392,7 +410,11 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if nm, ok := namesMap[mac].(string); ok && nm != "" {
+		nmRaw, ok := namesMap[mac]
+		if !ok {
+			nmRaw = namesMap[strings.ToUpper(mac)]
+		}
+		if nm, ok := nmRaw.(string); ok && nm != "" {
 			merged["hostname"] = nm
 			merged["hostname_src"] = "manual"
 		}
@@ -439,11 +461,11 @@ func (s *server) apiDevices(w http.ResponseWriter, r *http.Request) {
 		return false
 	})
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	return http.StatusOK, map[string]interface{}{
 		"devices":        out,
 		"whitelist_mode": rulesMap["whitelist_mode"],
 		"remote_enabled": rulesMap["remote_enabled"],
-	})
+	}
 }
 
 // ═══ API: stats ═════════════════════════════════════════════════

@@ -253,8 +253,14 @@ case "$CMD" in
         sh "$IPT" mark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 \
             || emit_err "iptables mark failed (mid=$MID, see apply.log)"
         # 2. tc set_limit
-        sh "$TC" set_limit "$IFACE" "$MID" "$DN_MBPS" "$UP_MBPS" "$IP" >> "$LOG" 2>&1 \
-            || emit_err "tc set_limit failed"
+        if ! sh "$TC" set_limit "$IFACE" "$MID" "$DN_MBPS" "$UP_MBPS" "$IP" >> "$LOG" 2>&1; then
+            # hotfix5: avoid half-applied state. The mark was already installed, but
+            # rules.json has not been updated yet; remove the packet mark so traffic
+            # is not left classified into a failed/partial tc setup.
+            log "tc set_limit failed, rolling back iptables mark (mid=$MID)"
+            sh "$IPT" unmark "$IP" "$MAC" "$MID" >> "$LOG" 2>&1 || log "rollback iptables unmark warn (mid=$MID)"
+            emit_err "tc set_limit failed"
+        fi
         # v5.0: tc 规则就位, 通知 scheduler 决定是否触发 BPF offload disable
         notify_offload "$MAC" 1
         # 3. 写 rules.json (mark_id 已经在 gate_lock 内写过了, 这里只写其他字段)

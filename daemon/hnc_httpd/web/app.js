@@ -555,8 +555,10 @@ window.showLimitModal = function(mac, name) {
     else if (unit === 'KBps') kbit = Math.ceil(v * 8);
     else return '';
     if (kbit < 64) kbit = 64;  // 后端最小 64kbit
-    // 大于 1mbit 用 mbit 单位更短
-    if (kbit >= 1024) return Math.round(kbit / 1024) + 'mbit';
+    // hotfix5: tc / Go 后端按十进制 1000 kbit = 1 mbit。
+    // 旧代码用 1024 并 Math.round, 会把 0.2 MB/s(1600kbit) 误发成 2mbit。
+    // 只有整 1000kbit 时才压缩成 mbit, 其他保持 kbit 精度。
+    if (kbit % 1000 === 0) return (kbit / 1000) + 'mbit';
     return kbit + 'kbit';
   }
 

@@ -2931,6 +2931,24 @@ body.kb-open .container {
     return true;
   }
 
+  async function runDeviceOpsSequential(targets, fn) {
+    // hotfix5: local KSU WebUI uses ksu.exec + curl as transport. Firing many
+    // writes in parallel causes multiple shell curls to queue behind the Go
+    // write lock and can hit --max-time, making batch state look out of sync.
+    // Run batch writes sequentially; the backend still performs each operation
+    // atomically and the UI remains responsive via progress toasts.
+    let ok = 0;
+    for (const mac of targets) {
+      try {
+        await fn(mac);
+        ok++;
+      } catch (e) {
+        dbg('batch op failed for ' + mac + ': ' + (e && e.message || e));
+      }
+    }
+    return ok;
+  }
+
   /* 授权设备 · 读 HNC remote_tokens.json (不是 tokens.json) */
   /* ═══════════════════════════════════════════════════════════════
      v5 BACKEND · 全部走 Go /api/*, 不再 kexec shell
@@ -4174,9 +4192,7 @@ body.kb-open .container {
       okText: '确认清除', okKind: 'btn-warn',
       onOk: () => {
         const targets = Array.from(state.selected);
-        const ops = targets.map(mac => clearDelayBackend(mac).catch(() => null));
-        Promise.allSettled(ops).then(results => {
-          const ok = results.filter(r => r.status === 'fulfilled' && r.value !== null).length;
+        runDeviceOpsSequential(targets, clearDelayBackend).then(ok => {
           return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已清除 ${ok}/${targets.length} 台设备延迟`, 'ok');
@@ -4199,9 +4215,7 @@ body.kb-open .container {
       message: `将解除 <code>${blocked.length}</code> 台设备的封锁`,
       okText: '解除', okKind: 'btn-primary',
       onOk: () => {
-        const ops = blocked.map(mac => rmBlacklistBackend(mac));
-        Promise.allSettled(ops).then(results => {
-          const ok = results.filter(r => r.status === 'fulfilled').length;
+        runDeviceOpsSequential(blocked, rmBlacklistBackend).then(ok => {
           return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已解除 ${ok}/${blocked.length} 台设备封锁`, 'ok');
@@ -4216,14 +4230,12 @@ body.kb-open .container {
     const targets = Array.from(state.selected);
     if (!targets.length) { toast('请先选择设备', 'warn'); return; }
     toast(`正在对 ${targets.length} 台应用 ${tpl.name}…`, 'ok');
-    // 并行调 backend
-    const ops = targets.map(mac => {
+    // hotfix5: sequential backend writes to avoid ksu.exec/curl timeout pileups.
+    runDeviceOpsSequential(targets, mac => {
       if (tpl.down === 0 && tpl.up === 0) return clearLimitBackend(mac);
       return applyLimitBackend(mac, tpl.down, tpl.up);
-    });
-    Promise.allSettled(ops).then(results => {
-      const ok = results.filter(r => r.status === 'fulfilled').length;
-      const fail = results.length - ok;
+    }).then(ok => {
+      const fail = targets.length - ok;
       return fetchDevices({force:true}).then(() => {
         renderDeviceList();
         if (fail > 0) toast(`完成 ${ok}/${results.length}, ${fail} 失败`, 'warn');
@@ -4243,9 +4255,7 @@ body.kb-open .container {
       okKind: 'btn-warn',
       onOk: () => {
         const targets = Array.from(state.selected);
-        const ops = targets.map(mac => clearLimitBackend(mac));
-        Promise.allSettled(ops).then(results => {
-          const ok = results.filter(r => r.status === 'fulfilled').length;
+        runDeviceOpsSequential(targets, clearLimitBackend).then(ok => {
           return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已清除 ${ok}/${targets.length} 台设备限速`, 'ok');
@@ -4266,9 +4276,7 @@ body.kb-open .container {
       okKind: 'btn-danger',
       onOk: () => {
         const targets = Array.from(state.selected);
-        const ops = targets.map(mac => addBlacklistBackend(mac));
-        Promise.allSettled(ops).then(results => {
-          const ok = results.filter(r => r.status === 'fulfilled').length;
+        runDeviceOpsSequential(targets, addBlacklistBackend).then(ok => {
           return fetchDevices({force:true}).then(() => {
             renderDeviceList();
             toast(`已封锁 ${ok}/${targets.length} 台设备`, 'err');
