@@ -34,6 +34,14 @@
     <h2>连接的设备</h2>
     <span class="meta" id="devices-meta">--</span>
   </div>
+  <div class="device-filter-row">
+    <span class="device-filter-note" id="device-filter-note">默认隐藏离线历史设备</span>
+    <select id="device-filter-mode" class="device-filter-select" aria-label="设备过滤">
+      <option value="online_only">只看在线</option>
+      <option value="all">显示全部</option>
+      <option value="offline_rules">只看离线规则</option>
+    </select>
+  </div>
   <div id="devices-list" class="list">
     <div class="loading">加载中...</div>
   </div>

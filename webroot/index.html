@@ -1119,6 +1119,45 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
 }
 .search-bar input::placeholder { color: var(--text-3); }
 
+.device-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 16px;
+  background: var(--glass-bg-1);
+  border: 1px solid var(--stroke);
+  box-shadow: var(--glass-sh-1);
+}
+.device-filter-label { font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.device-filter-select {
+  min-width: 132px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--stroke);
+  border-radius: 13px;
+  padding: 7px 30px 7px 11px;
+  background: var(--input-bg);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 650;
+  outline: none;
+}
+.device-filter-wrap { position: relative; }
+.device-filter-wrap::after {
+  content: '▾';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 10px;
+  pointer-events: none;
+}
+.device-filter-hint { font-size: 11px; color: var(--text-3); }
+
 .toolbar {
   display: flex; gap: 8px; align-items: center;
   margin-bottom: 14px;
@@ -2029,6 +2068,20 @@ body.kb-open .container {
       <input type="text" placeholder="搜索设备 · IP · MAC · 名称">
     </div>
 
+    <div class="device-filter-bar" id="device-filter-bar">
+      <div>
+        <div class="device-filter-label">设备过滤</div>
+        <div class="device-filter-hint" id="device-filter-hint">默认隐藏离线历史设备</div>
+      </div>
+      <div class="device-filter-wrap">
+        <select class="device-filter-select" id="device-filter-mode" aria-label="设备过滤">
+          <option value="online_only">只看在线</option>
+          <option value="all">显示全部</option>
+          <option value="offline_rules">只看离线规则</option>
+        </select>
+      </div>
+    </div>
+
     <div class="toolbar">
       <span class="chip tappable" data-action="batch-enter">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2642,7 +2695,7 @@ body.kb-open .container {
     // curl: -s 静默 -f 失败返非 0 (仅 HTTP >=400)
     // 响应体走 stdout, HTTP status 通过 exit code 反映
     const url = API_BASE + p;
-    const cmd = "curl -sS --max-time 10 -H " + sq('Cache-Control: no-cache') + " " + sq(url);
+    const cmd = "curl -sS --connect-timeout 1 --max-time 6 -H " + sq('Cache-Control: no-cache') + " " + sq(url);
     const raw = await kexec(cmd);
     if (!raw) return {};
     let obj;
@@ -2659,14 +2712,22 @@ body.kb-open .container {
   }
 
   const __apiActionInFlight = new Set();
+  let __apiActionQueue = Promise.resolve();
   function apiActionKey(action, params) {
     params = params || {};
     return params.mac ? ('dev:' + String(params.mac)) : ('global:' + String(action || ''));
   }
+
   async function apiAction(action, params) {
-    // hotfix4: avoid duplicate writes from fast taps/toggles. The Go backend also
-    // serializes writes, but preventing duplicate ksu.exec curl calls keeps the
-    // on-device WebUI responsive and avoids queueing stale operations.
+    // KSU/SukiSU WebView 的 window.ksu.exec() 在部分环境会阻塞 UI 线程。
+    // 写操作统一串行化，避免一次点击/批量操作同时堆多个 curl 导致卡顿和 tc/json 竞态。
+    const run = () => apiActionOnce(action, params || {});
+    const p = __apiActionQueue.catch(() => {}).then(run);
+    __apiActionQueue = p.catch(() => {});
+    return p;
+  }
+
+  async function apiActionOnce(action, params) {
     params = params || {};
     const actionKey = apiActionKey(action, params);
     if (__apiActionInFlight.has(actionKey)) {
@@ -2674,44 +2735,25 @@ body.kb-open .container {
     }
     __apiActionInFlight.add(actionKey);
     try {
-    // v5.1 修 P0-2: Go handleAction 期望 nested {action, params: {}}
-    // 之前 Object.assign 扁平展开, Go 的 DisallowUnknownFields 拒绝
-    const body = { action: action, params: params };
-    const json = JSON.stringify(body);
-    // POST application/json, 带 X-HNC-CSRF header
-    // shell-escape JSON: 用单引号外包, JSON 内的单引号替换成 '\\''
-    const cmd = "curl -sS --max-time 10 -X POST " +
-                "-H " + sq('Content-Type: application/json') + " " +
-                "-H " + sq('X-HNC-CSRF: 1') + " " +
-                "--data " + sq(json) + " " +
-                sq(API_BASE + '/api/action');
-    // rc3.1.5: httpd 启动窗口期 (开机后 1-30s) 点 toggle 会 curl refused.
-    // 改成指数退避自动重试 3 次 · 1s → 2s → 4s, 覆盖大部分启动窗口.
-    let raw, lastErr;
-    const delays = [0, 1000, 2000, 4000];
-    for (let i = 0; i < delays.length; i++) {
-      if (delays[i] > 0) await new Promise(r => setTimeout(r, delays[i]));
-      try {
-        raw = await kexec(cmd);
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        // 只对"后端未就绪"错误重试, 其他错误立刻放弃
-        if (!/未就绪|connection refused|未运行/.test(e.message || '')) throw e;
-        if (i === delays.length - 1) throw e;
+      // v5.1 修 P0-2: Go handleAction 期望 nested {action, params: {}}
+      const body = { action: action, params: params };
+      const json = JSON.stringify(body);
+      // 不再做 1s/2s/4s 多次重试；后端未就绪时快速失败，避免点击限速卡住。
+      const cmd = "curl -sS --connect-timeout 1 --max-time 6 -X POST " +
+                  "-H " + sq('Content-Type: application/json') + " " +
+                  "-H " + sq('X-HNC-CSRF: 1') + " " +
+                  "--data " + sq(json) + " " +
+                  sq(API_BASE + '/api/action');
+      const raw = await kexec(cmd);
+      let obj;
+      try { obj = JSON.parse(raw || '{}'); }
+      catch (e) { throw new Error('invalid JSON response: ' + String(raw).slice(0, 80)); }
+      if (!obj.ok) {
+        const err = new Error(obj.error || 'action failed');
+        err.detail = obj.detail;
+        throw err;
       }
-    }
-    if (lastErr) throw lastErr;
-    let obj;
-    try { obj = JSON.parse(raw || '{}'); }
-    catch (e) { throw new Error('invalid JSON response: ' + String(raw).slice(0, 80)); }
-    if (!obj.ok) {
-      const err = new Error(obj.error || 'action failed');
-      err.detail = obj.detail;
-      throw err;
-    }
-    return obj;
+      return obj;
     } finally {
       __apiActionInFlight.delete(actionKey);
     }
@@ -3095,6 +3137,14 @@ body.kb-open .container {
   async function setWhitelistBackend(enabled)  { await apiAction('whitelist_set', { enabled: String(!!enabled) }); return true; }
   async function setAuthRequiredBackend(enabled) { await apiAction('auth_required_set', { enabled: String(!!enabled) }); return true; }
 
+  function kickHttpdBindBackend(enableRemote) {
+    // Go action 写完 remote_enabled 后，旧 httpd 仍可能保持 loopback-only，
+    // 需要等 watchdog 最长 60s 才重绑。这里在响应返回后后台重启 httpd，让远程 URL 立即可用。
+    const remote = enableRemote ? '1' : '0';
+    const script = `H=/data/local/hnc; mkdir -p "$H/run" "$H/logs"; touch "$H/run/httpd.wanted"; ( sleep 1; pid=$(cat "$H/run/httpd.pid" 2>/dev/null); [ -n "$pid" ] && kill "$pid" 2>/dev/null; sleep 1; bin="$H/daemon/hnc_httpd/hnc_httpd"; [ -x "$bin" ] || exit 0; if [ "${remote}" = "1" ]; then iface=$(sh "$H/bin/device_detect.sh" iface 2>/dev/null); ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{split($2,a,"/");print a[1];exit}'); if [ -n "$ip" ] && [ "$iface" != "wlan0" ]; then "$bin" -bind 0.0.0.0 -port 8443 -loopback-port 8444 -hnc-dir "$H" -http-port 8080 >> "$H/logs/httpd.log" 2>&1 & echo $! > "$H/run/httpd.pid"; echo "$ip" > "$H/run/httpd_bind_ip"; else "$bin" -loopback-port 8444 -hnc-dir "$H" >> "$H/logs/httpd.log" 2>&1 & echo $! > "$H/run/httpd.pid"; echo loopback-only > "$H/run/httpd_bind_ip"; fi; else "$bin" -loopback-port 8444 -hnc-dir "$H" >> "$H/logs/httpd.log" 2>&1 & echo $! > "$H/run/httpd.pid"; echo loopback-only > "$H/run/httpd_bind_ip"; fi ) >/dev/null 2>&1 &`;
+    return kexec('sh -c ' + sq(script)).catch(e => dbg('kick httpd bind err: ' + e.message, true));
+  }
+
   /* 热点自启动 · 修 Bug M · 新契约走 Go */
   async function hotspotStartNowBackend() { await apiAction('hotspot_start'); return true; }
   async function hotspotStopNowBackend()  { await apiAction('hotspot_stop'); return true; }
@@ -3207,7 +3257,8 @@ body.kb-open .container {
     selected: new Set(),    // mac 集合
     batchAction: null,      // 当前批量待触发操作 { type, template? }
     hwBannerDismissed: false,
-    currentFilter: ''        // 搜索过滤文本
+    currentFilter: '',       // 搜索过滤文本
+    deviceFilter: localStorage.getItem('hnc_device_filter') || 'online_only'
   };
 
   /* ═══════════════════════════════════════════════════════════════
@@ -3229,47 +3280,83 @@ body.kb-open .container {
     return '<span class="badge success">在线</span>';
   }
 
+
+  function deviceHasRule(d) {
+    if (!d) return false;
+    return !!(d.limited || d.limit_enabled || d.delay_enabled ||
+      (+d.down || +d.down_mbps || 0) > 0 ||
+      (+d.up || +d.up_mbps || 0) > 0 ||
+      (+d.delay || +d.delay_ms || 0) > 0 ||
+      (+d.jitter || +d.jitter_ms || 0) > 0 ||
+      (+d.loss || +d.loss_pct || 0) > 0 ||
+      d.status === 'blocked');
+  }
+
+  function devicePassMode(d) {
+    const mode = state.deviceFilter || 'online_only';
+    const online = d && (d.status === 'online' || d.online === true);
+    if (mode === 'all') return true;
+    if (mode === 'offline_rules') return !online && deviceHasRule(d);
+    return !!online;
+  }
+
+  function deviceMatchesQuery(d, q) {
+    if (!q) return true;
+    return String(d.hostname || '').toLowerCase().includes(q) ||
+      String(d.ip || '').toLowerCase().includes(q) ||
+      String(d.mac || '').toLowerCase().includes(q);
+  }
+
+  function visibleDevicesForRender() {
+    return DEVICES.filter(devicePassMode);
+  }
+
+  function syncDeviceFilterUI() {
+    const sel = $('#device-filter-mode');
+    if (sel) sel.value = state.deviceFilter || 'online_only';
+    const hint = $('#device-filter-hint');
+    if (hint) {
+      const total = DEVICES.length;
+      const online = DEVICES.filter(d => d.status === 'online' || d.online === true).length;
+      const rules = DEVICES.filter(d => !(d.status === 'online' || d.online === true) && deviceHasRule(d)).length;
+      if (state.deviceFilter === 'all') hint.textContent = online + ' 在线 · 共 ' + total + ' 台';
+      else if (state.deviceFilter === 'offline_rules') hint.textContent = '离线规则 ' + rules + ' 条';
+      else hint.textContent = rules > 0 ? ('已隐藏 ' + Math.max(0, total - online) + ' 台离线设备 · ' + rules + ' 条有规则') : '默认隐藏离线历史设备';
+    }
+  }
+
   /* 搜索过滤: 用 display:none 隐藏不匹配的卡片, 不重渲染列表
    * (重渲染会丢失用户已展开/选中的状态) */
   function filterDevices() {
     const q = state.currentFilter.trim().toLowerCase();
     let visible = 0;
     DEVICES.forEach(d => {
-      const card = $(`.device-card[data-mac="${d.mac}"]`);
+      const card = $('.device-card[data-mac="' + d.mac + '"]');
       if (!card) return;
-      const matched = !q ||
-        d.hostname.toLowerCase().includes(q) ||
-        d.ip.toLowerCase().includes(q) ||
-        d.mac.toLowerCase().includes(q);
+      const matched = devicePassMode(d) && deviceMatchesQuery(d, q);
       card.style.display = matched ? '' : 'none';
       if (matched) visible++;
     });
-    // 更新空态 + 计数
     const listEl = $('#device-list');
     let emptyEl = listEl.querySelector('.empty-state.filter');
-    if (!visible && q) {
+    if (!visible && (q || state.deviceFilter !== 'all')) {
       if (!emptyEl) {
         emptyEl = document.createElement('div');
         emptyEl.className = 'empty-state filter';
-        emptyEl.innerHTML = `
-          <div class="empty-icon">🔍</div>
-          <div class="empty-title">未找到设备</div>
-          <div class="empty-msg">尝试清空搜索或检查拼写</div>`;
+        emptyEl.innerHTML = '<div class="empty-icon">🔍</div>' +
+          '<div class="empty-title">未找到设备</div>' +
+          '<div class="empty-msg">尝试清空搜索,或切换为“显示全部”</div>';
         listEl.appendChild(emptyEl);
       }
     } else if (emptyEl) {
       emptyEl.remove();
     }
-    // 更新列表标签计数
     const lc = $('#list-section-count');
     if (lc) {
-      const onlineN = DEVICES.filter(d => d.status === 'online' && (!q ||
-        d.hostname.toLowerCase().includes(q) || d.ip.toLowerCase().includes(q) || d.mac.toLowerCase().includes(q)
-      )).length;
-      lc.textContent = q
-        ? `匹配 ${visible} / ${DEVICES.length}`
-        : `${onlineN} 在线 · 共 ${DEVICES.length}`;
+      const onlineN = DEVICES.filter(d => (d.status === 'online' || d.online === true) && deviceMatchesQuery(d, q)).length;
+      lc.textContent = q ? ('匹配 ' + visible + ' / ' + DEVICES.length) : (onlineN + ' 在线 · 共 ' + DEVICES.length);
     }
+    syncDeviceFilterUI();
   }
 
   /* ═══════════════════════════════════════════════════════════════
@@ -3429,18 +3516,20 @@ body.kb-open .container {
     if (toolbar) toolbar.style.display = '';
     if (globalOps) globalOps.style.display = '';
     if (listLabel) listLabel.style.display = '';
-    // 逐个渲染, 单张卡出错不影响其他
+    syncDeviceFilterUI();
+    // 逐个渲染, 单张卡出错不影响其他。默认只渲染在线设备,避免离线历史规则挤满列表。
+    const renderList = visibleDevicesForRender();
     let html = '';
-    for (let i = 0; i < DEVICES.length; i++) {
+    for (let i = 0; i < renderList.length; i++) {
       try {
-        const part = renderCard(DEVICES[i]);
+        const part = renderCard(renderList[i]);
         if (typeof part !== 'string' || !part) {
-          dbg('renderCard#' + i + ' empty (mac=' + (DEVICES[i] && DEVICES[i].mac) + ')');
+          dbg('renderCard#' + i + ' empty (mac=' + (renderList[i] && renderList[i].mac) + ')');
           continue;
         }
         html += part;
       } catch (e) {
-        dbg('renderCard#' + i + ' err: ' + e.message + ' mac=' + (DEVICES[i] && DEVICES[i].mac));
+        dbg('renderCard#' + i + ' err: ' + e.message + ' mac=' + (renderList[i] && renderList[i].mac));
       }
     }
     container.innerHTML = html || '<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-title">渲染失败</div><div class="empty-msg">查看底部 dbgbar</div></div>';
@@ -4173,9 +4262,13 @@ body.kb-open .container {
   }
   function batchSelectAll() {
     state.selected.clear();
-    DEVICES.forEach(d => state.selected.add(d.mac));
+    $('.device-card').forEach(c => {
+      if (c.style.display === 'none') return;
+      const mac = c.getAttribute('data-mac');
+      if (mac) state.selected.add(mac);
+      c.classList.add('selected');
+    });
     updateBatchCount();
-    $$('.device-card').forEach(c => c.classList.add('selected'));
   }
   function batchSelectNone() {
     state.selected.clear();
@@ -4703,6 +4796,7 @@ body.kb-open .container {
           // rc3.1.17: badge / display / 按钮统一由 updateRemoteUrlPanel 管,
           // 删除原 60s setTimeout 改 badge 文案的双源逻辑.
           apiAction('remote_enabled_set', { enabled: on ? 'true' : 'false' })
+            .then(r => kickHttpdBindBackend(on).then(() => r))
             .then(r => {
               toast(r.detail || ('远程访问: ' + (on ? '启用' : '停用')), 'ok');
               try { updateRemoteUrlPanel(true); } catch (e) { dbg('urlPanel toggle err: ' + e.message); }
@@ -4862,7 +4956,7 @@ body.kb-open .container {
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
         btn.classList.remove('loading'); btn.disabled = false;
-        toast('失败: ' + e.message, 'err'); dbg('apply-limit err: ' + e.message);
+        const detail = e.detail ? (': ' + e.detail) : ''; toast('失败: ' + e.message + detail, 'err'); dbg('apply-limit err: ' + e.message + detail, true);
       });
       return;
     }
@@ -4876,7 +4970,7 @@ body.kb-open .container {
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
         btn.classList.remove('loading'); btn.disabled = false;
-        toast('失败: ' + e.message, 'err'); dbg('clear-limit err: ' + e.message);
+        const detail = e.detail ? (': ' + e.detail) : ''; toast('失败: ' + e.message + detail, 'err'); dbg('clear-limit err: ' + e.message + detail, true);
       });
       return;
     }
@@ -4893,7 +4987,9 @@ body.kb-open .container {
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
         btn.classList.remove('loading'); btn.disabled = false;
-        toast('失败: ' + e.message, 'err');
+        const detail = e.detail ? (': ' + e.detail) : '';
+        toast('失败: ' + e.message + detail, 'err');
+        dbg('apply-delay err: ' + e.message + detail, true);
       });
       return;
     }
@@ -4907,7 +5003,9 @@ body.kb-open .container {
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
         btn.classList.remove('loading'); btn.disabled = false;
-        toast('失败: ' + e.message, 'err');
+        const detail = e.detail ? (': ' + e.detail) : '';
+        toast('失败: ' + e.message + detail, 'err');
+        dbg('clear-delay err: ' + e.message + detail, true);
       });
       return;
     }
@@ -4933,6 +5031,18 @@ body.kb-open .container {
     searchInput.addEventListener('input', (e) => {
       state.currentFilter = e.target.value;
       filterDevices();  // 不重渲染, 保留展开/选中态
+    });
+  }
+
+  const filterSelect = $('#device-filter-mode');
+  if (filterSelect) {
+    filterSelect.value = state.deviceFilter || 'online_only';
+    filterSelect.addEventListener('change', (e) => {
+      state.deviceFilter = e.target.value || 'online_only';
+      localStorage.setItem('hnc_device_filter', state.deviceFilter);
+      state.selected.clear();
+      updateBatchCount();
+      renderDeviceList();
     });
   }
 

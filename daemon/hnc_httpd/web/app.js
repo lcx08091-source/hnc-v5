@@ -35,6 +35,7 @@ function deviceEmoji(mac) {
 var statsRange = 'today';
 var statsData = { buckets: [] };
 var devicesData = [];
+var deviceFilterMode = localStorage.getItem('hnc_remote_device_filter') || 'online_only';
 
 // UI sync/perf hotfix: avoid overlapping polls and stale slow responses.
 // Mobile browsers may take >5s on bad links; without this, old /api/devices
@@ -153,22 +154,58 @@ function setStatus(ok, msg) {
   else { b.className = 'badge err'; b.textContent = '连接失败 · '+(msg||''); }
 }
 
+function deviceHasRule(d) {
+  if (!d) return false;
+  return !!(d.limit_enabled || d.delay_enabled ||
+    (Number(d.down_mbps) || 0) > 0 ||
+    (Number(d.up_mbps) || 0) > 0 ||
+    (Number(d.delay_ms) || 0) > 0 ||
+    (Number(d.jitter_ms) || 0) > 0 ||
+    (Number(d.loss_pct) || 0) > 0 ||
+    d.status === 'blocked');
+}
+
+function devicePassFilter(d) {
+  if (deviceFilterMode === 'all') return true;
+  if (deviceFilterMode === 'offline_rules') return !d.online && deviceHasRule(d);
+  return !!d.online;
+}
+
+function syncDeviceFilterUI() {
+  var sel = $('device-filter-mode');
+  if (sel) sel.value = deviceFilterMode;
+  var note = $('device-filter-note');
+  if (note) {
+    var total = devicesData.length;
+    var online = devicesData.filter(function(d){ return d.online; }).length;
+    var rules = devicesData.filter(function(d){ return !d.online && deviceHasRule(d); }).length;
+    if (deviceFilterMode === 'all') note.textContent = online + ' 在线 · 共 ' + total + ' 台';
+    else if (deviceFilterMode === 'offline_rules') note.textContent = '离线规则 ' + rules + ' 条';
+    else note.textContent = rules > 0 ? ('已隐藏 ' + Math.max(0, total - online) + ' 台离线设备 · ' + rules + ' 条有规则') : '默认隐藏离线历史设备';
+  }
+}
+
 function renderDevices() {
   var list = $('devices-list');
   var meta = $('devices-meta');
+  syncDeviceFilterUI();
   if (devicesData.length === 0) {
     list.innerHTML = '<div class="empty">当前没有连接的设备</div>';
     meta.textContent = '';
     return;
   }
-  var online = 0, limited = 0, blocked = 0;
+  var online = 0;
+  var shown = 0;
   var html = '';
   devicesData.forEach(function(d){
     if (d.online) online++;
-    if (d.limit_enabled && (d.down_mbps > 0 || d.up_mbps > 0)) limited++;
-    if (d.status === 'blocked') blocked++;
+    if (!devicePassFilter(d)) return;
+    shown++;
     html += renderCard(d);
   });
+  if (!shown) {
+    html = '<div class="empty">当前过滤条件下没有设备<br><span style="font-size:12px;color:var(--text-3)">可切换为“显示全部”查看离线历史规则</span></div>';
+  }
   list.innerHTML = html;
   meta.textContent = online+' 在线 · 共 '+devicesData.length+' 台';
 }
@@ -693,6 +730,15 @@ window.actionClearDelay = async function(mac, name) {
 
 
 // ── 启动 ─────────────────────────────────────────────────
+var filterSel = $('device-filter-mode');
+if (filterSel) {
+  filterSel.value = deviceFilterMode;
+  filterSel.addEventListener('change', function(){
+    deviceFilterMode = filterSel.value || 'online_only';
+    localStorage.setItem('hnc_remote_device_filter', deviceFilterMode);
+    renderDevices();
+  });
+}
 loadDevices({force:true});
 setInterval(function(){
   if (document.hidden) return;
