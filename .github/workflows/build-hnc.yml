@@ -1,0 +1,39 @@
+name: Build HNC arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - hotfix7
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: daemon/hnc_httpd/go.mod
+          cache-dependency-path: daemon/hnc_httpd/go.sum
+      - name: Build hnc_httpd arm64
+        working-directory: daemon/hnc_httpd
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          go mod download
+          go build -trimpath -ldflags="-s -w" -o hnc_httpd .
+      - name: Put hnc_httpd into bin
+        run: |
+          cp daemon/hnc_httpd/hnc_httpd bin/hnc_httpd
+          chmod 755 bin/hnc_httpd
+      - name: Package module
+        run: |
+          zip -r HNC-v5_1_0-rc1-hotfix7-arm64.zip . -x "*.git*" -x "daemon/hnc_httpd/hnc_httpd.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HNC-hotfix7-arm64
+          path: HNC-v5_1_0-rc1-hotfix7-arm64.zip

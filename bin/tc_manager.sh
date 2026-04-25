@@ -97,21 +97,27 @@ _validate_mark_id() {
 # 顶层辅助函数（Android ash 不支持嵌套函数定义）
 # ═══════════════════════════════════════════════════════════════
 
-mbps_to_rate() {
-    local val=$1
-    # 带 k/K 后缀：直接解释为 kbit
-    if echo "$val" | grep -qi 'k$'; then
-        local n; n=$(echo "$val" | tr -d 'kKmM')
-        gt0 "$n" && echo "${n}kbit" && return
-    fi
-    # 剥离可能的 m/M 后缀
-    local mbps; mbps=$(echo "$val" | tr -d 'mMkK')
+rate_to_mbps_num() {
+    local val=$1 n
+    case "$val" in
+        *[kK][bB][iI][tT]|*[kK][bB][pP][sS]|*[kK])
+            n=$(printf '%s' "$val" | sed 's/[kK][bB][iI][tT]$//; s/[kK][bB][pP][sS]$//; s/[kK]$//')
+            awk -v v="$n" 'BEGIN{printf "%.6f", (v+0)/1000}'
+            ;;
+        *[mM][bB][iI][tT]|*[mM][bB][pP][sS]|*[mM])
+            n=$(printf '%s' "$val" | sed 's/[mM][bB][iI][tT]$//; s/[mM][bB][pP][sS]$//; s/[mM]$//')
+            awk -v v="$n" 'BEGIN{printf "%.6f", v+0}'
+            ;;
+        *)
+            awk -v v="$val" 'BEGIN{printf "%.6f", v+0}'
+            ;;
+    esac
+}
 
-    # v3.3.1：统一换算为 kbit 输出，兼顾小数精度
-    # 原因：
-    #   1) shell `[ x -gt 0 ]` 对小数报错 → 改用 awk 浮点比较
-    #   2) tc 不接受 "1.5mbit"/"0.2mbit" 这种写法 → 统一改成 1500kbit/200kbit
-    #   3) 0.01 → 10kbit（最低限速粒度约 10 kbps，足够细）
+mbps_to_rate() {
+    local val=$1 mbps
+    mbps=$(rate_to_mbps_num "$val")
+    # 统一换算为 kbit 输出，兼顾小数精度；避免 tc 不接受 1.5mbit。
     if gt0 "$mbps"; then
         local kbps; kbps=$(awk -v v="$mbps" 'BEGIN{printf "%d", v*1000 + 0.5}')
         [ "${kbps:-0}" -lt 1 ] && kbps=1
@@ -123,7 +129,8 @@ mbps_to_rate() {
 
 # burst = 约20ms数据量，防多线程集体冲破限速（旧方案128×Mbps太宽松）
 burst_for_rate() {
-    awk "BEGIN{b=int($1 * 2.5); print (b<16?16:b) \"k\"}"
+    local mbps; mbps=$(rate_to_mbps_num "$1")
+    awk -v v="$mbps" 'BEGIN{b=int(v * 2.5); print (b<16?16:b) "k"}'
 }
 
 # HTB class add-or-change（幂等）
@@ -231,10 +238,12 @@ leaf_has_netem() {
 # 参数：dev class_id ip
 # 方向由 dev 推断：$IFB_IFACE → src IP（上传），其他 → dst IP（下载）
 #
-# v3.3.6：从"已存在则跳过"改为"已存在则备份延迟参数后强制重建"
-# 原因：升级 v3.3.5 后旧 v3.3.4 创建的 class 还带 cburst=1600，
-# 单纯靠 set_rate_only 的 tc class change 在某些 Android tc 实现下
-# 不会刷新 cburst。强制 del+add 是唯一保险的办法。
+# hotfix7: ColorOS 16 / kernel 6.6 上, 已存在 class 时 del+add 不是原子操作。
+# set_limit 成功后再 set_delay 会进入旧 rebuild 路径: class del 成功, 但同
+# classid add 失败, 导致之前的限速 class 被破坏。这里改为:
+#   - class 已存在: tc class change 原地刷新 rate/ceil/burst, 不删 class, 不动 leaf/filter
+#   - class 不存在: 首次创建仍用 tc class add
+# leaf netem 同样优先 change, 不存在才 add。这样 set_limit ↔ set_delay 不再互相破坏。
 ensure_device_class() {
     local dev=$1 class_id=$2 ip=$3
     local mark; mark=$(printf "0x%x" $((0x800000 + class_id)))
@@ -248,68 +257,80 @@ ensure_device_class() {
         direction=dst
     fi
 
-    # 1. 备份现有 class 的 rate 和 leaf netem 的 delay 参数（如果有），
-    # 然后整个 class 删掉。这样无论旧 class 是什么状态
-    # （v3.3.4 残留 cburst=1600 等），新建出来的 class 一定带正确的 v3.3.6 参数。
-    #
-    # v3.3.6 关键修复：必须保留 rate，否则 set_delay 调用本函数时
-    # 会清掉 set_limit 之前设好的限速 rate（场景：先 set_limit 再 set_delay）。
+    # 1. 读取当前 rate / netem, 但不删除已有 class。
+    # v3.3.6 的 del+add 是为了刷新 cburst, 但在 ColorOS oplus_netd 接管 root htb
+    # 时会出现 del 成功、add 失败的破坏性中间态。tc class change 可以原地刷新
+    # rate/burst/cburst, 不触碰子 qdisc 和 filter, 是这里唯一安全的幂等路径。
     local saved_rate=""
     local saved_delay=""
     local saved_jitter=""
+    local class_present=0
     if class_exists "$dev" "$class_id"; then
-        # 解析 class 的 rate 字段（格式如 "class htb 1:59 ... rate 8Mbit ceil 8Mbit ..."）
+        class_present=1
         local class_line; class_line=$(tc class show dev "$dev" classid "1:$class_id" 2>/dev/null)
         if [ -n "$class_line" ]; then
             saved_rate=$(echo "$class_line" | awk '{for(i=1;i<=NF;i++) if($i=="rate") {print $(i+1); exit}}')
         fi
-        # 解析 leaf netem 的 delay 字段（格式如 "delay 100ms 10ms"）
-        # v3.5.0 P2-2: jitter 解析防御 — 如果 delay 后面没有 jitter,
-        # $(i+2) 可能是 "limit" 等非时间字段,case 检查会过滤掉
         local netem_line; netem_line=$(tc qdisc show dev "$dev" parent "1:$class_id" 2>/dev/null | grep netem)
         if [ -n "$netem_line" ]; then
             saved_delay=$(echo "$netem_line" | awk '{for(i=1;i<=NF;i++) if($i=="delay") {print $(i+1); exit}}')
             saved_jitter=$(echo "$netem_line" | awk '{for(i=1;i<=NF;i++) if($i=="delay") {print $(i+2); exit}}')
             case "$saved_delay" in
                 0ms|0us|0s|"") saved_delay="" ;;
-                *ms|*us|*s) ;;  # 保留
-                *) saved_delay="" ;;  # 不识别的格式,不保留
+                *ms|*us|*s) ;;
+                *) saved_delay="" ;;
             esac
             case "$saved_jitter" in
                 *ms|*us|*s) ;;
                 *) saved_jitter="" ;;
             esac
         fi
-        tc class del dev "$dev" parent 1:1 classid "1:$class_id" 2>/dev/null || true
-        log "  Rebuilding class 1:$class_id on $dev (saved rate='$saved_rate' delay='$saved_delay')"
     fi
 
-    # 2. 用正确参数重新建 class
-    # rate 用备份值（如果之前 set_limit 设过）或 DEFAULT_RATE（首次建）
-    # cburst 必须显式设，否则内核默认 1600 字节
+    # 2. class 生命周期: 已存在就 change, 不存在才 add。绝不在 ensure 路径 del class。
     local use_rate="${saved_rate:-$DEFAULT_RATE}"
-    if tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
-        htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
-        log "  Created class 1:$class_id on $dev (rate=$use_rate)"
+    if [ "$class_present" = "1" ]; then
+        if tc class change dev "$dev" parent 1:1 classid "1:$class_id" \
+            htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+            log "  Updated class 1:$class_id on $dev (rate=$use_rate, no rebuild)"
+        else
+            log_error "ensure_device_class: class change failed dev=$dev class=1:$class_id (kept existing class, no del+add)"
+            return 1
+        fi
     else
-        log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
-        return 1
+        if tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
+            htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+            log "  Created class 1:$class_id on $dev (rate=$use_rate)"
+        else
+            log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
+            return 1
+        fi
     fi
 
-    # 3. 重建 leaf netem，恢复延迟参数（如果有的话）
-    # limit 100 包 ≈ 150 KB，避免 buffer bloat 卡死 TCP
+    # 3. leaf netem: 已存在优先 change, 不存在才 add。change 失败时不删 class。
+    # 真正设置延迟的 set_netem_only 会在后续执行; 这里主要保证 leaf 存在。
     local netem_args="delay 0ms"
     if [ -n "$saved_delay" ]; then
         netem_args="delay $saved_delay"
         [ -n "$saved_jitter" ] && netem_args="$netem_args $saved_jitter"
     fi
     # shellcheck disable=SC2086
-    if tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
-        netem $netem_args limit 100 2>/dev/null; then
-        log "  Created leaf netem ${leaf_handle}: ($netem_args)"
+    if leaf_has_netem "$dev" "$class_id"; then
+        if tc qdisc change dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
+            netem $netem_args limit 100 2>/dev/null; then
+            log "  Updated leaf netem ${leaf_handle}: ($netem_args)"
+        else
+            log "  WARN: leaf netem change failed on $dev 1:$class_id; keeping existing leaf"
+        fi
     else
-        log_error "ensure_device_class: leaf netem add failed dev=$dev class=1:$class_id"
-        return 1
+        # shellcheck disable=SC2086
+        if tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
+            netem $netem_args limit 100 2>/dev/null; then
+            log "  Created leaf netem ${leaf_handle}: ($netem_args)"
+        else
+            log_error "ensure_device_class: leaf netem add failed dev=$dev class=1:$class_id"
+            return 1
+        fi
     fi
 
     # 4. 创建 u32 filter（若有 IP）
@@ -930,29 +951,12 @@ set_limit() {
     # best-effort clear an existing ifb class if it is present, but never fail the
     # whole downlink rule just because IFB is unavailable.
     if gt0 "$up_mbps"; then
-        # hotfix6: use the robust ColorOS-aware mirred installer (netlink + async
-        # fallback) instead of the strict shell-only ensure_ingress_mirred_v1.
-        # If uplink fails while downlink was requested, keep downlink active and
-        # return rc=8 so apply_device_rule.sh can persist up_mbps=0 instead of
-        # failing the whole UI operation.
-        if ! ensure_ifb_root_v1 || ! install_ingress_mirred "$iface" || ! ensure_device_class "$IFB_IFACE" "$class_id" "$ip"; then
-            log_error "set_limit: ingress prepare failed dev=$IFB_IFACE class=1:$class_id"
-            if gt0 "$down_mbps"; then
-                echo "partial_up_failed=1"
-                return 8
-            fi
-            return 1
-        fi
+        ensure_ifb_root_v1 || return 1
+        ensure_ingress_mirred_v1 "$iface" || return 1
+        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         local up_rate;  up_rate=$(mbps_to_rate "$up_mbps")
         local up_burst; up_burst=$(burst_for_rate "$up_mbps")
-        if ! set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst"; then
-            log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"
-            if gt0 "$down_mbps"; then
-                echo "partial_up_failed=1"
-                return 8
-            fi
-            return 1
-        fi
+        set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst" || { log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
         log "  Ingress(ifb0) 1:$class_id @ $up_rate burst $up_burst"
     else
         if class_exists "$IFB_IFACE" "$class_id"; then
@@ -1017,11 +1021,8 @@ set_delay() {
     # 分支被当成"关闭延迟",把 netem 重置为 0 → loss 完全丢失。
     # 修复:入口判断改为 delay/jitter/loss 任一 > 0 都进入"启用"分支
     if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
-        # 双向都建 class（若尚未建立）。hotfix6: delay-only 也需要准备 ifb0
-        # 和 ingress mirred，否则 IFB class 创建失败或流量绕过 netem。
+        # 双向都建 class（若尚未建立）
         ensure_device_class "$iface"     "$class_id" "$ip" || return 1
-        ensure_ifb_root_v1 || return 1
-        install_ingress_mirred "$iface" || return 1
         ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
         # v3.8.5: delay 除以 2 分给两方向(egress=down, ingress=up)
         # jitter/loss 依然是每方向原值(见上面函数注释说明)
@@ -1160,6 +1161,7 @@ restore_rules() {
             }
         }
     }' "$RULES_FILE" | sort -u)
+    local restore_fail_streak=0
     for mac in $macs; do
         # v3.4.1：纯 awk 解析。先在 rules.json 里定位 "mac": { ... } 块，
         # 然后从块里逐字段抽 mark_id/ip/down_mbps/up_mbps/delay_ms/jitter_ms。
@@ -1195,7 +1197,7 @@ restore_rules() {
                     i++
                 }
                 block = substr($0, start, i - start - 1)
-                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"; loss = "0"; limit_enabled = "false"; delay_enabled = "false"
+                mark_id = ""; ip = ""; down = "0"; up = "0"; delay = "0"; jitter = "0"; loss = "0"
                 n = split(block, parts, ",")
                 for (j = 1; j <= n; j++) {
                     if (match(parts[j], /"mark_id"[[:space:]]*:[[:space:]]*[0-9]+/)) {
@@ -1204,12 +1206,12 @@ restore_rules() {
                     } else if (match(parts[j], /"ip"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*"/, "", s); sub(/"$/, "", s); ip = s
-                    } else if (match(parts[j], /"down_mbps"[[:space:]]*:[[:space:]]*"?[0-9.]+[kKmM]?"?/)) {
+                    } else if (match(parts[j], /"down_mbps"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
-                        sub(/.*:[[:space:]]*"?/, "", s); sub(/"$/, "", s); down = s
-                    } else if (match(parts[j], /"up_mbps"[[:space:]]*:[[:space:]]*"?[0-9.]+[kKmM]?"?/)) {
+                        sub(/.*:[[:space:]]*/, "", s); down = s
+                    } else if (match(parts[j], /"up_mbps"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
-                        sub(/.*:[[:space:]]*"?/, "", s); sub(/"$/, "", s); up = s
+                        sub(/.*:[[:space:]]*/, "", s); up = s
                     } else if (match(parts[j], /"delay_ms"[[:space:]]*:[[:space:]]*[0-9.]+/)) {
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*/, "", s); delay = s
@@ -1222,14 +1224,10 @@ restore_rules() {
                         # 调用硬编码 "0"). 现在正确解析并传递.
                         s = substr(parts[j], RSTART, RLENGTH)
                         sub(/.*:[[:space:]]*/, "", s); loss = s
-                    } else if (match(parts[j], /"limit_enabled"[[:space:]]*:[[:space:]]*true/)) {
-                        limit_enabled = "true"
-                    } else if (match(parts[j], /"delay_enabled"[[:space:]]*:[[:space:]]*true/)) {
-                        delay_enabled = "true"
                     }
                 }
                 if (mark_id != "") {
-                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter "|" loss "|" limit_enabled "|" delay_enabled
+                    print mark_id "|" ip "|" down "|" up "|" delay "|" jitter "|" loss
                     exit
                 }
             }
@@ -1243,8 +1241,6 @@ restore_rules() {
         local delay;   delay=$(echo   "$fields" | cut -d'|' -f5)
         local jitter;  jitter=$(echo  "$fields" | cut -d'|' -f6)
         local loss;    loss=$(echo    "$fields" | cut -d'|' -f7)
-        local limit_enabled; limit_enabled=$(echo "$fields" | cut -d'|' -f8)
-        local delay_enabled; delay_enabled=$(echo "$fields" | cut -d'|' -f9)
         [ -z "$mark_id" ] && continue
 
         # rc3.1.30 Bug B: 优先用 devices.json 里的实时 IP.
@@ -1263,19 +1259,18 @@ restore_rules() {
             log "  no live IP for $mac in devices.json, using stale rules.json($ip)"
         fi
 
-        active=0
-        if [ "$limit_enabled" = "true" ] && { gt0 "${down:-0}" || gt0 "${up:-0}"; }; then active=1; fi
-        if [ "$delay_enabled" = "true" ] || gt0 "${delay:-0}" || gt0 "${jitter:-0}" || gt0 "${loss:-0}"; then active=1; fi
-        if [ "$active" != "1" ]; then
-            log "Restore skip inactive mark-only device: $mac mark=$mark_id ip=$ip"
-            [ -n "$ip" ] && sh "$HNC_DIR/bin/iptables_manager.sh" unmark "$ip" "$mac" "$mark_id" >/dev/null 2>&1 || true
-            [ -n "$iface" ] && remove_device "$iface" "$mark_id" >/dev/null 2>&1 || true
-            continue
-        fi
-
         log "Restoring: $mac mark=$mark_id ip=$ip dn=${down}M up=${up}M delay=${delay}ms loss=${loss}%"
         sh "$HNC_DIR/bin/iptables_manager.sh" mark "$ip" "$mac" "$mark_id"
-        set_all "$iface" "$mark_id" "${down:-0}" "${up:-0}" "${delay:-0}" "${jitter:-0}" "${loss:-0}" "$ip"
+        if set_all "$iface" "$mark_id" "${down:-0}" "${up:-0}" "${delay:-0}" "${jitter:-0}" "${loss:-0}" "$ip"; then
+            restore_fail_streak=0
+        else
+            restore_fail_streak=$((restore_fail_streak + 1))
+            log_error "restore_rules: failed for $mac mark=$mark_id streak=$restore_fail_streak"
+            if [ "$restore_fail_streak" -ge 2 ]; then
+                log_error "restore_rules: abort after 2 consecutive failures to avoid holding gate_lock/UI stall"
+                break
+            fi
+        fi
     done
 
     # 恢复黑名单
