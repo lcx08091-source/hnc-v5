@@ -57,7 +57,10 @@ cp -rf $MODDIR/test/* $HNC_DIR/test/ 2>/dev/null || true
 # 只 copy 产物 binary,不 copy .c 源 / README / build.sh / web/(web 已 //go:embed 进 binary)
 if [ -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" ]; then
     mkdir -p $HNC_DIR/daemon/hnc_httpd
-    cp -f $MODDIR/daemon/hnc_httpd/hnc_httpd $HNC_DIR/daemon/hnc_httpd/ 2>/dev/null || true
+    if ! cmp -s "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null; then
+        cp -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+        echo "[HNC] hotfix17.3: refreshed runtime hnc_httpd binary from module" >> $HNC_DIR/logs/boot.log
+    fi
     chmod 755 $HNC_DIR/daemon/hnc_httpd/hnc_httpd 2>/dev/null
 fi
 

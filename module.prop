@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix17.2
-versionCode=509172
+version=v5.1.0-rc1-hotfix17.3
+versionCode=509173
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.2 · MIUI14 tc capability-gated backend · 修复 delay 0ms · IFB 不可用时 egress-only 延迟 / downlink-only 限速 · uplink_unsupported 降级标记 · capability_probe dummy 探测 · WebUI partial 状态显示 · tc_htb/tc_netem 不可用时禁用限速/延迟 · 小米10 mq root 无 r2q 回退 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.3 · 强制同步新版 hnc_httpd · 固定 /system/bin/tc 路径 · MIUI14 mq root HTB fallback · ACTIVE 后能力重探测 · 跳过旧网段离线 restore · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

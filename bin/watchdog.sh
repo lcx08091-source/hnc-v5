@@ -94,6 +94,30 @@ watchdog_mark_uplink_unsupported_once() {
     fi
 }
 
+
+# hotfix17.3: rerun capability probe once hotspot iface is ACTIVE.
+# Early service probe can run before hotspot exists and write unknown/false values.
+CAP_PROBE_MIN_INTERVAL=30
+run_capability_probe_active() {
+    local iface="$1" now last
+    [ -n "$iface" ] || return 0
+    [ -x "$HNC_DIR/bin/capability_probe.sh" ] || return 0
+    ip link show "$iface" >/dev/null 2>&1 || return 0
+
+    now=$(date +%s 2>/dev/null || echo 0)
+    last=$(cat "$RUN/capability_probe_last" 2>/dev/null || echo 0)
+    if [ $((now - last)) -lt "$CAP_PROBE_MIN_INTERVAL" ] 2>/dev/null; then
+        return 0
+    fi
+
+    echo "$iface" > "$RUN/iface.cache" 2>/dev/null || true
+    echo "$now" > "$RUN/capability_probe_last" 2>/dev/null || true
+    log "hotfix17.3: running capability_probe for active iface=$iface"
+    HNC="$HNC_DIR" sh "$HNC_DIR/bin/capability_probe.sh" >> "$HNC_DIR/logs/capabilities.log" 2>&1 || \
+        log "hotfix17.3: capability_probe failed for iface=$iface"
+    _HEALTH_TS=0
+}
+
 # v4.0 Patch 1.6 心跳 + 轮转的最后时间
 # 每 5 分钟至少打一行 "alive" log(即使啥都没发生也有证据 watchdog 活着)
 # 每次主循环也顺便调用一次 log_rotate,防止任何 log 涨爆
@@ -267,6 +291,7 @@ full_restore() {
     fi
 
     sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
+    run_capability_probe_active "$iface"
     if ! watchdog_tc_core_supported; then
         watchdog_mark_tc_unsupported_once tc_htb
         _HEALTH_TS=0
@@ -671,6 +696,7 @@ do_full_init() {
 do_migrate() {
     local old=$1 new=$2 new_ip=$3
     log "STATE ACTIVE:$old -> ACTIVE:$new (ip=$new_ip), migrating"
+    run_capability_probe_active "$new"
     if watchdog_tc_core_supported; then
         sh "$HNC_DIR/bin/tc_manager.sh" cleanup "$old" >> "$LOG" 2>&1
         sh "$HNC_DIR/bin/tc_manager.sh" init "$new" >> "$LOG" 2>&1
@@ -907,6 +933,8 @@ while true; do
             ensure_httpd_running
             continue
         fi
+
+        run_capability_probe_active "$new_iface"
 
         # 稳态: 健康检查 + httpd 维护
         check_health

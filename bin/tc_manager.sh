@@ -35,6 +35,26 @@ RULES_FILE=$HNC_DIR/data/rules.json
 DEVICES_FILE=$HNC_DIR/data/devices.json
 LOG=$HNC_DIR/logs/tc.log
 
+# hotfix17.3: force stable system iproute2 binaries.
+# KSU/SukiSU shells may resolve `tc` to a busybox/toybox implementation; probes
+# showed /system/bin/tc accepts root HTB/netem on MIUI14 while the runtime path did not.
+TC_BIN=${TC_BIN:-}
+IP_BIN=${IP_BIN:-}
+if [ -z "$TC_BIN" ]; then
+    for _tc in "$HNC_DIR/bin/hnc_tc" "$HNC_DIR/bin/tc" /system/bin/tc /vendor/bin/tc /system/xbin/tc; do
+        [ -x "$_tc" ] && { TC_BIN="$_tc"; break; }
+    done
+    [ -z "$TC_BIN" ] && TC_BIN=$(command -v tc 2>/dev/null || echo tc)
+fi
+if [ -z "$IP_BIN" ]; then
+    for _ip in "$HNC_DIR/bin/hnc_ip" /system/bin/ip /vendor/bin/ip /system/xbin/ip; do
+        [ -x "$_ip" ] && { IP_BIN="$_ip"; break; }
+    done
+    [ -z "$IP_BIN" ] && IP_BIN=$(command -v ip 2>/dev/null || echo ip)
+fi
+tc() { "$TC_BIN" "$@"; }
+ip() { "$IP_BIN" "$@"; }
+
 log() {
     # v3.5.0 P2-1: 路径不存在时不让 redirect 失败导致整个脚本退出
     [ -d "$(dirname "$LOG")" ] || mkdir -p "$(dirname "$LOG")" 2>/dev/null
@@ -777,31 +797,37 @@ install_ingress_mirred() {
     return 0
 }
 
-# hotfix17.2: Xiaomi/MIUI mq root HTB fallback.
-# Probe results showed mq child leaves reject HTB/netem, while root HTB works only without r2q.
+# hotfix17.2/17.3: Xiaomi/MIUI mq handling.
+# Child leaves under qdisc mq look tempting, but Mi 10 rejects parent :1/0:1.
+# Keep one best-effort child attempt for ROMs that allow it, then immediately
+# fall back to root replace. Root replace with /system/bin/tc and WITHOUT r2q is
+# verified on Mi 10 and restore-to-mq works in cleanup/probe.
 try_mq_child_htb() {
     local iface=$1
-    local parent op out last_out
+    local parent out last_out
     [ -n "$iface" ] || return 1
-    for parent in 0:1 :1; do
-        for op in replace add; do
-            out=$(tc qdisc "$op" dev "$iface" parent "$parent" handle 1: htb default 9999 2>&1)
-            if [ -z "$out" ]; then
-                log "init_tc: mq child htb installed on $iface parent $parent via qdisc $op"
-                echo "$iface parent=$parent op=$op" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
-                return 0
-            fi
-            if echo "$out" | grep -qE "File exists|Exclusivity flag on"; then
-                if tc qdisc show dev "$iface" 2>/dev/null | grep -q "^qdisc htb 1:"; then
-                    log "init_tc: mq child htb already present on $iface parent $parent"
-                    echo "$iface parent=$parent reused=1" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
-                    return 0
-                fi
-            fi
-            last_out=$out
-        done
+    for parent in :1 0:1; do
+        out=$(tc qdisc replace dev "$iface" parent "$parent" handle 1: htb default 9999 2>&1)
+        if [ -z "$out" ]; then
+            log "init_tc: mq child htb installed on $iface parent $parent"
+            echo "$iface parent=$parent" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
+            return 0
+        fi
+        last_out=$out
     done
-    log_error "init_tc: mq child htb fallback failed on $iface: $last_out"
+    log "init_tc: mq child htb unsupported on $iface, will try root HTB fallback: $last_out"
+    return 1
+}
+
+root_htb_replace_verified() {
+    local iface=$1 out
+    out=$(tc qdisc replace dev "$iface" root handle 1: htb default 9999 2>&1)
+    if [ -z "$out" ]; then
+        echo "$iface" > "$HNC_DIR/run/tc_root_owned_$iface" 2>/dev/null || true
+        log "init_tc: root HTB installed on $iface via verified root fallback"
+        return 0
+    fi
+    log_error "init_tc: verified root HTB fallback failed on $iface: $out"
     return 1
 }
 
@@ -886,11 +912,14 @@ init_tc() {
         _htb_add_ok=0
         _htb_retry=0
 
-        # hotfix17.2: for mq root Wi-Fi AP interfaces, try child HTB first;
-        # if it fails, root replace is allowed because root probe confirmed restore-to-mq works.
+        # hotfix17.3: mq root devices first get one child-leaf attempt; if that
+        # is unsupported, use verified root replace fallback.
         if echo "$_existing_root_line" | grep -q "qdisc mq"; then
             if try_mq_child_htb "$iface"; then
                 _htb_add_ok=1
+            elif root_htb_replace_verified "$iface"; then
+                _htb_add_ok=1
+                _htb_added_by_hnc=1
             fi
         fi
 
@@ -910,13 +939,7 @@ init_tc() {
             # 会挂到这个已有 htb 下, set_limit 正常工作). 不是则按原逻辑重试.
             # hotfix16.2: fixed mq root fallback. Some ColorOS builds keep qdisc mq as an immutable root.
             # Attach HNC handle 1: under mq child :1 so existing class/filter code can work.
-            if echo "$_existing_root_line" | grep -q "qdisc mq"; then
-                if try_mq_child_htb "$iface"; then
-                    _htb_add_ok=1
-                    break
-                fi
-            fi
-
+            # hotfix17.3: do not repeatedly re-try mq child leaves inside the retry loop.
             if echo "$_htb_out" | grep -qE "File exists|invalid argument 'root'"; then
                 _existing_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | \
                                    grep "^qdisc htb 1:" | grep "root" | head -1)
@@ -1313,6 +1336,18 @@ get_current_ip() {
     ' "$DEVICES_FILE"
 }
 
+
+current_iface_prefix24() {
+    local iface=$1 ip
+    ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
+    [ -n "$ip" ] || return 1
+    echo "$ip" | awk -F. 'NF==4{print $1"."$2"."$3"."}'
+}
+
+ip_prefix24() {
+    echo "$1" | awk -F. 'NF==4{print $1"."$2"."$3"."}'
+}
+
 # v3.4.1：彻底移除 python3 依赖。改用纯 awk 解析 rules.json，
 # 正确处理浮点数（v3.3.6 用 grep `[0-9]*` 会把 0.8 截断为 0 这种祖传 bug
 # 已经修复，但仍依赖 python3。某些精简 ROM 没有 python3，restore 直接静默
@@ -1322,6 +1357,7 @@ restore_rules() {
     log "Restoring rules from $RULES_FILE"
     [ -f "$RULES_FILE" ] || return 0
     local iface; iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface)
+    local cur_prefix; cur_prefix=$(current_iface_prefix24 "$iface" 2>/dev/null)
     local limit_supported=1 delay_supported=1
     tc_limit_supported_runtime || limit_supported=0
     tc_delay_supported_runtime || delay_supported=0
@@ -1489,6 +1525,16 @@ restore_rules() {
             ip="$live_ip"
         elif [ -z "$live_ip" ]; then
             log "  no live IP for $mac in devices.json, using stale rules.json($ip)"
+            # hotfix17.3: skip TC restore for stale offline rules from an old
+            # hotspot subnet. Mi 10 changes NAT segments frequently; restoring
+            # old 192.168.x.y rules can hold locks and break current actions.
+            if [ -n "$ip" ] && [ -n "$cur_prefix" ]; then
+                stale_prefix=$(ip_prefix24 "$ip")
+                if [ -n "$stale_prefix" ] && [ "$stale_prefix" != "$cur_prefix" ]; then
+                    log "  restore skip stale-offline $mac: rule ip=$ip not in current hotspot prefix ${cur_prefix}x"
+                    continue
+                fi
+            fi
         fi
 
         local want_limit=0 want_delay=0

@@ -36,6 +36,42 @@ log "=== HNC Service Starting ==="
 # hotfix16.2: best-effort repair before reading rules.json in late_start.
 [ -x "$HNC_DIR/bin/rules_repair.sh" ] && HNC=$HNC_DIR sh "$HNC_DIR/bin/rules_repair.sh" >> $LOG 2>&1 || true
 log "Android $(getprop ro.build.version.release) / $(getprop ro.product.brand) $(getprop ro.product.model)"
+
+# hotfix17.3: service start must refresh runtime copy from module files.
+# post-fs-data may not run during manual module restart, leaving /data/local/hnc
+# with an old hnc_httpd binary (observed hotfix4 backend with hotfix17 UI).
+sync_runtime_from_moddir() {
+    log "hotfix17.3 runtime sync: MODDIR=$MODDIR -> $HNC_DIR"
+
+    mkdir -p "$HNC_DIR/bin" "$HNC_DIR/webroot" "$HNC_DIR/api" "$HNC_DIR/daemon/hnc_httpd" 2>/dev/null || true
+    cp -rf "$MODDIR/bin/"* "$HNC_DIR/bin/" 2>/dev/null || true
+    cp -rf "$MODDIR/webroot/"* "$HNC_DIR/webroot/" 2>/dev/null || true
+    cp -rf "$MODDIR/api/"* "$HNC_DIR/api/" 2>/dev/null || true
+
+    if [ -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" ]; then
+        if ! cmp -s "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null; then
+            cp -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+            chmod 755 "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+            log "runtime sync: hnc_httpd binary refreshed, killing old httpd for relaunch"
+            oldpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
+            [ -n "$oldpid" ] && kill -9 "$oldpid" 2>/dev/null || true
+            rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip" 2>/dev/null || true
+        else
+            chmod 755 "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+            log "runtime sync: hnc_httpd binary already current"
+        fi
+    else
+        log "runtime sync WARN: module hnc_httpd missing at $MODDIR/daemon/hnc_httpd/hnc_httpd"
+    fi
+
+    chmod 755 "$HNC_DIR/bin/"*.sh 2>/dev/null || true
+    for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve; do
+        [ -f "$HNC_DIR/bin/$_b" ] && chmod 755 "$HNC_DIR/bin/$_b" 2>/dev/null || true
+    done
+}
+
+
+sync_runtime_from_moddir
 # hotfix13: record platform/kernel capability profile for diagnostics and UI fallback hints
 if [ -x $HNC_DIR/bin/capability_probe.sh ]; then
     ( sh $HNC_DIR/bin/capability_probe.sh >> $HNC_DIR/logs/capabilities.log 2>&1 ) &

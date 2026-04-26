@@ -8,10 +8,19 @@ cd "$(dirname "$0")"
 export GOOS=android
 export GOARCH=arm64
 export CGO_ENABLED=0
-# hotfix16.6: use vendored deps and avoid hanging on blocked networks.
-export GOPROXY=${GOPROXY:-off}
-export GOSUMDB=${GOSUMDB:-off}
-export GOFLAGS=${GOFLAGS:-"-mod=vendor"}
+# hotfix17.3: build must really rebuild hnc_httpd in CI.
+# Older hotfixes forced GOPROXY=off and -mod=vendor even when no vendor/ dir
+# existed, so CI silently kept packaging an old hotfix4 binary. Use vendor only
+# when present; otherwise allow the runner to download modules.
+if [ -d vendor ]; then
+    export GOPROXY=${GOPROXY:-off}
+    export GOSUMDB=${GOSUMDB:-off}
+    export GOFLAGS=${GOFLAGS:-"-mod=vendor"}
+else
+    export GOPROXY=${GOPROXY:-"https://proxy.golang.org,direct"}
+    export GOSUMDB=${GOSUMDB:-sum.golang.org}
+    export GOFLAGS=${GOFLAGS:-"-mod=mod"}
+fi
 
 # rc5.1.1 修 X-G2: 从 module.prop 读 version 注入 binary, 消除硬编码
 # rc2 修 N4: 读不到 module.prop 直接失败, 不静默 fallback 到 "dev"
