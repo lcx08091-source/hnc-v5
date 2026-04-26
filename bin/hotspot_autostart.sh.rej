@@ -1,0 +1,11 @@
+--- bin/hotspot_autostart.sh	2026-04-26 05:27:58.000000000 +0000
++++ bin/hotspot_autostart.sh	2026-04-26 08:22:08.193234974 +0000
+@@ -166,7 +166,7 @@
+     fi
+ 
+     if [ "$STARTED" = "1" ]; then
+-        rm -f "$HNC_DIR/run/uplink_unsupported" "$HNC_DIR/run/uplink_fail_count" 2>/dev/null || true
++        rm -f "$HNC_DIR/run/uplink_unsupported" "$HNC_DIR/run/uplink_fail_count" "$HNC_DIR/run/uplink_unsupported_logged" 2>/dev/null || true
+         log "=== Hotspot autostart SUCCESS ==="
+     else
+         log "=== Hotspot autostart FAILED ==="; exit 1

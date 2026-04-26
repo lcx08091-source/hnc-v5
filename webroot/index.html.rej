@@ -1,0 +1,43 @@
+--- webroot/index.html	2026-04-26 05:30:39.000000000 +0000
++++ webroot/index.html	2026-04-26 08:21:55.975623304 +0000
+@@ -3297,6 +3310,23 @@
+     catch (e) { dbg('fetchLive err: ' + e.message); return null; }
+   }
+ 
++  function applyCapabilities(cap) {
++    if (!cap || typeof cap !== 'object') return;
++    state.capabilities = cap;
++    if (typeof cap.uplink_supported === 'boolean') state.uplinkSupported = !!cap.uplink_supported;
++  }
++  async function fetchCapabilities() {
++    try {
++      const r = await apiGet('/api/capabilities');
++      const cap = (r && (r.capabilities || r)) || null;
++      applyCapabilities(cap);
++      return cap;
++    } catch (e) {
++      dbg('fetchCapabilities err: ' + e.message);
++      return null;
++    }
++  }
++
+   function applyHotspotClosedState() {
+     state.hotspotActive = false;
+     state.liveOnline = 0;
+@@ -3511,6 +3541,8 @@
+     liveDevicesSig: '',
+     snapshotAgeMs: 0,
+     snapshotStale: false,
++    capabilities: null,
++    uplinkSupported: null,
+     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced'
+   };
+ 
+@@ -5170,6 +5209,7 @@
+         if (cDesc) cDesc.textContent = c.error || 'capabilities.json 暂不存在，可重启模块或等待 watchdog 生成';
+       } else {
+         const cap = c.capabilities || c || {};
++        applyCapabilities(cap);
+         const flat = [];
+         const walk = (prefix, obj) => {
+           if (!obj || typeof obj !== 'object' || flat.length > 12) return;

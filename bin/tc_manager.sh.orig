@@ -47,49 +47,6 @@ log_error() {
     echo "[$(date '+%H:%M:%S')] [TC] [ERROR] $*" >> "$LOG" 2>/dev/null || true
 }
 
-# hotfix16.5: unified uplink capability gate.
-# If capability_probe says IFB/mirred is unavailable, never try modprobe/ifb0/mirred
-# from apply/init/restore/watchdog paths. Downlink HTB/netem stays usable.
-CAP_FILE="$HNC_DIR/run/capabilities.json"
-UPLINK_MARKER="$HNC_DIR/run/uplink_unsupported"
-UPLINK_LOG_ONCE="$HNC_DIR/run/uplink_unsupported_logged"
-
-cap_uplink_value() {
-    [ -f "$CAP_FILE" ] || return 1
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*true' "$CAP_FILE" 2>/dev/null; then
-        echo true
-        return 0
-    fi
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*false' "$CAP_FILE" 2>/dev/null; then
-        echo false
-        return 0
-    fi
-    return 1
-}
-
-uplink_supported_runtime() {
-    [ -f "$UPLINK_MARKER" ] && return 1
-    local v
-    v=$(cap_uplink_value 2>/dev/null || echo unknown)
-    [ "$v" = "false" ] && return 1
-    # Unknown keeps legacy best-effort behavior so older installs without capabilities.json still work.
-    return 0
-}
-
-log_uplink_unsupported_once() {
-    local where=${1:-tc}
-    mkdir -p "$HNC_DIR/run" 2>/dev/null || true
-    if [ ! -f "$UPLINK_MARKER" ]; then
-        local now
-        now=$(date +%s 2>/dev/null || echo 0)
-        printf '%s\n' "{\"ifb_unsupported\":true,\"since\":$now,\"reason\":\"capability_probe uplink_supported=false\"}" > "$UPLINK_MARKER" 2>/dev/null || true
-    fi
-    if [ ! -f "$UPLINK_LOG_ONCE" ]; then
-        log "$where: uplink unsupported by capabilities; skip IFB/mirred and use downlink-only / egress-only mode"
-        echo 1 > "$UPLINK_LOG_ONCE" 2>/dev/null || true
-    fi
-}
-
 # ═══════════════════════════════════════════════════════════════
 # v3.3.1 浮点数比较助手
 # 问题：shell 内置 `[ x -gt 0 ]` 对 "0.2" 这种小数直接报错，
@@ -484,25 +441,17 @@ disable_offload() {
 
 # ─── 加载 IFB 模块 ───────────────────────────────────────────
 load_ifb() {
-    if ! uplink_supported_runtime; then
-        log_uplink_unsupported_once "load_ifb"
-        return 1
-    fi
     modprobe ifb numifbs=2 2>/dev/null \
         || insmod /system/lib/modules/ifb.ko numifbs=2 2>/dev/null || true
     local i=0
-    while [ $i -lt 3 ] && ! ip link show "$IFB_IFACE" >/dev/null 2>&1; do
+    while [ $i -lt 10 ] && ! ip link show "$IFB_IFACE" >/dev/null 2>&1; do
         ip link add "$IFB_IFACE" type ifb 2>/dev/null || true
+        # v3.4.11 内部加固:sleep 0.3 改成 usleep 兼容 busybox,失败 fall back sleep 1
         i=$((i+1))
-        usleep 200000 2>/dev/null || sleep 1
+        usleep 300000 2>/dev/null || sleep 1
     done
-    if ! ip link show "$IFB_IFACE" >/dev/null 2>&1; then
-        log_error "load_ifb: $IFB_IFACE unavailable"
-        return 1
-    fi
     ip link set "$IFB_IFACE" up 2>/dev/null || true
     log "IFB $IFB_IFACE ready"
-    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -655,11 +604,6 @@ install_ingress_mirred() {
     local iface=$1
     [ -z "$iface" ] && { log_error "install_ingress_mirred: empty iface"; return 1; }
 
-    if ! uplink_supported_runtime; then
-        log_uplink_unsupported_once "install_ingress_mirred"
-        return 0
-    fi
-
     # 热点关了时 silent skip (hotfix4)
     if ! ip link show "$iface" >/dev/null 2>&1; then
         log "install_ingress_mirred: $iface not present yet, skip (will retry when iface up)"
@@ -757,11 +701,7 @@ init_tc() {
     log "=== TC init: $iface ==="
 
     disable_offload "$iface"
-    if uplink_supported_runtime; then
-        load_ifb || log "init_tc: IFB unavailable; continuing downlink-only"
-    else
-        log_uplink_unsupported_once "init_tc"
-    fi
+    load_ifb
 
     # ── Egress HTB（下载：热点→设备）────────────────────────
     # rc3.1.32: root htb add 冷启时可能失败 (wlan2 kernel 状态切换中, kernel tc
@@ -839,11 +779,7 @@ init_tc() {
     fi
 
     # v5.0 alpha.2 P0-0: 独立装 ingress mirred, 与 root htb add 结果脱钩
-    if uplink_supported_runtime; then
-        install_ingress_mirred "$iface"
-    else
-        log_uplink_unsupported_once "init_tc"
-    fi
+    install_ingress_mirred "$iface"
 
     # 以下 class / ingress qdisc / ifb 等代码只在 root htb OK 时执行
     if [ "$_htb_add_ok" != "1" ]; then
@@ -954,23 +890,16 @@ init_tc() {
 # ═══════════════════════════════════════════════════════════════
 # ─── v5.1 hotfix: ifb0 root htb 自愈 ──────────────────────
 ensure_ifb_root_v1() {
-    if ! uplink_supported_runtime; then
-        log_uplink_unsupported_once "ensure_ifb_root_v1"
-        return 1
-    fi
-    if ! ip link show "$IFB_IFACE" >/dev/null 2>&1; then
-        load_ifb || return 1
-    fi
     local _root
     _root=$(tc qdisc show dev "$IFB_IFACE" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
     [ "$_root" = "htb" ] && return 0
     log "ensure_ifb_root_v1: ifb0 root='$_root' rebuilding htb"
-    ip link set dev "$IFB_IFACE" up 2>/dev/null || true
-    tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
-    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null || return 1
-    tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null || true
-    tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null || true
-    tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null || true
+    ip link set dev "$IFB_IFACE" up 2>/dev/null
+    tc qdisc del dev "$IFB_IFACE" root 2>/dev/null
+    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+    tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+    tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+    tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
     log "ensure_ifb_root_v1: rebuilt OK"
     return 0
 }
@@ -1176,11 +1105,7 @@ restore_rules() {
     # install_ingress_mirred 从没被调用。restore_rules 开头强制调一次, 幂等,
     # 保证 HNC 的 pref 1 matchall → ifb0 就位。
     if [ -n "$iface" ] && ip link show "$iface" >/dev/null 2>&1; then
-        if uplink_supported_runtime; then
-            install_ingress_mirred "$iface"
-        else
-            log_uplink_unsupported_once "restore_rules"
-        fi
+        install_ingress_mirred "$iface"
     fi
 
     # 提取所有设备 MAC（只匹配 devices 对象里有 mark_id 的条目）

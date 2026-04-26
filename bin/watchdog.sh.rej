@@ -1,0 +1,19 @@
+--- bin/watchdog.sh	2026-04-26 05:27:07.000000000 +0000
++++ bin/watchdog.sh	2026-04-26 08:21:04.137820290 +0000
+@@ -703,7 +731,15 @@
+ # ─── v5.1 RC1 主动 uplink health check ─────────────────────────
+ # 每 60s 轮询一次, 不触发 full_restore, 直接 inline 修复
+ ensure_tc_uplink_healthy() {
+-    # hotfix16.4: IFB/mirred unsupported is a degraded uplink state, not a fatal health failure.
++    # hotfix16.4/16.5: IFB/mirred unsupported is a degraded uplink state, not a fatal health failure.
++    local capv
++    capv=$(watchdog_cap_uplink_value 2>/dev/null || echo unknown)
++    if [ "$capv" = "false" ]; then
++        watchdog_mark_uplink_unsupported_once
++        rm -f "$RUN/uplink_fail_count" 2>/dev/null || true
++        return 0
++    fi
++
+     local iface
+     iface=$(get_iface)
+     [ -z "$iface" ] && iface="wlan2"

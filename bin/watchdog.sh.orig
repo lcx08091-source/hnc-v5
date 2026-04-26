@@ -44,34 +44,6 @@ log_error() {
     echo "[$(TZ=Asia/Shanghai date '+%H:%M:%S')] [WDG] [ERROR] $1" >> "$LOG" 2>/dev/null || true
 }
 
-# hotfix16.5: capability-aware uplink gate. If capability_probe already proved
-# IFB/mirred is unavailable, watchdog must not keep repairing ifb0/ingress.
-watchdog_cap_uplink_value() {
-    local cap="$RUN/capabilities.json"
-    [ -f "$cap" ] || return 1
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*true' "$cap" 2>/dev/null; then
-        echo true
-        return 0
-    fi
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*false' "$cap" 2>/dev/null; then
-        echo false
-        return 0
-    fi
-    return 1
-}
-
-watchdog_mark_uplink_unsupported_once() {
-    local now marker once
-    now=$(date +%s 2>/dev/null || echo 0)
-    marker="$RUN/uplink_unsupported"
-    once="$RUN/uplink_unsupported_logged"
-    [ -f "$marker" ] || printf '%s\n' "{\"ifb_unsupported\":true,\"since\":$now,\"reason\":\"capability_probe uplink_supported=false\"}" > "$marker" 2>/dev/null || true
-    if [ ! -f "$once" ]; then
-        log "ensure_tc_uplink: uplink_supported=false; skip IFB/mirred repair"
-        echo 1 > "$once" 2>/dev/null || true
-    fi
-}
-
 # v4.0 Patch 1.6 心跳 + 轮转的最后时间
 # 每 5 分钟至少打一行 "alive" log(即使啥都没发生也有证据 watchdog 活着)
 # 每次主循环也顺便调用一次 log_rotate,防止任何 log 涨爆

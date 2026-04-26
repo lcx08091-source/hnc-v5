@@ -1,0 +1,16 @@
+--- CHANGELOG.md	2026-04-26 05:38:29.000000000 +0000
++++ CHANGELOG.md	2026-04-26 08:24:27.848872593 +0000
+@@ -1,3 +1,13 @@
++## v5.1.0-rc1-hotfix16.5 - Capability-gated uplink downgrade / MIUI14 anti-freeze
++
++- 修复 Xiaomi 10 / MIUI14 等 `uplink_supported=false` 设备点击限速后仍反复尝试 IFB/mirred，导致 WebUI 后端超时、界面卡住的问题。
++- `tc_manager.sh` 现在以 `run/capabilities.json` 为准：上行能力不可用时直接降级为 `downlink_only`，跳过 `ifb0`、`mirred`、ingress 重试，不再因为上行失败影响下行限速。
++- `watchdog.sh` 在上行能力不可用时直接跳过 uplink repair，并写入一次性 `uplink_unsupported` marker，避免后台反复修复失败、刷日志和增加耗电。
++- WebUI 读取 `/api/capabilities` 后会自动禁用上行限速输入，提示“当前设备不支持上行限速”，并在批量/模板/单设备应用时强制上行为 0，避免误导用户。
++- `service.sh` / `hotspot_autostart.sh` 启动时会清理旧的 uplink 降级日志标记，让下一次能力探测后重新建立准确状态。
++- Go action 源码同步加入 capability-aware 降级逻辑，后续重新编译 httpd 时可让 API 层也更早返回 `downlink_only` warning。
++- 边界：本版不新增 SSE/WebSocket，不重构 tc/iptables 主链路；重点解决“不支持上行整形的设备点击限速卡死”和“UI 误显示上行可用”。
++
+ ## v5.1.0-rc1-hotfix16.4 - MIUI14 TC degraded backend fix
+ 
+ - 修复 MIUI14 上 `set_delay()` 在 IFB 失败后严格短路，导致 wlan1 leaf netem 停留在 `delay 0ms` 占位、200ms 延迟未真正写入的问题。

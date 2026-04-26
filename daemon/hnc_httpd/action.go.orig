@@ -298,22 +298,6 @@ func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool)
 
 // ── action 实现 ───────────────────────────────────────────────
 
-// readUplinkCapability returns (supported, known). Unknown keeps legacy best-effort behavior.
-func readUplinkCapability(hncDir string) (bool, bool) {
-	b, err := os.ReadFile(filepath.Join(hncDir, "run", "capabilities.json"))
-	if err != nil {
-		return true, false
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return true, false
-	}
-	if v, ok := m["uplink_supported"].(bool); ok {
-		return v, true
-	}
-	return true, false
-}
-
 // actionRuleSet · 设置限速
 // params: mac(必需), rate_down(可选, 如"10mbit"/"5120kbit"), rate_up(可选)
 // 行为: exec apply_device_rule.sh limit, 一次完成 iptables mark + tc set_limit + rules.json 更新
@@ -358,27 +342,14 @@ func actionRuleSet(hncDir string, p map[string]string) actionResp {
 		return actionResp{OK: false, Error: "bad params", Detail: "rate_up: " + err.Error()}
 	}
 
-	// hotfix16.5: capabilities.json is authoritative for unsupported uplink.
-	// Do not call shell paths that would try IFB/mirred and block/timeout on MIUI14.
-	if supported, known := readUplinkCapability(hncDir); known && !supported && ruleNumberPositive(upMbps) {
-		upMbps = "0"
-		if !ruleNumberPositive(dnMbps) {
-			return actionResp{OK: true, Detail: "uplink unsupported on this ROM; no downlink rate requested, skipped"}
-		}
-		log.Printf("rule_set: uplink unsupported; applying downlink-only mac=%s down=%s", mac, dnMbps)
-	}
-
 	// 一次 exec 完成完整链路 · 传字符串(整数或小数)
 	rc, out := runBin(hncDir, "apply_device_rule.sh", "limit", mac, dnMbps, upMbps)
 	detail := strings.TrimSpace(out)
 	if rc != 0 {
 		return actionResp{OK: false, Error: "apply failed", Detail: detail}
 	}
-	if strings.Contains(detail, "partial_tc_fail=uplink") || strings.Contains(detail, "limit_apply_mode=down_only") {
-		return actionResp{OK: true, Detail: "download limit applied; uplink unsupported/disabled on this ROM, kept up=0"}
-	}
-	if supported, known := readUplinkCapability(hncDir); known && !supported && ruleNumberPositive(p["rate_up"]) {
-		return actionResp{OK: true, Detail: "download limit applied; uplink unsupported on this ROM, kept up=0"}
+	if strings.Contains(detail, "partial_tc_fail=uplink") {
+		return actionResp{OK: true, Detail: "download limit applied; uplink failed/disabled on this ROM, kept up=0"}
 	}
 	return actionResp{OK: true, Detail: "limit applied"}
 }

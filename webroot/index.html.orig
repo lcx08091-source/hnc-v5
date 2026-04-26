@@ -1382,18 +1382,6 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
   -webkit-appearance: none;
 }
 .glass-input:focus { border-color: var(--sys-blue); background: var(--input-focus); }
-.glass-input:disabled, .input-unit:disabled {
-  opacity: .48;
-  cursor: not-allowed;
-  background: rgba(120,120,128,.10);
-}
-.input-hint {
-  margin-top: 6px;
-  font-size: 10.5px;
-  color: var(--text-3);
-  line-height: 1.45;
-}
-.input-hint.warn { color: var(--sys-orange); }
 .input-suffix {
   position: absolute; right: 10px; top: 50%;
   transform: translateY(-50%);
@@ -2933,7 +2921,6 @@ body.kb-open .container {
    * TEMPLATES localStorage 旧数据). UI ↔ 数据 转换由 mbpsToMBsStr (出) 和
    * readLimitInputs / 模板保存的 ×8 (入) 在边界处理. */
   async function applyLimitBackend(mac, downMbps, upMbps) {
-    if (state.uplinkSupported === false) upMbps = 0;
     const fmtRate = n => {
       const v = parseFloat(n) || 0;
       if (v <= 0) return null;  // 不发字段
@@ -3392,9 +3379,6 @@ body.kb-open .container {
     const limitBadge = badgeParts.length
       ? `<span class="badge accent card-limit-badge">${badgeParts.join(' · ')}</span>`
       : `<span class="badge accent card-limit-badge" style="display:none"></span>`;
-    const uplinkDisabled = state.uplinkSupported === false;
-    const upDisAttr = uplinkDisabled ? ' disabled aria-disabled="true" title="当前内核不支持上行限速"' : '';
-    const upValue = uplinkDisabled ? '' : (d.up ? mbpsToMBsStr(d.up) : '');
     const selected = state.selected.has(d.mac) ? 'selected' : '';
     const blocked = d.status === 'blocked';
     const blockBtn = blocked
@@ -3441,17 +3425,16 @@ body.kb-open .container {
                   </div>
                 </div>
                 <div class="input-cell">
-                  <span class="input-cell-label">上行${uplinkDisabled ? ' · 不支持' : ''}</span>
+                  <span class="input-cell-label">上行</span>
                   <div class="input-wrap">
-                    <input class="glass-input has-unit" type="number" inputmode="decimal" step="0.1" placeholder="0" value="${upValue}" data-field="up"${upDisAttr}>
-                    <select class="input-unit" data-field="up-unit"${upDisAttr}>
+                    <input class="glass-input has-unit" type="number" inputmode="decimal" step="0.1" placeholder="0" value="${d.up ? mbpsToMBsStr(d.up) : ''}" data-field="up">
+                    <select class="input-unit" data-field="up-unit">
                       <option value="MB/s" selected>MB/s</option>
                       <option value="Kbps">Kbps</option>
                     </select>
                   </div>
                 </div>
               </div>
-              ${uplinkDisabled ? '<div class="input-hint warn">当前设备内核不支持 IFB/mirred，上行限速已禁用；下行限速和 egress-only 延迟仍可用。</div>' : ''}
               <div class="btn-row">
                 <button class="btn btn-primary" data-action="apply-limit">应用限速</button>
                 <button class="btn btn-ghost" data-action="clear-limit">清除</button>
@@ -3635,7 +3618,7 @@ body.kb-open .container {
     };
     return {
       down: parse(downInp && downInp.value, downUnit),
-      up:   (state.uplinkSupported === false) ? 0 : parse(upInp && upInp.value, upUnit)
+      up:   parse(upInp && upInp.value,   upUnit)
     };
   }
 
@@ -4101,14 +4084,13 @@ body.kb-open .container {
             </div>
           </div>
           <div class="input-cell">
-            <span class="input-cell-label">上行 (MB/s)${state.uplinkSupported === false ? ' · 不支持' : ''}</span>
+            <span class="input-cell-label">上行 (MB/s)</span>
             <div class="input-wrap">
-              <input class="glass-input" type="number" inputmode="decimal" step="0.1" id="tpl-up" value="${state.uplinkSupported === false ? '' : (t.up ? mbpsToMBsStr(t.up) : '')}" placeholder="0"${state.uplinkSupported === false ? ' disabled aria-disabled="true" title="当前内核不支持上行限速"' : ''}>
+              <input class="glass-input" type="number" inputmode="decimal" step="0.1" id="tpl-up" value="${t.up ? mbpsToMBsStr(t.up) : ''}" placeholder="0">
               <span class="input-suffix">MB/s</span>
             </div>
           </div>
         </div>
-        ${state.uplinkSupported === false ? '<div class="input-hint warn">模板中的上行值会自动按 0 保存和应用。</div>' : ''}
         <div class="input-grid cols-3">
           <div class="input-cell">
             <span class="input-cell-label">延迟</span>
@@ -4149,7 +4131,7 @@ body.kb-open .container {
     const t = {
       name,
       down:   (parseFloat($('#tpl-down').value) || 0) * 8,   // MB/s → Mbps
-      up:     (state.uplinkSupported === false) ? 0 : ((parseFloat($('#tpl-up').value) || 0) * 8),   // MB/s → Mbps
+      up:     (parseFloat($('#tpl-up').value)   || 0) * 8,   // MB/s → Mbps
       delay:  parseInt  ($('#tpl-delay').value) || 0,
       jitter: parseInt  ($('#tpl-jitter').value) || 0,
       loss:   parseFloat($('#tpl-loss').value)  || 0
@@ -4340,12 +4322,11 @@ body.kb-open .container {
   function batchApply(tpl) {
     const targets = Array.from(state.selected);
     if (!targets.length) { toast('请先选择设备', 'warn'); return; }
-    const effTpl = (state.uplinkSupported === false) ? Object.assign({}, tpl, {up: 0}) : tpl;
-    toast(`正在对 ${targets.length} 台应用 ${tpl.name}${state.uplinkSupported === false ? ' · 仅下行' : ''}…`, 'ok');
+    toast(`正在对 ${targets.length} 台应用 ${tpl.name}…`, 'ok');
     // hotfix5: sequential backend writes to avoid ksu.exec/curl timeout pileups.
     runDeviceOpsSequential(targets, mac => {
-      if (effTpl.down === 0 && effTpl.up === 0) return clearLimitBackend(mac);
-      return applyLimitBackend(mac, effTpl.down, effTpl.up);
+      if (tpl.down === 0 && tpl.up === 0) return clearLimitBackend(mac);
+      return applyLimitBackend(mac, tpl.down, tpl.up);
     }).then(ok => {
       const fail = targets.length - ok;
       return fetchDevices({force:true}).then(() => {
@@ -4605,11 +4586,10 @@ body.kb-open .container {
           const mac = expanded.dataset.mac;
           const d = DEVICES.find(x => x.mac === mac);
           if (d) {
-            const effTpl = (state.uplinkSupported === false) ? Object.assign({}, tpl, {up: 0}) : tpl;
-            d.limited = effTpl.down > 0 || effTpl.up > 0;
-            d.down = effTpl.down; d.up = effTpl.up;
+            d.limited = tpl.down > 0 || tpl.up > 0;
+            d.down = tpl.down; d.up = tpl.up;
             renderDeviceList();
-            toast(`已应用模板: ${tpl.name}${state.uplinkSupported === false ? ' · 仅下行' : ''}`, 'ok');
+            toast(`已应用模板: ${tpl.name}`, 'ok');
           }
         } else toast('请先展开一个设备卡', 'warn');
       }
@@ -4972,7 +4952,7 @@ body.kb-open .container {
         return fetchDevices({force:true});
       }).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
-        toast('限速已应用: ↓' + mbpsToMBsStr(rates.down) + ' ↑' + mbpsToMBsStr(rates.up) + ' MB/s' + (state.uplinkSupported === false ? ' · 仅下行' : ''), 'ok');
+        toast('限速已应用: ↓' + mbpsToMBsStr(rates.down) + ' ↑' + mbpsToMBsStr(rates.up) + ' MB/s', 'ok');
         setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
         btn.classList.remove('loading'); btn.disabled = false;
@@ -5156,11 +5136,9 @@ body.kb-open .container {
       initOk = false;
       dbg('init fetchDevices err: ' + e.message);
     });
-    const capP = fetchCapabilities().catch(e => { dbg('init capabilities err: ' + e.message); });
     const cfgP = fetchConfig().then(c => { cfg = c || {}; })
       .catch(e => { dbg('init config err: ' + e.message); });
     await devicesP;
-    await capP;
     renderDeviceList();
     __t.parallel_devices = performance.now();
 
