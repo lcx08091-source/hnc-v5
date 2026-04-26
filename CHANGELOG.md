@@ -1,3 +1,11 @@
+# v5.1.0-rc1-hotfix17.2
+
+- 修复小米10 / MIUI14 `wlan1 qdisc mq root` 下行限速/延迟应用失败。
+- 基于真机 root probe：mq 子队列挂载失败，但 root HTB / root netem 成功。
+- `tc_manager.sh` 的 HTB root 创建去掉 `r2q 10`，避免旧 Android iproute2 报 `invalid argument root`。
+- mq root 场景下保留 child fallback，但失败后允许 root replace HTB fallback。
+- 上行限速仍按能力探测禁用，不恢复 IFB/mirred。
+
 # v5.1.0-rc1-hotfix17.1
 
 - 新增 `bin/capability_probe.sh`：root/dummy 沙盒探测 TC 能力，生成 `run/capabilities.json`。

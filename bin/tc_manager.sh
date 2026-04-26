@@ -777,15 +777,15 @@ install_ingress_mirred() {
     return 0
 }
 
-# hotfix17.1: Xiaomi/MIUI mq root safe HTB attach.
-# Keep ROM mq root intact and try multiple parent/op syntaxes.
+# hotfix17.2: Xiaomi/MIUI mq root HTB fallback.
+# Probe results showed mq child leaves reject HTB/netem, while root HTB works only without r2q.
 try_mq_child_htb() {
     local iface=$1
     local parent op out last_out
     [ -n "$iface" ] || return 1
     for parent in 0:1 :1; do
         for op in replace add; do
-            out=$(tc qdisc "$op" dev "$iface" parent "$parent" handle 1: htb default 9999 r2q 10 2>&1)
+            out=$(tc qdisc "$op" dev "$iface" parent "$parent" handle 1: htb default 9999 2>&1)
             if [ -z "$out" ]; then
                 log "init_tc: mq child htb installed on $iface parent $parent via qdisc $op"
                 echo "$iface parent=$parent op=$op" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
@@ -877,7 +877,7 @@ init_tc() {
         _htb_add_ok=1
     elif [ -n "$HNC_TEST_MODE" ]; then
         # 测试路径: 单次 add, 保持旧行为方便 mock 断言
-        tc qdisc add dev "$iface" root handle 1: htb default 9999 r2q 10 2>/dev/null \
+        tc qdisc add dev "$iface" root handle 1: htb default 9999 2>/dev/null \
             || { log_error "init_tc: failed to add root htb on $iface (test mode)"; return 1; }
         _htb_add_ok=1     # v5.0 alpha.2 P0-0: 测试模式下也要设, 避免后续 return 0
         _htb_added_by_hnc=1
@@ -886,8 +886,8 @@ init_tc() {
         _htb_add_ok=0
         _htb_retry=0
 
-        # hotfix17.1: for mq root Wi-Fi AP interfaces, try child HTB first and
-        # avoid destructive root deletion/replacement.
+        # hotfix17.2: for mq root Wi-Fi AP interfaces, try child HTB first;
+        # if it fails, root replace is allowed because root probe confirmed restore-to-mq works.
         if echo "$_existing_root_line" | grep -q "qdisc mq"; then
             if try_mq_child_htb "$iface"; then
                 _htb_add_ok=1
@@ -895,7 +895,7 @@ init_tc() {
         fi
 
         while [ $_htb_add_ok -ne 1 ] && [ $_htb_retry -lt 3 ]; do
-            _htb_out=$(tc qdisc replace dev "$iface" root handle 1: htb default 9999 r2q 10 2>&1)
+            _htb_out=$(tc qdisc replace dev "$iface" root handle 1: htb default 9999 2>&1)
             if [ -z "$_htb_out" ]; then
                 _htb_add_ok=1
                 _htb_added_by_hnc=1
@@ -928,7 +928,7 @@ init_tc() {
             fi
             log_error "init_tc: root htb add failed (attempt $((_htb_retry+1))/3) on $iface: $_htb_out"
             # 冷启时序问题 retry 前 del 一次 (可能上次 add 部分成功了残留).
-            # hotfix17.1: never delete ROM mq root on Wi-Fi AP interfaces.
+            # hotfix17.2: do not delete mq root between retries; qdisc replace root handles it.
             if ! echo "$_existing_root_line" | grep -q "qdisc mq"; then
                 tc qdisc del dev "$iface" root 2>/dev/null || true
             fi
@@ -980,7 +980,7 @@ init_tc() {
                 ;;
             *)
                 tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
-                tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+                tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 2>/dev/null
                 ;;
         esac
         # class 1:1 / 1:9999 add 是幂等的 (已存在会 silent fail, 无害)
@@ -1020,7 +1020,7 @@ ensure_ifb_root_v1() {
     log "ensure_ifb_root_v1: ifb0 root='$_root' rebuilding htb"
     ip link set dev "$IFB_IFACE" up 2>/dev/null || true
     tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
-    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null || return 1
+    tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 2>/dev/null || return 1
     tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null || true
     tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null || true
     tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null || true
