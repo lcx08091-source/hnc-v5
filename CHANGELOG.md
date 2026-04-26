@@ -1,3 +1,12 @@
+
+## v5.1.0-rc1-hotfix16.9
+
+- WebUI now disables downlink limit controls when `tc_htb=false` and disables delay/jitter/loss controls when `tc_netem=false` or HTB is unavailable.
+- Go write actions fail fast with `unsupported` for `rule_set` / `delay_set` when capabilities prove the TC path is unavailable, avoiding KSU WebUI timeouts.
+- `tc_manager.sh` skips `init_tc`, `set_limit`, `set_delay`, and unsupported restore branches when TC capabilities are false.
+- `watchdog.sh` no longer treats missing HTB qdisc as a health failure when `tc_htb=false`; TC restore/init loops are suppressed on unsupported ROMs.
+- Settings diagnostics fall back cleanly when `/api/metrics` or `/api/capabilities` is missing on old bundled httpd.
+
 ## v5.1.0-rc1-hotfix16.8
 
 - 修复 WebUI 轮询 `/api/live`、`/api/capabilities`、`/api/metrics` 时后端返回 404，导致调试弹窗连续显示 `invalid JSON: 404 page not found` 的问题。

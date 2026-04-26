@@ -54,6 +54,52 @@ CAP_FILE="$HNC_DIR/run/capabilities.json"
 UPLINK_MARKER="$HNC_DIR/run/uplink_unsupported"
 UPLINK_LOG_ONCE="$HNC_DIR/run/uplink_unsupported_logged"
 
+cap_bool_value() {
+    local key=$1
+    [ -f "$CAP_FILE" ] || return 1
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*true" "$CAP_FILE" 2>/dev/null; then
+        echo true
+        return 0
+    fi
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*false" "$CAP_FILE" 2>/dev/null; then
+        echo false
+        return 0
+    fi
+    return 1
+}
+
+tc_htb_supported_runtime() {
+    local v
+    v=$(cap_bool_value tc_htb 2>/dev/null || echo unknown)
+    [ "$v" = "false" ] && return 1
+    return 0
+}
+
+tc_netem_supported_runtime() {
+    local v
+    v=$(cap_bool_value tc_netem 2>/dev/null || echo unknown)
+    [ "$v" = "false" ] && return 1
+    return 0
+}
+
+tc_limit_supported_runtime() {
+    tc_htb_supported_runtime
+}
+
+tc_delay_supported_runtime() {
+    tc_htb_supported_runtime && tc_netem_supported_runtime
+}
+
+log_tc_unsupported_once() {
+    local where=${1:-tc} kind=${2:-tc}
+    mkdir -p "$HNC_DIR/run" 2>/dev/null || true
+    local once="$HNC_DIR/run/${kind}_unsupported_logged"
+    if [ ! -f "$once" ]; then
+        log "$where: $kind unsupported by capabilities; skip tc operation and return fast"
+        echo 1 > "$once" 2>/dev/null || true
+    fi
+}
+
 cap_uplink_value() {
     [ -f "$CAP_FILE" ] || return 1
     if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*true' "$CAP_FILE" 2>/dev/null; then
@@ -747,6 +793,12 @@ init_tc() {
 
     log "=== TC init: $iface ==="
 
+    if ! tc_limit_supported_runtime; then
+        log_tc_unsupported_once "init_tc" "tc_htb"
+        echo "TC_INIT_MODE=unsupported"
+        return 0
+    fi
+
     disable_offload "$iface"
     if uplink_supported_runtime; then
         load_ifb || log "init_tc: IFB unavailable; continuing downlink-only"
@@ -966,6 +1018,19 @@ set_limit() {
 
     log "set_limit: mark=$mark_id ip=${ip:-(none)} dn=${down_mbps}M up=${up_mbps}M"
 
+    # hotfix16.9: if capability_probe proved HTB unavailable, do not try to
+    # create classes/qdiscs. On MIUI14 this used to block WebUI until timeout.
+    if ! tc_limit_supported_runtime; then
+        if gt0 "$down_mbps" || gt0 "$up_mbps"; then
+            log_tc_unsupported_once "set_limit" "tc_htb"
+            echo "LIMIT_APPLY_MODE=unsupported"
+            return 66
+        fi
+        log_tc_unsupported_once "set_limit_clear" "tc_htb"
+        echo "LIMIT_APPLY_MODE=unsupported_clear_skip"
+        return 0
+    fi
+
     # ── Egress（下载：热点→设备）──────────────────────────────
     if gt0 "$down_mbps"; then
         ensure_device_class "$iface" "$class_id" "$ip" || return 1
@@ -1080,6 +1145,19 @@ set_delay() {
     fi
 
     log "set_delay: mark=$mark_id ip=${ip:-(none)} RTT=${delay_ms}ms (eg ${delay_eg}ms + ig ${delay_ig}ms) jitter=${jitter_ms}ms loss=${loss}%"
+
+    # hotfix16.9: netem path requires both HTB leaf classes and sch_netem.
+    # If probe says unavailable, return immediately instead of trying qdisc ops.
+    if ! tc_delay_supported_runtime; then
+        if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
+            log_tc_unsupported_once "set_delay" "tc_netem"
+            echo "DELAY_APPLY_MODE=unsupported"
+            return 66
+        fi
+        log_tc_unsupported_once "set_delay_clear" "tc_netem"
+        echo "DELAY_APPLY_MODE=unsupported_clear_skip"
+        return 0
+    fi
 
     # v3.5.0 alpha-2:P0-3 完整修复
     # v3.4.11 只修了 set_netem_only 内部逻辑,但 set_delay 的入口判断仍然是
@@ -1206,6 +1284,11 @@ restore_rules() {
     log "Restoring rules from $RULES_FILE"
     [ -f "$RULES_FILE" ] || return 0
     local iface; iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface)
+    local limit_supported=1 delay_supported=1
+    tc_limit_supported_runtime || limit_supported=0
+    tc_delay_supported_runtime || delay_supported=0
+    [ "$limit_supported" = "0" ] && log_tc_unsupported_once "restore_rules" "tc_htb"
+    [ "$delay_supported" = "0" ] && log_tc_unsupported_once "restore_rules" "tc_netem"
 
     # v5.0 alpha.2 hotfix2: 强制装 ingress mirred (保证重启后上行限速生效)
     # watchdog 判定 "qdisc htb 1: 已存在" (oplus 装的) 时会跳过 init_tc, 导致
@@ -1368,6 +1451,22 @@ restore_rules() {
             ip="$live_ip"
         elif [ -z "$live_ip" ]; then
             log "  no live IP for $mac in devices.json, using stale rules.json($ip)"
+        fi
+
+        local want_limit=0 want_delay=0
+        if gt0 "${down:-0}" || gt0 "${up:-0}"; then want_limit=1; fi
+        if gt0 "${delay:-0}" || gt0 "${jitter:-0}" || gt0 "${loss:-0}"; then want_delay=1; fi
+        if [ "$want_limit" = "1" ] && [ "$limit_supported" = "0" ]; then
+            log "  restore skip limit for $mac: tc_htb=false"
+            down=0; up=0; want_limit=0
+        fi
+        if [ "$want_delay" = "1" ] && [ "$delay_supported" = "0" ]; then
+            log "  restore skip delay for $mac: tc_netem/tc_htb unsupported"
+            delay=0; jitter=0; loss=0; want_delay=0
+        fi
+        if [ "$want_limit" = "0" ] && [ "$want_delay" = "0" ]; then
+            log "  restore skip tc for $mac: all tc features unsupported or rule is zero"
+            continue
         fi
 
         log "Restoring: $mac mark=$mark_id ip=$ip dn=${down}M up=${up}M delay=${delay}ms loss=${loss}%"

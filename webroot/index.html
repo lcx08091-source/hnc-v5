@@ -3044,6 +3044,9 @@ body.kb-open .container {
    * TEMPLATES localStorage 旧数据). UI ↔ 数据 转换由 mbpsToMBsStr (出) 和
    * readLimitInputs / 模板保存的 ×8 (入) 在边界处理. */
   async function applyLimitBackend(mac, downMbps, upMbps) {
+    if (!isDownlinkLimitSupported() && ((parseFloat(downMbps)||0) > 0 || (parseFloat(upMbps)||0) > 0)) {
+      throw unsupportedError('当前设备不支持限速', 'tc_htb=false');
+    }
     if (state.uplinkSupported === false) upMbps = 0;
     const fmtRate = n => {
       const v = parseFloat(n) || 0;
@@ -3085,6 +3088,9 @@ body.kb-open .container {
     return true;
   }
   async function applyDelayBackend(mac, delayMs, jitterMs, lossPct) {
+    if (!isDelaySupported() && (((parseFloat(delayMs)||0) > 0) || ((parseFloat(jitterMs)||0) > 0) || ((parseFloat(lossPct)||0) > 0))) {
+      throw unsupportedError('当前设备不支持延迟注入', 'tc_netem=false 或 tc_htb=false');
+    }
     await apiAction('delay_set', {
       mac, delay_ms: String(delayMs),
       jitter_ms: String(jitterMs),
@@ -3307,21 +3313,41 @@ body.kb-open .container {
     }
   }
 
+  function capBool(name) {
+    const cap = state.capabilities || {};
+    return (typeof cap[name] === 'boolean') ? cap[name] : null;
+  }
+  function isDownlinkLimitSupported() {
+    // Unknown keeps legacy behavior for old installs. Explicit false disables quickly.
+    return capBool('tc_htb') !== false;
+  }
+  function isDelaySupported() {
+    // Current netem path depends on HTB leaf classes, so either explicit false disables delay.
+    return capBool('tc_netem') !== false && capBool('tc_htb') !== false;
+  }
+  function unsupportedError(message, detail) {
+    const e = new Error(message);
+    e.detail = detail || '';
+    return e;
+  }
+  async function readLocalCapabilitiesFile() {
+    try {
+      const raw = await kexec('cat /data/local/hnc/run/capabilities.json 2>/dev/null || true');
+      if (!raw || !raw.trim()) return null;
+      const cap = JSON.parse(raw);
+      applyCapabilities(cap);
+      return cap;
+    } catch (_) { return null; }
+  }
   function applyCapabilities(cap) {
     if (!cap || typeof cap !== 'object') return;
     state.capabilities = cap;
     if (typeof cap.uplink_supported === 'boolean') state.uplinkSupported = !!cap.uplink_supported;
+    state.downlinkSupported = isDownlinkLimitSupported();
+    state.delaySupported = isDelaySupported();
   }
   async function fetchCapabilities() {
-    const readLocal = async () => {
-      try {
-        const raw = await kexec('cat /data/local/hnc/run/capabilities.json 2>/dev/null || true');
-        if (!raw || !raw.trim()) return null;
-        const cap = JSON.parse(raw);
-        applyCapabilities(cap);
-        return cap;
-      } catch (_) { return null; }
-    };
+    const readLocal = readLocalCapabilitiesFile;
     if (!state.capabilitiesApiUnavailable) {
       try {
         const r = await apiGet('/api/capabilities');
@@ -3557,6 +3583,10 @@ body.kb-open .container {
     snapshotStale: false,
     capabilities: null,
     uplinkSupported: null,
+    downlinkSupported: null,
+    delaySupported: null,
+    metricsApiUnavailable: false,
+    metricsApiWarned: false,
     liveApiUnavailable: false,
     liveApiWarned: false,
     capabilitiesApiUnavailable: false,
@@ -3703,8 +3733,14 @@ body.kb-open .container {
     const limitBadge = badgeParts.length
       ? `<span class="badge accent card-limit-badge">${badgeParts.join(' · ')}</span>`
       : `<span class="badge accent card-limit-badge" style="display:none"></span>`;
-    const uplinkDisabled = state.uplinkSupported === false;
-    const upDisAttr = uplinkDisabled ? ' disabled aria-disabled="true" title="当前内核不支持上行限速"' : '';
+    const downlinkDisabled = !isDownlinkLimitSupported();
+    const delayDisabled = !isDelaySupported();
+    const uplinkDisabled = state.uplinkSupported === false || downlinkDisabled;
+    const downDisAttr = downlinkDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 HTB，下行限速不可用"' : '';
+    const upDisAttr = uplinkDisabled ? ' disabled aria-disabled="true" title="当前内核不支持上行限速或下行基础 TC 不可用"' : '';
+    const delayDisAttr = delayDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 netem/HTB，延迟注入不可用"' : '';
+    const applyLimitAttr = downlinkDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 HTB，限速不可用"' : '';
+    const applyDelayAttr = delayDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 netem/HTB，延迟注入不可用"' : '';
     const upValue = uplinkDisabled ? '' : (d.up ? mbpsToMBsStr(d.up) : '');
     const selected = state.selected.has(d.mac) ? 'selected' : '';
     const blocked = d.status === 'blocked';
@@ -3742,10 +3778,10 @@ body.kb-open .container {
               <div class="ctrl-label"><span class="ctrl-label-dot"></span>限速控制</div>
               <div class="input-grid">
                 <div class="input-cell">
-                  <span class="input-cell-label">下行</span>
+                  <span class="input-cell-label">下行${downlinkDisabled ? ' · 不支持' : ''}</span>
                   <div class="input-wrap">
-                    <input class="glass-input has-unit" type="number" inputmode="decimal" step="0.1" placeholder="0" value="${d.down ? mbpsToMBsStr(d.down) : ''}" data-field="down">
-                    <select class="input-unit" data-field="down-unit">
+                    <input class="glass-input has-unit" type="number" inputmode="decimal" step="0.1" placeholder="0" value="${downlinkDisabled ? '' : (d.down ? mbpsToMBsStr(d.down) : '')}" data-field="down"${downDisAttr}>
+                    <select class="input-unit" data-field="down-unit"${downDisAttr}>
                       <option value="MB/s" selected>MB/s</option>
                       <option value="Kbps">Kbps</option>
                     </select>
@@ -3762,9 +3798,9 @@ body.kb-open .container {
                   </div>
                 </div>
               </div>
-              ${uplinkDisabled ? '<div class="input-hint warn">当前设备内核不支持 IFB/mirred，上行限速已禁用；下行限速和 egress-only 延迟仍可用。</div>' : ''}
+              ${downlinkDisabled ? '<div class="input-hint warn">当前内核/TC 不支持 HTB，下行限速不可用；已禁用应用限速，避免后端超时。</div>' : (uplinkDisabled ? '<div class="input-hint warn">当前设备内核不支持 IFB/mirred，上行限速已禁用；下行限速仍可用。</div>' : '')}
               <div class="btn-row">
-                <button class="btn btn-primary" data-action="apply-limit">应用限速</button>
+                <button class="btn btn-primary" data-action="apply-limit"${applyLimitAttr}>应用限速</button>
                 <button class="btn btn-ghost" data-action="clear-limit">清除</button>
               </div>
             </div>
@@ -3774,27 +3810,28 @@ body.kb-open .container {
                 <div class="input-cell">
                   <span class="input-cell-label">延迟</span>
                   <div class="input-wrap">
-                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${d.delay||''}" data-field="delay">
+                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${delayDisabled ? '' : (d.delay||'')}" data-field="delay"${delayDisAttr}>
                     <span class="input-suffix">ms</span>
                   </div>
                 </div>
                 <div class="input-cell">
                   <span class="input-cell-label">抖动</span>
                   <div class="input-wrap">
-                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${d.jitter||''}" data-field="jitter">
+                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${delayDisabled ? '' : (d.jitter||'')}" data-field="jitter"${delayDisAttr}>
                     <span class="input-suffix">ms</span>
                   </div>
                 </div>
                 <div class="input-cell">
                   <span class="input-cell-label">丢包</span>
                   <div class="input-wrap">
-                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${d.loss||''}" data-field="loss">
+                    <input class="glass-input" type="number" inputmode="decimal" placeholder="0" value="${delayDisabled ? '' : (d.loss||'')}" data-field="loss"${delayDisAttr}>
                     <span class="input-suffix">%</span>
                   </div>
                 </div>
               </div>
+              ${delayDisabled ? '<div class="input-hint warn">当前内核/TC 不支持 netem/HTB，延迟/抖动/丢包不可用；已禁用注入按钮。</div>' : ''}
               <div class="btn-row">
-                <button class="btn btn-warn" data-action="apply-delay">注入延迟</button>
+                <button class="btn btn-warn" data-action="apply-delay"${applyDelayAttr}>注入延迟</button>
                 <button class="btn btn-ghost" data-action="clear-delay">清除</button>
               </div>
             </div>
@@ -3962,8 +3999,8 @@ body.kb-open .container {
       return n;                                // 兜底: 已是 Mbps 数 (旧存量 cell 万一 select 缺失时)
     };
     return {
-      down: parse(downInp && downInp.value, downUnit),
-      up:   (state.uplinkSupported === false) ? 0 : parse(upInp && upInp.value, upUnit)
+      down: isDownlinkLimitSupported() ? parse(downInp && downInp.value, downUnit) : 0,
+      up:   (state.uplinkSupported === false || !isDownlinkLimitSupported()) ? 0 : parse(upInp && upInp.value, upUnit)
     };
   }
 
@@ -4915,6 +4952,7 @@ body.kb-open .container {
     if (mVal) mVal.textContent = '读取中';
     if (cVal) cVal.textContent = '读取中';
     try {
+      if (state.metricsApiUnavailable) throw new Error('metrics api unavailable');
       const m = await apiGet('/api/metrics');
       const age = Number(m.snapshot_age_ms || 0);
       const hit = Number(m.json_cache_hits || 0);
@@ -4922,11 +4960,36 @@ body.kb-open .container {
       if (mVal) mVal.textContent = age >= 1000 ? (age / 1000).toFixed(age < 10000 ? 1 : 0) + 's' : age + 'ms';
       if (mDesc) mDesc.textContent = 'snapshot=' + (m.snapshot_refresh_count || 0) + ' · cache ' + hit + '/' + miss + ' · fallback=' + (m.shell_fallback_count || 0) + ' · offload=' + (m.offload_check_count || 0);
     } catch (e) {
-      if (mVal) mVal.textContent = '失败';
-      if (mDesc) mDesc.textContent = 'metrics 读取失败: ' + (e.message || e);
+      const msg = e && e.message ? e.message : String(e);
+      if (/404|page not found|unavailable/i.test(msg)) {
+        state.metricsApiUnavailable = true;
+        if (!state.metricsApiWarned) { dbg('/api/metrics 不存在，设置页改用兼容显示'); state.metricsApiWarned = true; }
+        if (mVal) mVal.textContent = '兼容';
+        if (mDesc) mDesc.textContent = '旧后端未提供 /api/metrics，WebUI 已降级，不影响设备列表';
+      } else {
+        if (mVal) mVal.textContent = '失败';
+        if (mDesc) mDesc.textContent = 'metrics 读取失败: ' + msg;
+      }
     }
     try {
-      const c = await apiGet('/api/capabilities');
+      let c = null;
+      if (!state.capabilitiesApiUnavailable) {
+        try {
+          c = await apiGet('/api/capabilities');
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          if (/404|page not found/i.test(msg)) {
+            state.capabilitiesApiUnavailable = true;
+            if (!state.capabilitiesApiWarned) { dbg('/api/capabilities 不存在，设置页改读本地 capabilities.json'); state.capabilitiesApiWarned = true; }
+          } else {
+            throw e;
+          }
+        }
+      }
+      if (!c) {
+        const localCap = await readLocalCapabilitiesFile();
+        c = localCap ? { available: true, capabilities: localCap } : { available: false, error: '本地 capabilities.json 暂不存在' };
+      }
       if (c && c.available === false) {
         if (cVal) cVal.textContent = '未生成';
         if (cDesc) cDesc.textContent = c.error || 'capabilities.json 暂不存在，可重启模块或等待 watchdog 生成';

@@ -115,6 +115,17 @@ func actionDelaySet(hncDir string, p map[string]string) actionResp {
 		return actionResp{OK: false, Error: "bad params", Detail: "loss_pct out of range (0-100)"}
 	}
 
+	// hotfix16.9: fail fast when netem/HTB path is known unsupported.
+	// The current tc_manager netem implementation needs HTB leaf classes.
+	if delay > 0 || jitter > 0 || loss > 0 {
+		if supported, known := tcHTBSupported(hncDir); known && !supported {
+			return actionResp{OK: false, Error: "unsupported", Detail: "tc_htb=false; delay path requires HTB leaf classes"}
+		}
+		if supported, known := tcNetemSupported(hncDir); known && !supported {
+			return actionResp{OK: false, Error: "unsupported", Detail: "tc_netem=false; current kernel/TC does not support netem"}
+		}
+	}
+
 	// 需要 iface + mark_id — 从 device_detect.sh iface + rules.json 查
 	rc, out := runBin(hncDir, "device_detect.sh", "iface")
 	if rc != 0 {

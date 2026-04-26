@@ -307,18 +307,7 @@ func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool)
 
 // readUplinkCapability returns (supported, known). Unknown keeps legacy best-effort behavior.
 func readUplinkCapability(hncDir string) (bool, bool) {
-	b, err := os.ReadFile(filepath.Join(hncDir, "run", "capabilities.json"))
-	if err != nil {
-		return true, false
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return true, false
-	}
-	if v, ok := m["uplink_supported"].(bool); ok {
-		return v, true
-	}
-	return true, false
+	return readCapabilityBool(hncDir, "uplink_supported")
 }
 
 func numberStringPositive(s string) bool {
@@ -382,6 +371,12 @@ func actionRuleSet(hncDir string, p map[string]string) actionResp {
 	upMbps, err := rateToMbpsStr(rateUp)
 	if err != nil {
 		return actionResp{OK: false, Error: "bad params", Detail: "rate_up: " + err.Error()}
+	}
+
+	// hotfix16.9: capabilities.json is authoritative for unsupported HTB too.
+	// Do not call shell/tc paths that would block/timeout on ROMs where HTB probing failed.
+	if supported, known := tcHTBSupported(hncDir); known && !supported && (numberStringPositive(dnMbps) || numberStringPositive(upMbps)) {
+		return actionResp{OK: false, Error: "unsupported", Detail: "tc_htb=false; current kernel/TC does not support HTB downlink shaping"}
 	}
 
 	// hotfix16.5: capabilities.json is authoritative for unsupported uplink.

@@ -46,18 +46,40 @@ log_error() {
 
 # hotfix16.5: capability-aware uplink gate. If capability_probe already proved
 # IFB/mirred is unavailable, watchdog must not keep repairing ifb0/ingress.
-watchdog_cap_uplink_value() {
-    local cap="$RUN/capabilities.json"
+watchdog_cap_bool_value() {
+    local key=$1 cap="$RUN/capabilities.json"
     [ -f "$cap" ] || return 1
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*true' "$cap" 2>/dev/null; then
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*true" "$cap" 2>/dev/null; then
         echo true
         return 0
     fi
-    if grep -q '"uplink_supported"[[:space:]]*:[[:space:]]*false' "$cap" 2>/dev/null; then
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*false" "$cap" 2>/dev/null; then
         echo false
         return 0
     fi
     return 1
+}
+
+watchdog_cap_uplink_value() {
+    watchdog_cap_bool_value uplink_supported
+}
+
+watchdog_cap_false() {
+    [ "$(watchdog_cap_bool_value "$1" 2>/dev/null || echo unknown)" = "false" ]
+}
+
+watchdog_tc_core_supported() {
+    # Current HNC limit/netem restore path is HTB-root based. If tc_htb=false,
+    # watchdog must not keep trying init/restore loops. Unknown keeps legacy behavior.
+    ! watchdog_cap_false tc_htb
+}
+
+watchdog_mark_tc_unsupported_once() {
+    local kind=${1:-tc} once="$RUN/${kind}_unsupported_logged"
+    if [ ! -f "$once" ]; then
+        log "$kind unsupported by capabilities; skip tc init/restore health repair"
+        echo 1 > "$once" 2>/dev/null || true
+    fi
 }
 
 watchdog_mark_uplink_unsupported_once() {
@@ -167,7 +189,11 @@ check_health() {
     #   tc qdisc show 正常情况下永远 rc=0(即使 iface 不存在也返回空 + rc=0)
     #   所以这里只看内容。命令本身失败场景极少,不特殊处理
     if [ $rc -eq 0 ]; then
-        tc qdisc show dev "$iface" 2>/dev/null | grep "htb" | grep -q "root" || rc=1
+        if watchdog_tc_core_supported; then
+            tc qdisc show dev "$iface" 2>/dev/null | grep "htb" | grep -q "root" || rc=1
+        else
+            watchdog_mark_tc_unsupported_once tc_htb
+        fi
     fi
 
     # 2+3. iptables 链检查
@@ -241,6 +267,13 @@ full_restore() {
     fi
 
     sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
+    if ! watchdog_tc_core_supported; then
+        watchdog_mark_tc_unsupported_once tc_htb
+        _HEALTH_TS=0
+        _HEALTH_RC=0
+        log "RESTORE tc skipped: tc_htb=false; iptables restored only"
+        return 0
+    fi
     sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
     local tc_init_rc=$?
     # rc3.1.33 修 #1: 跟 do_full_init 对称, tc init 失败时不跑 restore + 不刷
@@ -585,18 +618,23 @@ do_full_init() {
     local iface=$1 ip=$2
     log "STATE PENDING -> ACTIVE:$iface (ip=$ip), running first-time init"
     sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
-    sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
-    local tc_init_rc=$?
-    # v5.0 alpha.4 hotfix1: 跟 full_restore 一致策略
-    # tc init 里 install_ingress_mirred 失败 (ColorOS tc 冷启动 FAILED) 会让
-    # init_tc rc != 0, 原逻辑 return 跳过 restore, 导致 restore 内部的 hotfix2
-    # 幂等 install_ingress_mirred 永远没机会跑, 上行限速永远失效。
-    # 新策略: 记 WARN 继续 restore, restore 里会重新尝试
-    if [ $tc_init_rc -ne 0 ]; then
-        log "do_full_init: tc init rc=$tc_init_rc, continuing to restore (hotfix1 fallback)"
+    if ! watchdog_tc_core_supported; then
+        watchdog_mark_tc_unsupported_once tc_htb
+        log "do_full_init: tc skipped because tc_htb=false; iptables only"
+    else
+        sh "$HNC_DIR/bin/tc_manager.sh" init "$iface" >> "$LOG" 2>&1
+        local tc_init_rc=$?
+        # v5.0 alpha.4 hotfix1: 跟 full_restore 一致策略
+        # tc init 里 install_ingress_mirred 失败 (ColorOS tc 冷启动 FAILED) 会让
+        # init_tc rc != 0, 原逻辑 return 跳过 restore, 导致 restore 内部的 hotfix2
+        # 幂等 install_ingress_mirred 永远没机会跑, 上行限速永远失效。
+        # 新策略: 记 WARN 继续 restore, restore 里会重新尝试
+        if [ $tc_init_rc -ne 0 ]; then
+            log "do_full_init: tc init rc=$tc_init_rc, continuing to restore (hotfix1 fallback)"
+        fi
+        sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+        sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
     fi
-    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
-    sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
     # 写 rules.json.hotspot_iface,给 WebUI 显示
     sh "$HNC_DIR/bin/json_set.sh" top hotspot_iface "$iface" >> "$LOG" 2>&1
     # 转移前必须先清健康检查缓存,不然下一轮 check_health 用旧数据
@@ -617,7 +655,11 @@ do_full_init() {
         case "$cur_state" in
             ACTIVE:*)
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WDG] delayed re-restore fired (+15s post-init) to refresh stale IPs" >> "$LOG"
-                sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+                if watchdog_tc_core_supported; then
+                    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+                else
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WDG] delayed re-restore skipped: tc_htb=false" >> "$LOG"
+                fi
                 ;;
         esac
     ) &
@@ -629,20 +671,25 @@ do_full_init() {
 do_migrate() {
     local old=$1 new=$2 new_ip=$3
     log "STATE ACTIVE:$old -> ACTIVE:$new (ip=$new_ip), migrating"
-    sh "$HNC_DIR/bin/tc_manager.sh" cleanup "$old" >> "$LOG" 2>&1
-    sh "$HNC_DIR/bin/tc_manager.sh" init "$new" >> "$LOG" 2>&1
-    local tc_init_rc=$?
-    # rc3.1.33 修 #1: 跟 do_full_init 对称, tc init 失败时回退到 PENDING.
-    # 之前继续写 ACTIVE:$new 但 tc 实际没装, watchdog 永远不会重 init →
-    # 伪 ACTIVE 状态卡死.
-    if [ $tc_init_rc -ne 0 ]; then
-        log_error "do_migrate: tc init failed on $new (rc=$tc_init_rc), reverting to PENDING"
-        echo "PENDING" > "$STATE_FILE"
-        _HEALTH_TS=0
-        return $tc_init_rc
+    if watchdog_tc_core_supported; then
+        sh "$HNC_DIR/bin/tc_manager.sh" cleanup "$old" >> "$LOG" 2>&1
+        sh "$HNC_DIR/bin/tc_manager.sh" init "$new" >> "$LOG" 2>&1
+        local tc_init_rc=$?
+        # rc3.1.33 修 #1: 跟 do_full_init 对称, tc init 失败时回退到 PENDING.
+        # 之前继续写 ACTIVE:$new 但 tc 实际没装, watchdog 永远不会重 init →
+        # 伪 ACTIVE 状态卡死.
+        if [ $tc_init_rc -ne 0 ]; then
+            log_error "do_migrate: tc init failed on $new (rc=$tc_init_rc), reverting to PENDING"
+            echo "PENDING" > "$STATE_FILE"
+            _HEALTH_TS=0
+            return $tc_init_rc
+        fi
+        sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+        sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
+    else
+        watchdog_mark_tc_unsupported_once tc_htb
+        log "do_migrate: tc skipped because tc_htb=false"
     fi
-    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
-    sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1
     sh "$HNC_DIR/bin/json_set.sh" top hotspot_iface "$new" >> "$LOG" 2>&1
     # 杀 httpd 让下轮 ensure_httpd_running 拿新 IP 重绑
     local wpid; wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
