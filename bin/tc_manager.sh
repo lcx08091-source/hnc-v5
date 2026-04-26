@@ -777,6 +777,34 @@ install_ingress_mirred() {
     return 0
 }
 
+# hotfix17.1: Xiaomi/MIUI mq root safe HTB attach.
+# Keep ROM mq root intact and try multiple parent/op syntaxes.
+try_mq_child_htb() {
+    local iface=$1
+    local parent op out last_out
+    [ -n "$iface" ] || return 1
+    for parent in 0:1 :1; do
+        for op in replace add; do
+            out=$(tc qdisc "$op" dev "$iface" parent "$parent" handle 1: htb default 9999 r2q 10 2>&1)
+            if [ -z "$out" ]; then
+                log "init_tc: mq child htb installed on $iface parent $parent via qdisc $op"
+                echo "$iface parent=$parent op=$op" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
+                return 0
+            fi
+            if echo "$out" | grep -qE "File exists|Exclusivity flag on"; then
+                if tc qdisc show dev "$iface" 2>/dev/null | grep -q "^qdisc htb 1:"; then
+                    log "init_tc: mq child htb already present on $iface parent $parent"
+                    echo "$iface parent=$parent reused=1" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+            last_out=$out
+        done
+    done
+    log_error "init_tc: mq child htb fallback failed on $iface: $last_out"
+    return 1
+}
+
 # ═══════════════════════════════════════════════════════════════
 # 初始化 TC 基础结构
 # ═══════════════════════════════════════════════════════════════
@@ -837,6 +865,9 @@ init_tc() {
             ;;
         "")
             ;;
+        *"qdisc mq "*root*)
+            log "init_tc: detected mq root on $iface; preserving ROM mq root and trying child HTB fallback"
+            ;;
         *)
             log "init_tc: replacing incompatible root qdisc on $iface: $_existing_root_line"
             tc qdisc del dev "$iface" root 2>/dev/null || true
@@ -854,8 +885,17 @@ init_tc() {
         # 生产路径: 捕获 stderr + 重试 3 次
         _htb_add_ok=0
         _htb_retry=0
-        while [ $_htb_retry -lt 3 ]; do
-            _htb_out=$(tc qdisc add dev "$iface" root handle 1: htb default 9999 r2q 10 2>&1)
+
+        # hotfix17.1: for mq root Wi-Fi AP interfaces, try child HTB first and
+        # avoid destructive root deletion/replacement.
+        if echo "$_existing_root_line" | grep -q "qdisc mq"; then
+            if try_mq_child_htb "$iface"; then
+                _htb_add_ok=1
+            fi
+        fi
+
+        while [ $_htb_add_ok -ne 1 ] && [ $_htb_retry -lt 3 ]; do
+            _htb_out=$(tc qdisc replace dev "$iface" root handle 1: htb default 9999 r2q 10 2>&1)
             if [ -z "$_htb_out" ]; then
                 _htb_add_ok=1
                 _htb_added_by_hnc=1
@@ -871,14 +911,9 @@ init_tc() {
             # hotfix16.2: fixed mq root fallback. Some ColorOS builds keep qdisc mq as an immutable root.
             # Attach HNC handle 1: under mq child :1 so existing class/filter code can work.
             if echo "$_existing_root_line" | grep -q "qdisc mq"; then
-                _mq_child_out=$(tc qdisc replace dev "$iface" parent :1 handle 1: htb default 9999 r2q 10 2>&1)
-                if [ -z "$_mq_child_out" ]; then
-                    log "init_tc: mq child htb handle 1: installed on $iface parent :1"
+                if try_mq_child_htb "$iface"; then
                     _htb_add_ok=1
-                    echo "$iface" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
                     break
-                else
-                    log_error "init_tc: mq child htb fallback failed on $iface: $_mq_child_out"
                 fi
             fi
 
@@ -892,8 +927,11 @@ init_tc() {
                 fi
             fi
             log_error "init_tc: root htb add failed (attempt $((_htb_retry+1))/3) on $iface: $_htb_out"
-            # 冷启时序问题 retry 前 del 一次 (可能上次 add 部分成功了残留)
-            tc qdisc del dev "$iface" root 2>/dev/null || true
+            # 冷启时序问题 retry 前 del 一次 (可能上次 add 部分成功了残留).
+            # hotfix17.1: never delete ROM mq root on Wi-Fi AP interfaces.
+            if ! echo "$_existing_root_line" | grep -q "qdisc mq"; then
+                tc qdisc del dev "$iface" root 2>/dev/null || true
+            fi
             sleep 1
             _htb_retry=$((_htb_retry + 1))
         done
@@ -1580,3 +1618,4 @@ case "$1" in
         echo "  iptables -t mangle -L HNC_MARK -nv"
         exit 1 ;;
 esac
+

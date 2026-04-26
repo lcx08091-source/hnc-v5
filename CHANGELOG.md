@@ -1,3 +1,11 @@
+# v5.1.0-rc1-hotfix17.1
+
+- 新增 `bin/capability_probe.sh`：root/dummy 沙盒探测 TC 能力，生成 `run/capabilities.json`。
+- 小米10/MIUI14 root 探测确认：系统 tc 可用，HTB/netem 在 dummy 上可用；下行与延迟不应因旧探测误判被永久禁用。
+- 修复 `tc_manager.sh` 对 `qdisc mq root` 热点接口的处理：保留 ROM mq root，优先尝试在 mq 子队列上挂载 HTB，不再先删除 root mq。
+- mq 子队列 fallback 同时尝试 `parent 0:1` / `parent :1` 与 `replace` / `add`，兼容旧 Android iproute2 语法差异。
+- 上行仍按能力矩阵处理：IFB/mirred/police 不可用时继续禁用上行限速。
+
 
 ## v5.1.0-rc1-hotfix16.9
 

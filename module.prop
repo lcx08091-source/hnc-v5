@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix17.0
-versionCode=509170
+version=v5.1.0-rc1-hotfix17.1
+versionCode=509171
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.0 · MIUI14 tc capability-gated backend · 修复 delay 0ms · IFB 不可用时 egress-only 延迟 / downlink-only 限速 · uplink_unsupported 降级标记 · capability_probe dummy 探测 · WebUI partial 状态显示 · tc capability dummy sandbox probe · 细分 HTB/TBF/netem/police/mirred 能力 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.1 · MIUI14 tc capability-gated backend · 修复 delay 0ms · IFB 不可用时 egress-only 延迟 / downlink-only 限速 · uplink_unsupported 降级标记 · capability_probe dummy 探测 · WebUI partial 状态显示 · tc_htb/tc_netem 不可用时禁用限速/延迟 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
