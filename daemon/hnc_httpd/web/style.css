@@ -292,6 +292,11 @@ main {
   outline: none; border-color: var(--sys-blue);
   background: rgba(0,122,255,0.06);
 }
+.act-rate-row input:disabled,
+.act-rate-row select:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
 .act-delay-grid {
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
 }
@@ -433,6 +438,7 @@ main {
   box-shadow: var(--glass-sh-1);
 }
 .device-filter-note { font-size: 11px; color: var(--text-3); }
+.filter-controls { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .device-filter-select {
   appearance: none;
   -webkit-appearance: none;
@@ -445,3 +451,11 @@ main {
   font-weight: 650;
   outline: none;
 }
+.freshness-line {
+  margin: -2px 16px 10px;
+  color: var(--text-3);
+  font-size: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.freshness-line.stale { color: var(--sys-orange); }

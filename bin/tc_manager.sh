@@ -350,33 +350,24 @@ ensure_device_class() {
         fi
     fi
 
-    # 3. leaf netem: 已存在优先 change, 不存在才 add。change 失败时不删 class。
-    # 真正设置延迟的 set_netem_only 会在后续执行; 这里主要保证 leaf 存在。
-    local netem_args="delay 0ms"
-    if [ -n "$saved_delay" ]; then
-        netem_args="delay $saved_delay"
-        [ -n "$saved_jitter" ] && netem_args="$netem_args $saved_jitter"
-    fi
-    # shellcheck disable=SC2086
+    # 3. leaf netem: 只保证 leaf 存在；已存在时绝不改写参数。
+    # hotfix16.4: MIUI14 上 set_delay 的 ifb0 路径可能失败。旧逻辑在 ensure 阶段
+    # 会把已存在 leaf change 成 delay 0ms 占位，随后 ifb0 失败短路，真实 delay 没机会写入。
+    # 现在已存在 leaf 时保持原样；缺失时才创建 0ms placeholder。
     if leaf_has_netem "$dev" "$class_id"; then
-        if tc qdisc change dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
-            netem $netem_args limit 100 2>/dev/null; then
-            log "  Updated leaf netem ${leaf_handle}: ($netem_args)"
-        else
-            log "  WARN: leaf netem change failed on $dev 1:$class_id; keeping existing leaf"
-        fi
+        : # keep existing leaf as-is; set_netem_only will update real parameters
     else
-        # shellcheck disable=SC2086
         if tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
-            netem $netem_args limit 100 2>/dev/null; then
-            log "  Created leaf netem ${leaf_handle}: ($netem_args)"
+            netem delay 0ms limit 100 2>/dev/null; then
+            log "  Created leaf netem ${leaf_handle}: (delay 0ms placeholder)"
         else
             log_error "ensure_device_class: leaf netem add failed dev=$dev class=1:$class_id"
             return 1
         fi
     fi
 
-    # 4. 创建 u32 filter（若有 IP）
+    # 4. 创建 u32 filter
+（若有 IP）
     local u32_ok=0
     if [ -n "$ip" ]; then
         if [ "$direction" = "src" ]; then
@@ -673,8 +664,8 @@ install_ingress_mirred() {
             # netlink 路径成功, 不再跑 shell tc, 不启动异步 worker
             return 0
             ;;
-        1|2)
-            # iface/ifb 硬错误, shell 路径也会失败, 直接返
+        1)
+            # iface missing: shell path will also fail.
             return 1
             ;;
         *)
@@ -781,21 +772,32 @@ init_tc() {
     # 下行限速在那个窗口里飞。
     # 改为: 先检测, 是 htb root 就保留 (下面 add 会因 File exists 失败, 走复用
     # 分支); 不是 htb (比如 noqueue, 或 pfifo) 才删重建。
-    _existing_root=$(tc qdisc show dev "$iface" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
-    case "$_existing_root" in
-        htb|hfsc|cbq|fq|fq_codel)
-            log "init_tc: preserving existing root qdisc ($_existing_root) on $iface"
+    # hotfix13: only reuse HNC-compatible root qdisc (htb handle 1:).
+    # Other roots such as fq/fq_codel/cake/hfsc are not compatible with HNC classes
+    # under 1:, so delete/rebuild instead of falsely preserving them.
+    _htb_added_by_hnc=0
+    _root_htb_ok=0
+    _existing_root_line=$(tc qdisc show dev "$iface" 2>/dev/null | grep " root" | head -1)
+    case "$_existing_root_line" in
+        *"qdisc htb 1:"*root*)
+            log "init_tc: reusing existing HNC-compatible root qdisc on $iface: $_existing_root_line"
+            _root_htb_ok=1
+            ;;
+        "")
             ;;
         *)
+            log "init_tc: replacing incompatible root qdisc on $iface: $_existing_root_line"
             tc qdisc del dev "$iface" root 2>/dev/null || true
             ;;
     esac
-
-    if [ -n "$HNC_TEST_MODE" ]; then
+    if [ "$_root_htb_ok" = "1" ]; then
+        _htb_add_ok=1
+    elif [ -n "$HNC_TEST_MODE" ]; then
         # 测试路径: 单次 add, 保持旧行为方便 mock 断言
         tc qdisc add dev "$iface" root handle 1: htb default 9999 r2q 10 2>/dev/null \
             || { log_error "init_tc: failed to add root htb on $iface (test mode)"; return 1; }
         _htb_add_ok=1     # v5.0 alpha.2 P0-0: 测试模式下也要设, 避免后续 return 0
+        _htb_added_by_hnc=1
     else
         # 生产路径: 捕获 stderr + 重试 3 次
         _htb_add_ok=0
@@ -804,6 +806,7 @@ init_tc() {
             _htb_out=$(tc qdisc add dev "$iface" root handle 1: htb default 9999 r2q 10 2>&1)
             if [ -z "$_htb_out" ]; then
                 _htb_add_ok=1
+                _htb_added_by_hnc=1
                 [ $_htb_retry -gt 0 ] && log "init_tc: root htb add succeeded on retry #$_htb_retry"
                 break
             fi
@@ -813,9 +816,23 @@ init_tc() {
             #   ColorOS 定制 tc 报: tc: invalid argument 'root' to 'command'
             # 此时检查现有 root qdisc 是否为 htb, 是则复用 (HNC 的 class 1:80
             # 会挂到这个已有 htb 下, set_limit 正常工作). 不是则按原逻辑重试.
+            # hotfix16.2: fixed mq root fallback. Some ColorOS builds keep qdisc mq as an immutable root.
+            # Attach HNC handle 1: under mq child :1 so existing class/filter code can work.
+            if echo "$_existing_root_line" | grep -q "qdisc mq"; then
+                _mq_child_out=$(tc qdisc replace dev "$iface" parent :1 handle 1: htb default 9999 r2q 10 2>&1)
+                if [ -z "$_mq_child_out" ]; then
+                    log "init_tc: mq child htb handle 1: installed on $iface parent :1"
+                    _htb_add_ok=1
+                    echo "$iface" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
+                    break
+                else
+                    log_error "init_tc: mq child htb fallback failed on $iface: $_mq_child_out"
+                fi
+            fi
+
             if echo "$_htb_out" | grep -qE "File exists|invalid argument 'root'"; then
                 _existing_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null | \
-                                   awk '/^qdisc htb / && $4 == "root"' | head -1)
+                                   grep "^qdisc htb 1:" | grep "root" | head -1)
                 if [ -n "$_existing_qdisc" ]; then
                     log "init_tc: root htb already installed by ROM on $iface, reusing: $_existing_qdisc"
                     _htb_add_ok=1
@@ -851,94 +868,40 @@ init_tc() {
         return 0
     fi
 
+    if [ "$_htb_added_by_hnc" = "1" ]; then
+        echo "$iface" > "$HNC_DIR/run/tc_root_owned_$iface" 2>/dev/null || true
+    fi
     tc class add dev "$iface" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
     tc class add dev "$iface" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
     tc qdisc add dev "$iface" parent 1:9999 handle 9999: fq_codel 2>/dev/null \
         || tc qdisc add dev "$iface" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
 
-    # ── Ingress → IFB 重定向（上传：设备→热点）──────────────
-    # v3.4.1：先检测 clsact 是否已存在。Android 内核常常在 wlan2 上预装
-    # `clsact ffff: parent ffff:fff1`,与我们要 add 的 `ingress` qdisc
-    # 共用 handle ffff: 但类型不同。直接 add 会报 RTNETLINK File exists
-    # 然后后续 tc filter add 全部失败。检测到 clsact 时跳过 ingress add,
-    # 直接复用 clsact 的 ingress hook 挂 filter。
-    #
-    # v3.4.11 P0 修复:之前的代码用 `tc filter add dev <iface> parent ffff: ...`
-    # 这是老 ingress qdisc 的语法,在 clsact 上不工作!
-    # clsact 提供两个独立的 hook:
-    #   ffff:fff2 = ingress(包从外面进入,我们要的)
-    #   ffff:fff3 = egress(包从主机发出)
-    # 在 clsact 上必须用 `parent ffff:fff2`,在老 ingress 上才能用 `parent ffff:`。
-    # 之前的代码在 clsact 路径下 silent 失败(2>/dev/null),所有上传限速都没生效!
-    local has_clsact=0
-    tc qdisc show dev "$iface" 2>/dev/null | grep -q "qdisc clsact ffff:" && has_clsact=1
-
-    local ingress_parent
-    if [ "$has_clsact" = "1" ]; then
-        log "init_tc: clsact ffff: already present, reusing ingress hook (parent ffff:fff2)"
-        ingress_parent="ffff:fff2"
+    if uplink_supported_runtime; then
+        # hotfix13: ingress mirred is installed only through install_ingress_mirred().
+        # The old inline u32/matchall block could duplicate or delete the pref-1
+        # redirect installed by the netlink/shell compatibility path.
+        install_ingress_mirred "$iface" || log_error "init_tc: ingress mirred ensure failed on $iface"
+        # ── IFB0 Egress HTB（上传整形）──────────────────────────
+        # v5.0 alpha.3 P1: 同 wlan2, 保留已有 htb qdisc, 避免清掉 class 1:XX
+        _ifb_root=$(tc qdisc show dev "$IFB_IFACE" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+        case "$_ifb_root" in
+            htb)
+                log "init_tc: preserving existing ifb0 htb root"
+                ;;
+            *)
+                tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
+                tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
+                ;;
+        esac
+        # class 1:1 / 1:9999 add 是幂等的 (已存在会 silent fail, 无害)
+        tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+        tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
+        tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null \
+            || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
     else
-        tc qdisc del dev "$iface" ingress 2>/dev/null || true
-        tc qdisc add dev "$iface" handle ffff: ingress 2>/dev/null \
-            || log "init_tc: ingress qdisc add failed (may already exist)"
-        ingress_parent="ffff:"
+        log_uplink_unsupported_once "init_tc"
+        log "init_tc: skip IFB0 root/classes because uplink is unsupported"
     fi
-
-    # 删旧 filter(防止重复 init 累积)
-    # rc3.1.29: 不再 silent 吞 add 错误
-    # (Ling 真机诊断发现 tc filter show dev wlan2 parent ffff:fff2 里
-    #  pref 2 / pref 3 被 realme/oplus-netd 预装 BPF tether_upstream4/6_ether 占,
-    #  pref 49152 有 oplus-netd redirect→ifb1 stolen.
-    #  我们的 prio 1/2 u32 add 看起来静默失败了 (filter list 里看不到),
-    #  先把 2>/dev/null 去掉让真实 errno 进 tc.log 再判)
-    tc filter del dev "$iface" parent "$ingress_parent" prio 1 2>/dev/null || true
-    tc filter del dev "$iface" parent "$ingress_parent" prio 2 2>/dev/null || true
-
-    # v4 mirred: 必须成功, 否则上传全失控
-    local ing_v4_out
-    ing_v4_out=$(tc filter add dev "$iface" parent "$ingress_parent" protocol ip prio 1 u32 \
-        match u32 0 0 action mirred egress redirect dev "$IFB_IFACE" 2>&1)
-    if [ -z "$ing_v4_out" ]; then
-        log "init_tc: ingress v4 mirred filter added on $ingress_parent prio 1"
-    else
-        log_error "init_tc: ingress v4 mirred filter add FAILED on $ingress_parent prio 1: $ing_v4_out"
-        # v4 失败时, 试 prio 10 看是不是 prio 冲突
-        ing_v4_out=$(tc filter add dev "$iface" parent "$ingress_parent" protocol ip prio 10 u32 \
-            match u32 0 0 action mirred egress redirect dev "$IFB_IFACE" 2>&1)
-        if [ -z "$ing_v4_out" ]; then
-            log "init_tc: ingress v4 mirred filter added on $ingress_parent prio 10 (fallback)"
-        else
-            log_error "init_tc: ingress v4 mirred filter add FAILED on prio 10 too: $ing_v4_out (上传限速彻底失效!)"
-        fi
-    fi
-
-    # v6 mirred: best effort
-    local ing_v6_out
-    ing_v6_out=$(tc filter add dev "$iface" parent "$ingress_parent" protocol ipv6 prio 2 u32 \
-        match u32 0 0 action mirred egress redirect dev "$IFB_IFACE" 2>&1)
-    if [ -z "$ing_v6_out" ]; then
-        log "init_tc: ingress v6 mirred filter added on $ingress_parent prio 2"
-    else
-        log "init_tc: ingress v6 mirred filter add warn on $ingress_parent prio 2: $ing_v6_out (ipv6 best-effort)"
-    fi
-
-    # ── IFB0 Egress HTB（上传整形）──────────────────────────
-    # v5.0 alpha.3 P1: 同 wlan2, 保留已有 htb qdisc, 避免清掉 class 1:XX
-    _ifb_root=$(tc qdisc show dev "$IFB_IFACE" 2>/dev/null | awk '$4 == "root" {print $2; exit}')
-    case "$_ifb_root" in
-        htb)
-            log "init_tc: preserving existing ifb0 htb root"
-            ;;
-        *)
-            tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
-            tc qdisc add dev "$IFB_IFACE" root handle 1: htb default 9999 r2q 10 2>/dev/null
-            ;;
-    esac
-    # class 1:1 / 1:9999 add 是幂等的 (已存在会 silent fail, 无害)
-    tc class add dev "$IFB_IFACE" parent 1:  classid 1:1    htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
-    tc class add dev "$IFB_IFACE" parent 1:1 classid 1:9999 htb rate "$DEFAULT_RATE" ceil "$DEFAULT_RATE" burst 200k cburst 200k 2>/dev/null
-    tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: fq_codel 2>/dev/null \
-        || tc qdisc add dev "$IFB_IFACE" parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
 
     log "=== TC init OK ==="
 }
@@ -979,18 +942,21 @@ ensure_ifb_root_v1() {
 ensure_ingress_mirred_v1() {
     local iface=$1
     [ -z "$iface" ] && return 1
-    if tc filter show dev "$iface" ingress 2>/dev/null | grep -q "pref 1.*matchall"; then
+    if ! uplink_supported_runtime; then
+        log_uplink_unsupported_once "ensure_ingress_mirred_v1"
         return 0
     fi
-    log "ensure_ingress_mirred_v1: pref 1 missing on $iface, reinstalling"
-    tc qdisc show dev "$iface" 2>/dev/null | grep -qE "clsact ffff:|ingress " \
-        || tc qdisc add dev "$iface" clsact 2>/dev/null
-    tc filter del dev "$iface" ingress pref 1 2>/dev/null
-    tc filter add dev "$iface" ingress prio 1 protocol all matchall \
-        action mirred egress redirect dev "$IFB_IFACE" 2>/dev/null \
-        || { log_error "ensure_ingress_mirred_v1: tc filter add FAILED"; return 1; }
-    log "ensure_ingress_mirred_v1: reinstalled OK"
-    return 0
+    # hotfix13: use the unified netlink/shell fallback path.
+    # Accept matchall, u32 and parent ffff: variants instead of only pref-1 matchall.
+    if tc filter show dev "$iface" ingress 2>/dev/null | grep -q "mirred.*redirect dev $IFB_IFACE"; then
+        return 0
+    fi
+    if tc filter show dev "$iface" parent ffff: 2>/dev/null | grep -q "mirred.*redirect dev $IFB_IFACE"; then
+        return 0
+    fi
+    log "ensure_ingress_mirred_v1: mirred missing on $iface, reinstalling via unified path"
+    install_ingress_mirred "$iface"
+    return $?
 }
 
 set_limit() {
@@ -1022,13 +988,41 @@ set_limit() {
     # best-effort clear an existing ifb class if it is present, but never fail the
     # whole downlink rule just because IFB is unavailable.
     if gt0 "$up_mbps"; then
-        ensure_ifb_root_v1 || return 1
-        ensure_ingress_mirred_v1 "$iface" || return 1
-        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
+        if ! uplink_supported_runtime; then
+            log_uplink_unsupported_once "set_limit"
+            log "  Ingress(ifb0) skipped: uplink unsupported; keeping downlink only"
+            echo "LIMIT_APPLY_MODE=down_only"
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            return 8
+        fi
+        if ! ensure_ifb_root_v1; then
+            log_error "set_limit: ensure_ifb_root_v1 failed, keeping downlink only"
+            echo "LIMIT_APPLY_MODE=down_only"
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            return 8
+        fi
+        if ! ensure_ingress_mirred_v1 "$iface"; then
+            log_error "set_limit: ensure_ingress_mirred_v1 failed, keeping downlink only"
+            echo "LIMIT_APPLY_MODE=down_only"
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            return 8
+        fi
+        if ! ensure_device_class "$IFB_IFACE" "$class_id" "$ip"; then
+            log_error "set_limit: ensure_device_class ifb0 failed, keeping downlink only"
+            echo "LIMIT_APPLY_MODE=down_only"
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            return 8
+        fi
         local up_rate;  up_rate=$(mbps_to_rate "$up_mbps")
         local up_burst; up_burst=$(burst_for_rate "$up_mbps")
-        set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst" || { log_error "set_limit: ingress rate set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
+        if ! set_rate_only "$IFB_IFACE" "$class_id" "$up_rate" "$up_burst"; then
+            log_error "set_limit: ingress rate set failed, keeping downlink only"
+            echo "LIMIT_APPLY_MODE=down_only"
+            sh "$HNC_DIR/bin/v6_sync.sh" sync >> "$LOG" 2>&1 || true
+            return 8
+        fi
         log "  Ingress(ifb0) 1:$class_id @ $up_rate burst $up_burst"
+        echo "LIMIT_APPLY_MODE=full"
     else
         if class_exists "$IFB_IFACE" "$class_id"; then
             set_rate_only "$IFB_IFACE" "$class_id" "$DEFAULT_RATE" 200k || log_error "set_limit: ingress rate clear best-effort failed dev=$IFB_IFACE class=1:$class_id"
@@ -1036,6 +1030,7 @@ set_limit() {
         else
             log "  Ingress(ifb0) skipped: up=0 and no existing class 1:$class_id"
         fi
+        echo "LIMIT_APPLY_MODE=full"
     fi
 
     # v3.4.0：触发 v6 sync，让 IPv6 流量也能被这条限速规则覆盖
@@ -1092,14 +1087,43 @@ set_delay() {
     # 分支被当成"关闭延迟",把 netem 重置为 0 → loss 完全丢失。
     # 修复:入口判断改为 delay/jitter/loss 任一 > 0 都进入"启用"分支
     if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
-        # 双向都建 class（若尚未建立）
-        ensure_device_class "$iface"     "$class_id" "$ip" || return 1
-        ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || return 1
-        # v3.8.5: delay 除以 2 分给两方向(egress=down, ingress=up)
-        # jitter/loss 依然是每方向原值(见上面函数注释说明)
-        set_netem_only "$iface"     "$class_id" "$delay_eg" "$jitter_ms" "$loss" || { log_error "set_delay: egress netem set failed dev=$iface class=1:$class_id"; return 1; }
-        set_netem_only "$IFB_IFACE" "$class_id" "$delay_ig" "$jitter_ms" "$loss" || { log_error "set_delay: ingress netem set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
-        log "  Netem applied: RTT ${delay_ms}ms (eg=${delay_eg}ms + ig=${delay_ig}ms) jitter=${jitter_ms}ms loss=${loss}%"
+        # 先确保下行/egress class；这是 MIUI14 ifb 不可用时必须保留的最小可用路径。
+        ensure_device_class "$iface" "$class_id" "$ip" || return 1
+
+        # IFB/uplink 是 best-effort。失败不再短路整个 delay，否则 wlan1 会停留在 0ms placeholder。
+        local ifb_ok=1
+        if ! uplink_supported_runtime; then
+            ifb_ok=0
+            log_uplink_unsupported_once "set_delay"
+            log "  set_delay: uplink unsupported, skip ifb0 path"
+        else
+            ensure_device_class "$IFB_IFACE" "$class_id" "$ip" || ifb_ok=0
+        fi
+
+        # IFB 可用: 用户输入 delay_ms 是 RTT, 平分到两个方向。
+        # IFB 不可用: 把完整 delay_ms 打到 wlan egress, 让用户体感/ping 更接近期望值。
+        local eg_apply ig_apply
+        if [ "$ifb_ok" = "1" ]; then
+            eg_apply=$delay_eg
+            ig_apply=$delay_ig
+        else
+            eg_apply=$delay_ms
+            ig_apply=0
+        fi
+
+        set_netem_only "$iface" "$class_id" "$eg_apply" "$jitter_ms" "$loss" \
+            || { log_error "set_delay: egress netem set failed dev=$iface class=1:$class_id"; return 1; }
+
+        if [ "$ifb_ok" = "1" ]; then
+            set_netem_only "$IFB_IFACE" "$class_id" "$ig_apply" "$jitter_ms" "$loss" \
+                || { log_error "set_delay: ingress netem set failed dev=$IFB_IFACE class=1:$class_id"; return 1; }
+            echo "DELAY_APPLY_MODE=full"
+            log "  Netem applied (full duplex): RTT=${delay_ms}ms (eg=${eg_apply}ms + ig=${ig_apply}ms) jitter=${jitter_ms}ms loss=${loss}%"
+        else
+            echo "DELAY_APPLY_MODE=egress_only"
+            log "  Netem applied EGRESS-ONLY: ${eg_apply}ms on $iface (IFB unavailable, jitter=${jitter_ms}ms loss=${loss}%)"
+            return 0
+        fi
     else
         # 关延迟：把 leaf netem 重置为无延迟，class 及 rate 不动
         if class_exists "$iface" "$class_id"; then
@@ -1114,8 +1138,20 @@ set_delay() {
 }
 
 set_all() {
-    set_limit "$1" "$2" "$3" "$4" "${8:-}" || return $?
-    set_delay "$1" "$2" "$5" "${6:-0}" "${7:-0}" "${8:-}" || return $?
+    # hotfix16.4: set_limit / set_delay may return 8 for partial success
+    # (downlink/egress applied, IFB uplink unavailable). Do not abort restore/apply in that case.
+    local rc_limit rc_delay partial=0
+    set_limit "$1" "$2" "$3" "$4" "${8:-}"
+    rc_limit=$?
+    [ "$rc_limit" = "8" ] && partial=1
+    [ "$rc_limit" != "0" ] && [ "$rc_limit" != "8" ] && return "$rc_limit"
+
+    set_delay "$1" "$2" "$5" "${6:-0}" "${7:-0}" "${8:-}"
+    rc_delay=$?
+    [ "$rc_delay" = "8" ] && partial=1
+    [ "$rc_delay" != "0" ] && [ "$rc_delay" != "8" ] && return "$rc_delay"
+
+    [ "$partial" = "1" ] && return 8
     return 0
 }
 
@@ -1375,8 +1411,16 @@ show_status() {
 
 cleanup_tc() {
     local iface=${1:-$(sh "$HNC_DIR/bin/device_detect.sh" iface)}
-    tc qdisc del dev "$iface" root    2>/dev/null || true
+    # hotfix13: delete root qdisc only when this boot actually created it.
+    # Avoid removing ROM/other-module qdisc roots that HNC merely reused.
+    if [ -n "$iface" ] && [ -f "$HNC_DIR/run/tc_root_owned_$iface" ]; then
+        tc qdisc del dev "$iface" root 2>/dev/null || true
+        rm -f "$HNC_DIR/run/tc_root_owned_$iface" 2>/dev/null || true
+    else
+        log "cleanup_tc: preserving root qdisc on $iface (not owned by HNC)"
+    fi
     tc qdisc del dev "$iface" ingress 2>/dev/null || true
+    tc qdisc del dev "$iface" clsact 2>/dev/null || true
     tc qdisc del dev "$IFB_IFACE" root 2>/dev/null || true
     ip link set dev "$IFB_IFACE" down 2>/dev/null || true
     ip link del "$IFB_IFACE" 2>/dev/null || true
@@ -1388,12 +1432,6 @@ cleanup_tc() {
 #   - 全局写(init / cleanup / restore): gate 锁
 #   - 单设备写(set_limit / set_delay / set_all / remove): 【不加锁】
 #     假设调用方(WebUI / httpd)已经持有同 MAC 的 iptables per-MAC 锁。
-#     理由: 所有现有调用路径都是 `iptables_manager.sh mark <ip> <mac> <mid>`
-#     在前,`tc_manager.sh set_limit ... <mid> ...` 在后,前者已经持 per-MAC
-#     锁,锁范围覆盖到 set_limit 返回。tc 参数只有 mark_id 没有 MAC,
-#     在这一层加独立锁反而会引入锁空间不一致风险(MAC vs mark_id)。
-#     如果未来 tc_manager 出现独立调用路径(CLI 直接调不经过 iptables),
-#     需要调用方显式获取 hnc_lock.sh 的 per-MAC 锁再进来。
 #   - 只读(status): 不加锁
 . "$HNC_DIR/bin/hnc_lock.sh" 2>/dev/null || {
     gate_lock()   { return 0; }
@@ -1401,7 +1439,6 @@ cleanup_tc() {
 }
 
 case "$1" in
-    # 全局 gate 锁
     init)
         gate_lock || exit 11
         init_tc "$2"
@@ -1420,25 +1457,25 @@ case "$1" in
         rc=$?
         gate_unlock
         exit $rc ;;
+    ensure_ingress)
+        ensure_ingress_mirred_v1 "$2"
+        exit $? ;;
 
-    # 单设备写,依赖上层 per-MAC 锁
     set_limit)  set_limit "$2" "$3" "$4" "$5" "$6" ;;
     set_delay)  set_delay "$2" "$3" "$4" "$5" "$6" "$7" ;;
     set_all)    set_all   "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
     remove)     remove_device "$2" "$3" ;;
 
-    # 只读
     status)     show_status "$2" ;;
     *)
-        echo "Usage: tc_manager.sh {init|set_limit|set_delay|set_all|remove|restore|status|cleanup}"
+        echo "Usage: tc_manager.sh {init|set_limit|set_delay|set_all|remove|restore|ensure_ingress|status|cleanup}"
         echo ""
-        echo "v3.9.2 Patch 0: init/cleanup/restore 由 gate 锁保护;"
-        echo "                单设备操作依赖调用方持有 iptables 的 per-MAC 锁"
+        echo "v5.1.0-rc1-hotfix13: unified ingress mirred path; root qdisc ownership-aware cleanup"
         echo ""
         echo "验证限速命令："
         echo "  tc qdisc show dev \$IFACE"
         echo "  tc class show dev \$IFACE"
-        echo "  tc filter show dev \$IFACE"
+        echo "  tc filter show dev \$IFACE ingress"
         echo "  tc filter show dev ifb0"
         echo "  tc -s class show dev ifb0      # 查看上传流量字节数"
         echo "  iptables -t mangle -L HNC_MARK -nv"

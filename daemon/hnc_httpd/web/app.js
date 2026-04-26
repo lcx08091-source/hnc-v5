@@ -36,6 +36,12 @@ var statsRange = 'today';
 var statsData = { buckets: [] };
 var devicesData = [];
 var deviceFilterMode = localStorage.getItem('hnc_remote_device_filter') || 'online_only';
+var remoteRefreshMode = localStorage.getItem('hnc_remote_refresh_mode') || 'balanced';
+var remoteSnapshotAgeMs = 0;
+var remoteSnapshotStale = false;
+var hotspotActive = false;
+var remoteCapabilities = null;
+var remoteUplinkSupported = null;
 
 // UI sync/perf hotfix: avoid overlapping polls and stale slow responses.
 // Mobile browsers may take >5s on bad links; without this, old /api/devices
@@ -91,6 +97,39 @@ function deviceListSignature(list) {
 function deviceMacSignature(list) {
   return (list || []).map(function(d){ return d && d.mac || ''; }).sort().join('|');
 }
+function fetchLiveState() {
+  return fetchWithTimeout('/api/live', { cache: 'no-store', credentials: 'same-origin' }, 5000)
+    .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .catch(function(){ return null; });
+}
+
+function applyRemoteCapabilities(cap) {
+  if (!cap || typeof cap !== 'object') return;
+  remoteCapabilities = cap;
+  if (typeof cap.uplink_supported === 'boolean') remoteUplinkSupported = !!cap.uplink_supported;
+}
+function fetchRemoteCapabilities() {
+  return fetchWithTimeout('/api/capabilities', { cache: 'no-store', credentials: 'same-origin' }, 5000)
+    .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(function(d){
+      if (d && d.available === false) return null;
+      var cap = d && (d.capabilities || d);
+      applyRemoteCapabilities(cap);
+      return cap;
+    })
+    .catch(function(){ return null; });
+}
+
+function fetchHotspotLiveState(data) {
+  if (data && typeof data.hotspot_active === 'boolean') {
+    return Promise.resolve({ active: !!data.hotspot_active, iface: data.hotspot_iface || '', ip: data.hotspot_ip || '' });
+  }
+  return fetchWithTimeout('/api/iface_info', { cache: 'no-store', credentials: 'same-origin' }, 4000)
+    .then(function(r){ return r.ok ? r.json() : {}; })
+    .then(function(info){ return { active: !!(info && info.ip && info.iface && info.iface !== 'wlan0'), iface: info && info.iface || '', ip: info && (info.gateway || info.ip) || '' }; })
+    .catch(function(){ return { active: false, iface: '', ip: '' }; });
+}
+
 function loadDevices(opts) {
   opts = opts || {};
   if (devicesInFlight && !opts.force) return Promise.resolve(false);
@@ -109,9 +148,18 @@ function loadDevices(opts) {
       return r.json();
     })
     .then(function(data){
+      return fetchHotspotLiveState(data).then(function(hs){ return { data: data, hs: hs }; });
+    })
+    .then(function(pair){
       if (seq !== devicesReqSeq) return false; // stale slow response
+      var data = pair.data || {};
+      if (data.devices_sig) remoteLastDevicesSig = String(data.devices_sig);
+      hotspotActive = !!(pair.hs && pair.hs.active);
       var next = (data && data.devices) || [];
-      var sig = deviceListSignature(next);
+      if (!hotspotActive) {
+        next = next.map(function(d){ var x = Object.assign({}, d); x.online = false; x.rx_bps = 0; x.tx_bps = 0; return x; });
+      }
+      var sig = deviceListSignature(next) + '|hotspot=' + (hotspotActive ? 1 : 0);
       var macSig = deviceMacSignature(next);
       devicesData = next;
       if (opts.force || sig !== devicesLastSig) {
@@ -181,6 +229,7 @@ function syncDeviceFilterUI() {
     var rules = devicesData.filter(function(d){ return !d.online && deviceHasRule(d); }).length;
     if (deviceFilterMode === 'all') note.textContent = online + ' 在线 · 共 ' + total + ' 台';
     else if (deviceFilterMode === 'offline_rules') note.textContent = '离线规则 ' + rules + ' 条';
+    else if (!hotspotActive) note.textContent = rules > 0 ? ('热点未开启 · ' + rules + ' 条离线规则') : '热点未开启';
     else note.textContent = rules > 0 ? ('已隐藏 ' + Math.max(0, total - online) + ' 台离线设备 · ' + rules + ' 条有规则') : '默认隐藏离线历史设备';
   }
 }
@@ -204,12 +253,29 @@ function renderDevices() {
     html += renderCard(d);
   });
   if (!shown) {
-    html = '<div class="empty">当前过滤条件下没有设备<br><span style="font-size:12px;color:var(--text-3)">可切换为“显示全部”查看离线历史规则</span></div>';
+    html = !hotspotActive
+      ? '<div class="empty">热点未开启<br><span style="font-size:12px;color:var(--text-3)">在线设备已归零,可切换为“显示全部”查看离线历史规则</span></div>'
+      : '<div class="empty">当前过滤条件下没有设备<br><span style="font-size:12px;color:var(--text-3)">可切换为“显示全部”查看离线历史规则</span></div>';
   }
   list.innerHTML = html;
   meta.textContent = online+' 在线 · 共 '+devicesData.length+' 台';
 }
 
+function applyModeText(kind, mode) {
+  if (kind === 'delay') {
+    if (mode === 'full') return '已生效';
+    if (mode === 'egress_only') return '仅下行';
+    if (mode === 'failed') return '失败';
+    if (mode === 'pending') return '待应用';
+  }
+  if (kind === 'limit') {
+    if (mode === 'full') return '';
+    if (mode === 'down_only') return '上行不支持';
+    if (mode === 'failed') return '失败';
+    if (mode === 'pending') return '待应用';
+  }
+  return '';
+}
 function renderCard(d) {
   var name = d.hostname || (d.mac ? d.mac.replace(/:/g,'').slice(-8).toUpperCase() : '?');
   // Patch 4.a: 设备类型 emoji 前缀
@@ -222,14 +288,19 @@ function renderCard(d) {
   else if (d.online) badges += '<span class="b green">在线</span>';
   else badges += '<span class="b gray">离线</span>';
   if (limited) {
-    badges += '<span class="b blue">↓'+fmtMBps(d.down_mbps)+' ↑'+fmtMBps(d.up_mbps)+' MB/s</span>';
+    var lm = applyModeText('limit', d.limit_apply_mode || '');
+    var lc = d.limit_apply_mode === 'down_only' ? 'orange' : (d.limit_apply_mode === 'failed' ? 'red' : 'blue');
+    badges += '<span class="b '+lc+'">↓'+fmtMBps(d.down_mbps)+' ↑'+fmtMBps(d.up_mbps)+' MB/s'+(lm ? ' · '+lm : '')+'</span>';
   }
   if (d.delay_enabled && (d.delay_ms > 0 || d.jitter_ms > 0 || d.loss_pct > 0)) {
     var p = [];
     if (d.delay_ms > 0) p.push(d.delay_ms+'ms');
     if (d.jitter_ms > 0) p.push('±'+d.jitter_ms);
     if (d.loss_pct > 0) p.push(d.loss_pct+'%');
-    badges += '<span class="b orange">'+p.join(' ')+'</span>';
+    var dm = applyModeText('delay', d.delay_apply_mode || '');
+    if (dm) p.push(dm);
+    var dc = d.delay_apply_mode === 'failed' ? 'red' : 'orange';
+    badges += '<span class="b '+dc+'">'+p.join(' ')+'</span>';
   }
 
   // v4.0 Patch 3.b: 远端写操作按钮栏
@@ -523,7 +594,8 @@ function handleActionResult(r, successMsg) {
   if (r.ok) {
     showToast('✓ ' + (successMsg || r.detail || '已生效'), 'ok');
     // 触发一次强制刷新,同时丢弃任何旧的轮询响应,避免旧数据覆盖刚写入的状态。
-    setTimeout(function(){ loadDevices({force:true}); }, 500);
+    if (typeof requestRemoteForceRefresh === 'function') requestRemoteForceRefresh();
+    else setTimeout(function(){ loadDevices({force:true}); }, 500);
     return true;
   }
   var msg = r.error || '操作失败';
@@ -568,7 +640,7 @@ window.showLimitModal = function(mac, name) {
             '<option value="MBps" selected>MB/s</option>' +
           '</select>' +
         '</div>' +
-        '<div class="act-hint">单位与本机 WebUI 一致(1 MB/s = 8 Mbit/s),范围 8 KB/s ~ 1280 MB/s。留空表示该方向不限速,至少填一项。<br><span style="color:var(--orange,#fa8c16)">⚠️ 上行限速在 SD8 Elite/IPA 硬件卸载场景下可能失效,这是已知硬件限制。</span></div>' +
+        '<div class="act-hint" id="lm-hint">单位与本机 WebUI 一致(1 MB/s = 8 Mbit/s),范围 8 KB/s ~ 1280 MB/s。留空表示该方向不限速,至少填一项。</div>' +
         '<div class="act-modal-actions">' +
           '<button class="act-btn ghost" onclick="closeLimitModal()">取消</button>' +
           '<button class="act-btn primary" id="lm-apply">应用</button>' +
@@ -579,6 +651,17 @@ window.showLimitModal = function(mac, name) {
   document.getElementById('lm-target').textContent = name + ' · ' + mac;
   document.getElementById('lm-down').value = '';
   document.getElementById('lm-up').value = '';
+  var upDisabled = remoteUplinkSupported === false;
+  var upInput = document.getElementById('lm-up');
+  var upUnit = document.getElementById('lm-up-unit');
+  if (upInput) { upInput.disabled = upDisabled; upInput.placeholder = upDisabled ? '不支持' : ''; }
+  if (upUnit) upUnit.disabled = upDisabled;
+  var hint = document.getElementById('lm-hint');
+  if (hint) {
+    hint.innerHTML = upDisabled
+      ? '当前设备内核不支持 IFB/mirred，上行限速已禁用；下行限速仍可用。'
+      : '单位与本机 WebUI 一致(1 MB/s = 8 Mbit/s),范围 8 KB/s ~ 1280 MB/s。留空表示该方向不限速,至少填一项。<br><span style="color:var(--orange,#fa8c16)">⚠️ 上行限速可能受内核/硬件卸载影响。</span>';
+  }
   modal.style.display = 'flex';
 
   // v4.0 Patch 3.b.2: UI 用户输入 MB/s 或 KB/s, 后端 API 仍只认 mbit/kbit
@@ -601,7 +684,7 @@ window.showLimitModal = function(mac, name) {
 
   document.getElementById('lm-apply').onclick = async function() {
     var dn = document.getElementById('lm-down').value.trim();
-    var up = document.getElementById('lm-up').value.trim();
+    var up = remoteUplinkSupported === false ? '' : document.getElementById('lm-up').value.trim();
     var dnu = document.getElementById('lm-down-unit').value;
     var upu = document.getElementById('lm-up-unit').value;
     if (!dn && !up) {
@@ -617,7 +700,8 @@ window.showLimitModal = function(mac, name) {
     btn.disabled = false; btn.textContent = '应用';
     // 成功提示: 上行限速时单独提醒可能不生效
     var msg = '限速已设置';
-    if (r.ok && up) msg = '已设置 (上行可能受硬件卸载影响)';
+    if (r.ok && remoteUplinkSupported === false) msg = '已设置 (仅下行，上行不支持)';
+    else if (r.ok && up) msg = '已设置 (上行可能受硬件卸载影响)';
     if (handleActionResult(r, msg)) closeLimitModal();
   };
 };
@@ -739,13 +823,128 @@ if (filterSel) {
     renderDevices();
   });
 }
-loadDevices({force:true});
-setInterval(function(){
-  if (document.hidden) return;
-  loadDevices();
-  var statsTab = document.getElementById('tab-stats');
-  if (statsTab && statsTab.style.display !== 'none') loadStats();
-}, 5000);  // 每 5 秒刷新设备列表; 若上轮未完成则跳过
+var refreshSel = $('remote-refresh-mode');
+if (refreshSel) {
+  refreshSel.value = getRemoteRefreshMode();
+  refreshSel.addEventListener('change', function(){
+    remoteRefreshMode = refreshSel.value || 'balanced';
+    localStorage.setItem('hnc_remote_refresh_mode', remoteRefreshMode);
+    updateRemoteFreshness(null);
+    requestRemoteForceRefresh();
+  });
+}
+var remotePollTimer = null;
+var remotePollBusy = false;
+var remotePollVisible = !document.hidden;
+var remoteLastDevicesSig = '';
+var remotePendingForce = false;
+
+function getRemoteRefreshMode() {
+  return (remoteRefreshMode === 'realtime' || remoteRefreshMode === 'powersave') ? remoteRefreshMode : 'balanced';
+}
+function remotePollDelay(live) {
+  var mode = getRemoteRefreshMode();
+  var online = live && typeof live.online === 'number' ? live.online : 0;
+  if (mode === 'realtime') {
+    if (!live || live.hotspot_active === false) return 3000;
+    if (online <= 0) return 3000;
+    return 1500;
+  }
+  if (mode === 'powersave') {
+    if (!live || live.hotspot_active === false) return 15000;
+    if (online <= 0) return 8000;
+    return 5000;
+  }
+  if (!live || live.hotspot_active === false) return 9000;
+  if (online <= 0) return 5000;
+  return 2000;
+}
+function updateRemoteFreshness(live) {
+  if (live && typeof live.snapshot_age_ms === 'number') remoteSnapshotAgeMs = live.snapshot_age_ms;
+  if (live) remoteSnapshotStale = !!(live.snapshot_stale || live.refresh_requested);
+  var age = Math.max(0, Number(remoteSnapshotAgeMs || 0));
+  var sec = age >= 1000 ? (age / 1000).toFixed(age < 10000 ? 1 : 0) + ' 秒前' : '刚刚';
+  var modeLabel = ({realtime:'实时', balanced:'均衡', powersave:'省电'})[getRemoteRefreshMode()] || '均衡';
+  var stale = remoteSnapshotStale || age > 5000;
+  var el = $('remote-freshness-line');
+  if (el) {
+    el.textContent = stale ? ('数据可能已过期 · ' + sec + ' · 正在刷新') : ('已更新 · ' + sec + ' · ' + modeLabel + '模式');
+    el.classList.toggle('stale', stale);
+  }
+}
+function clearRemotePollTimer() {
+  if (remotePollTimer) { clearTimeout(remotePollTimer); remotePollTimer = null; }
+}
+function scheduleRemotePoll(delay) {
+  clearRemotePollTimer();
+  if (!remotePollVisible || document.hidden) return;
+  remotePollTimer = setTimeout(function(){ remotePollOnce('timer'); }, delay || 5000);
+}
+function applyRemoteLive(live) {
+  if (!live || typeof live !== 'object') return;
+  updateRemoteFreshness(live);
+  if (typeof live.hotspot_active === 'boolean') hotspotActive = !!live.hotspot_active;
+  if (hotspotActive === false) {
+    devicesData = devicesData.map(function(d){ var x = Object.assign({}, d); x.online = false; x.rx_bps = 0; x.tx_bps = 0; return x; });
+    renderDevices();
+  }
+}
+function remotePollOnce(reason) {
+  reason = reason || 'timer';
+  if (remotePollBusy) {
+    if (reason === 'force') remotePendingForce = true;
+    return Promise.resolve(false);
+  }
+  if (!remotePollVisible || document.hidden) {
+    if (reason === 'force') remotePendingForce = true;
+    return Promise.resolve(false);
+  }
+  remotePollBusy = true;
+  return fetchLiveState().then(function(live){
+    applyRemoteLive(live);
+    var sig = live && live.devices_sig ? String(live.devices_sig) : '';
+    var needFull = reason === 'force' || !remoteLastDevicesSig || (sig && sig !== remoteLastDevicesSig);
+    var p = needFull ? loadDevices({force:true}).then(function(){ remoteLastDevicesSig = sig || remoteLastDevicesSig; }) : Promise.resolve(false);
+    var statsTab = document.getElementById('tab-stats');
+    if (statsTab && statsTab.style.display !== 'none') loadStats();
+    return p.then(function(){ return live; });
+  }).catch(function(){
+    return null;
+  }).then(function(live){
+    remotePollBusy = false;
+    if (remotePendingForce && remotePollVisible && !document.hidden) {
+      remotePendingForce = false;
+      clearRemotePollTimer();
+      setTimeout(function(){ remotePollOnce('force'); }, 0);
+    } else {
+      scheduleRemotePoll(remotePollDelay(live));
+    }
+  });
+}
+function requestRemoteForceRefresh() {
+  remoteLastDevicesSig = '';
+  remotePendingForce = true;
+  if (!remotePollBusy) return remotePollOnce('force');
+  return Promise.resolve(false);
+}
+window.requestRemoteForceRefresh = requestRemoteForceRefresh;
+function startRemotePolling() {
+  remotePollVisible = !document.hidden;
+  if (!remotePollVisible) return;
+  clearRemotePollTimer();
+  remotePollOnce('force');
+}
+function stopRemotePolling() { clearRemotePollTimer(); }
+
+document.addEventListener('visibilitychange', function(){
+  remotePollVisible = !document.hidden;
+  if (remotePollVisible) startRemotePolling(); else stopRemotePolling();
+});
+window.addEventListener('focus', function(){ remotePollVisible = true; startRemotePolling(); });
+window.addEventListener('pageshow', function(){ remotePollVisible = true; startRemotePolling(); });
+window.addEventListener('blur', function(){ remotePollVisible = !document.hidden; if (!remotePollVisible) stopRemotePolling(); });
+window.addEventListener('pagehide', function(){ remotePollVisible = false; stopRemotePolling(); });
+fetchRemoteCapabilities().finally(function(){ startRemotePolling(); });
 
 // v4.0 Patch 3.b: 卡片 action 按钮走 event delegation
 // 所有写操作按钮用 data-act/data-mac/data-name 属性, 这里统一 dispatch

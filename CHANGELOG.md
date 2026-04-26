@@ -1,3 +1,161 @@
+## v5.1.0-rc1-hotfix16.6 - P0 uplink downgrade closure / remote UI parity
+
+- 在 hotfix16.5 的基础上补齐第一阶段 P0 修复：上行能力不可用时，本地 WebUI、远程 WebUI、Go action、tc_manager 和 watchdog 都统一降级为 downlink-only。
+- 修复 hotfix16.5 源码补丁里的 Go helper 命名错误，避免重新编译 hnc_httpd 时因 `ruleNumberPositive` 未定义失败。
+- 修复本地 WebUI 设置页 `refreshLocalDiagnostics()` 作用域问题，避免切到设置页时因函数不可见导致 JS 报错。
+- 远程 WebUI 新增 `/api/capabilities` 读取：`uplink_supported=false` 时禁用上行输入框，并显示“仅下行”。
+- `hnc_httpd/build.sh` 默认使用本仓库 vendor 依赖和离线代理设置，减少 Termux/GitHub Actions 编译时卡在下载依赖的概率。
+- 重新编译 Android arm64 `hnc_httpd`，内置版本号同步为 hotfix16.6。
+
+## v5.1.0-rc1-hotfix16.5 - Capability-gated uplink downgrade / MIUI14 anti-freeze
+
+- 修复 Xiaomi 10 / MIUI14 等 `uplink_supported=false` 设备点击限速后仍反复尝试 IFB/mirred，导致 WebUI 后端超时、界面卡住的问题。
+- `tc_manager.sh` 现在以 `run/capabilities.json` 为准：上行能力不可用时直接降级为 `downlink_only`，跳过 `ifb0`、`mirred`、ingress 重试，不再因为上行失败影响下行限速。
+- `watchdog.sh` 在上行能力不可用时直接跳过 uplink repair，并写入一次性 `uplink_unsupported` marker，避免后台反复修复失败、刷日志和增加耗电。
+- WebUI 读取 `/api/capabilities` 后会自动禁用上行限速输入，提示“当前设备不支持上行限速”，并在批量/模板/单设备应用时强制上行为 0，避免误导用户。
+- `service.sh` / `hotspot_autostart.sh` 启动时会清理旧的 uplink 降级日志标记，让下一次能力探测后重新建立准确状态。
+- Go action 源码同步加入 capability-aware 降级逻辑，后续重新编译 httpd 时可让 API 层也更早返回 `downlink_only` warning。
+- 边界：本版不新增 SSE/WebSocket，不重构 tc/iptables 主链路；重点解决“不支持上行整形的设备点击限速卡死”和“UI 误显示上行可用”。
+
+## v5.1.0-rc1-hotfix16.4 - MIUI14 TC degraded backend fix
+
+- 修复 MIUI14 上 `set_delay()` 在 IFB 失败后严格短路，导致 wlan1 leaf netem 停留在 `delay 0ms` 占位、200ms 延迟未真正写入的问题。
+- `ensure_device_class()` 对已存在 leaf netem 不再抢写 `delay 0ms`，只在 leaf 缺失时创建占位，避免中途失败抹掉已有延迟。
+- IFB/mirred 不可用时，延迟降级为 `egress_only`：把完整 delay 写到热点接口下行/egress，保证 MIUI14 至少下行延迟生效。
+- 双向限速在 IFB 不可用时降级为 `down_only`，保留下行限速，不再因上传链路失败回滚整个限速。
+- `apply_device_rule.sh` 写入 `limit_apply_mode`，并把上行不可用记录为 `uplink_unsupported`，减少“配置已保存但状态不清楚”的误导。
+- watchdog 增加 `uplink_unsupported` degraded marker 和冷却机制，避免 IFB/mirred 不支持时反复修复到 passive；热点启动时会清理旧 marker。
+- `capability_probe.sh` 改为 dummy 设备优先、lo 回退，新增 `tc_ifb_create` / `tc_ingress_keyword` / `uplink_supported`，减少 MIUI14 lo/noqueue 导致的 tc 能力假阴性。
+- 诊断包增加 `tc -s qdisc/class/filter`、clsact/ingress、ifb0 link/qdisc 等输出，便于确认 class/filter 是否命中。
+- 本地/远程 WebUI 增加限速/延迟 partial 状态文案：仅下行、上行不支持、待应用、失败。
+- 继续不引入 SSE/WebSocket，不改变认证模型；本版集中修复 MIUI14 tc/netem 降级兼容。
+
+## v5.1.0-rc1-hotfix16.3
+
+- 修复 hotfix16.x 包内 `hnc_httpd` 二进制仍显示 hotfix15.2 的问题，重新编译并启用 `/api/capabilities` 等诊断接口。
+- 修复 MIUI14 / 小米10 上清除规则后立即重新设置时，HNC 链尚未恢复导致 `iptables: No chain/target/match by that name` 的问题：单设备应用前主动确保 iptables 链存在。
+- 在设置限速前增加 best-effort TC 初始化，减少 cleanup/restart 后 TC 基础结构缺失导致的假失败。
+- TC/Netem 应用失败时仍保存用户期望配置为 pending，并写入 `tc_applied=false` / `apply_error`，避免表现为“配置写不进去”。实际是否生效以能力检测和 tc.log 为准。
+- 修复 `json_set_batch.sh` 锁目录无 pid 文件导致后续 json_set 等待超时的风险；json_set 现在能清理无 pid 的陈旧锁。
+- 更新规则合并与签名字段，`tc_applied` / `apply_error` 变化会触发 WebUI 完整刷新。
+
+## v5.1.0-rc1-hotfix16.2 - rules.json write regression and TC fallback fix
+
+- Fixed a packaging regression in `json_set.sh` and `json_set_batch.sh` where the atomic writer was emitted as empty paths (`[ -s "" ]`, `mv "" ""`), causing every rules.json write to fail with `atomic_write: tmp empty`.
+- Added `rules_repair.sh` and startup repair hooks to quote legacy bare IPv4 values such as `"ip": 192.168.x.x`, recovering from the malformed rules.json that made `/api/live` report `rules_json_parse_failed`.
+- `json_set.sh` and `json_set_batch.sh` now save last-good backups under `/data/local/hnc/data/.bak/` before replacing rules.json.
+- Added a ColorOS mq-root TC fallback: if the hotspot interface keeps an immutable `qdisc mq` root and `tc qdisc add dev <iface> root htb` fails, HNC tries to attach handle `1:` under mq child `:1` so the existing class/filter path can still operate.
+- `hnc_tc_ingress` rc=2 now falls back to the shell tc path instead of immediately aborting, improving IFB/mirred recovery when the direct netlink helper mis-detects ifb0.
+- Scope: still no SSE/WebSocket and no broad tc/iptables/watchdog rewrite; this is a targeted repair for the debug bundle showing broken JSON writes and missing TC classes.
+
+## v5.1.0-rc1-hotfix16.1 - Local diagnostics visibility and debug bundle polish
+
+- Local WebUI settings now show `/api/metrics` control-plane counters directly: snapshot age, refresh count, JSON cache hits/misses, shell fallback count, and offload check count.
+- Local WebUI settings now show capability-probe status from `/api/capabilities`, making iptables/tc/IFB/netem support easier to verify without opening raw files.
+- Added a one-tap "刷新诊断" row that refreshes both metrics and capability status through the existing loopback httpd API.
+- `debug_bundle.sh` now also captures `/api/live`, `/api/metrics`, and `/api/capabilities` snapshots when the local httpd is running, improving issue reports without adding new background work.
+- Scope: this release is still UI/diagnostic only. It does not change tc/iptables/watchdog core data-plane behavior and does not add SSE/WebSocket.
+
+## v5.1.0-rc1-hotfix16 - Diagnostics and configuration hardening
+
+- Added local WebUI diagnostic bundle export via `bin/debug_bundle.sh`, saving a tar.gz under `/sdcard/Download` with redacted rules/tokens, device data, capability output, log tails, and fixed ip/tc/iptables command outputs.
+- Kept Go API source hooks for future `/api/debug_bundle`, `/api/export_rules`, and `/api/capabilities` builds, while the shipped WebUI uses the shell exporter for compatibility with the current httpd binary.
+- Added a manual hotspot interface preference in settings (`auto` / `wlan2` / `ap0` / custom safe netdev name). The backend still validates the interface before using it.
+- Added `hotspot_iface` and `schema_version` to the packaged rules schema and upgrade-time field backfill.
+- Hardened `json_set.sh` and `json_set_batch.sh` writes with a last-good `rules.json` backup before atomic replace.
+- WebUI maintenance page now includes one-tap diagnostic bundle export to `/sdcard/Download`.
+- Scope: this release still avoids tc/iptables/watchdog data-plane rewrites.
+
+## v5.1.0-rc1-hotfix15.2 - Live freshness, refresh modes, and metrics
+
+- `/api/live` no longer blocks the first dashboard request on a full snapshot rebuild when the cached snapshot is stale; it now returns immediately and wakes SnapshotLoop asynchronously.
+- Added `/api/metrics` for low-power/cache verification: snapshot refresh count, JSON cache hits/misses, shell fallback count, offload check count, API counters, recent-client age, and current snapshot age.
+- Local WebUI now shows data freshness under the device hero, including stale-snapshot/refreshing status.
+- Local WebUI settings now include a refresh mode selector: realtime, balanced, and powersave. This only changes WebUI polling cadence and does not touch tc/iptables/watchdog data-plane rules.
+- Remote WebUI also gained refresh mode selection and a freshness indicator, while continuing to pause polling when hidden.
+- Added counters for `/api/live`, `/api/devices`, `/api/stats`, snapshot refreshes, JSON cache usage, shell fallback, and offload checks.
+- Scope: this hotfix intentionally stays in the control-plane/UI layer and does not change tc/iptables/watchdog core behavior.
+
+## v5.1.0-rc1-hotfix15.1 - Control-plane idle power and cache polish
+
+- SnapshotLoop now drops to 15s/30s refresh cadence when no WebUI client has accessed live state in the last 15s.
+- `/api/live`, `/api/devices`, `/api/iface_info`, and `/api/offload_status` mark client activity so active dashboards keep the existing fast 1/2/3s cadence.
+- `/api/offload_status` is now on-demand cached; `check_offload.sh` is no longer run every 30s while WebUI is closed.
+- Added mtime/size JSON cache with last-valid fallback for `devices.json`, `rules.json`, and `device_names.json`; parse errors no longer make rules disappear from the UI.
+- `apiIfaceInfo` now uses snapshot/probe throttling and no longer directly shells out to `device_detect.sh iface` or infers active hotspot state from stale `devices.json`.
+- Fixed a potential `lastNativeIface` race in Go native hotspot detection and made `rules.json.hotspot_iface` a validated preferred candidate.
+- Remote WebUI now uses `/api/live` + `devices_sig` polling and pauses when the page is hidden.
+- Local WebUI action refreshes now coalesce pending force refreshes to avoid duplicate full `/api/devices` fetches.
+
+# v5.1.0-rc1-hotfix15 - Control-plane latency & low-power polling
+
+- hnc_httpd: added `/api/live`, a lightweight live-state endpoint returning hotspot state, online/total counts, aggregate rx/tx rates, and `devices_sig`.
+- hnc_httpd: added immutable in-memory snapshot caching so `/api/live` and `/api/devices` no longer rebuild the full devices/rules/names merge on every WebUI poll.
+- hnc_httpd: changed hotspot probing to a Go-native fast path using `net.Interfaces()` + RFC1918 IPv4 validation + ARP hints, with throttled `device_detect.sh iface` fallback instead of per-request shell fork.
+- hnc_httpd: successful `/api/action` writes now trigger immediate snapshot refresh, so limit/block/whitelist changes do not wait for the next polling tick.
+- WebUI: device page now polls `/api/live` adaptively and fetches full `/api/devices` only when `devices_sig` changes or after a write operation.
+- WebUI: replaced fixed `setInterval` polling with single `setTimeout` scheduler, foreground/background lifecycle handling, and write-operation burst refresh.
+- WebUI: hotspot-off state immediately zeros online count and aggregate rates without deleting historical devices/rules.
+- Scope: this hotfix intentionally does not change tc/iptables/watchdog data-plane behavior.
+
+# v5.1.0-rc1-hotfix14 - Hotspot-off UI latency & stale-online fix
+
+- WebUI: fixed the "渲染失败 / 查看底部 dbgbar" empty-list bug when the default filter is "只看在线" and all known devices are offline. The UI now shows a real empty state instead of treating a valid filtered-empty list as a render failure.
+- WebUI: polling interval reduced from 2.5s to 1s while the device page is visible, with in-flight protection to avoid request pile-up. Returning from background triggers an immediate refresh.
+- WebUI: status-change signature now includes online/offline/filter visibility, so online → offline transitions force a re-render instead of leaving stale cards visible.
+- WebUI: when hotspot is off, aggregate speeds immediately return to 0 and hidden/offline-history hints show "热点未开启".
+- API compatibility shim: local WebUI now gates /api/devices with /api/iface_info, so this hotfix works even with the existing prebuilt hnc_httpd binary that does not yet expose hotspot_active in /api/devices.
+- Device detection: iface cache now validates that the cached hotspot iface still has a private IPv4 before reusing it; closing hotspot no longer leaves iface.cache valid for up to 5 minutes.
+- Source update: hnc_httpd Go sources include a future native /api/devices hotspot_active/live-ARP gate for the next binary rebuild.
+
+# v5.1.0-rc1-hotfix13 - Compatibility rollup
+
+- Installer: refreshed `update-binary` to v5.1.0, removed stale v3.x `api/server.sh` logic, removed non-portable brace expansion, and added arm64 ABI guard.
+- First boot data: new installs now copy the packaged full `data/rules.json` schema; upgrades backfill missing top-level fields without overwriting user settings.
+- Diagnostics: added `bin/capability_probe.sh`, producing `run/capabilities.json` for iptables/tc/IFB/mirred/matchall/u32/BPF capability visibility.
+- TC compatibility: only reuse `htb 1:` root qdisc; incompatible ROM roots such as `fq`, `fq_codel`, `hfsc`, or `cake` are rebuilt instead of falsely preserved.
+- TC ownership: cleanup removes the root qdisc only when HNC created it during this boot, avoiding accidental deletion of ROM/other-module qdiscs.
+- Ingress/IFB: unified the mirred install path around `install_ingress_mirred`, accepting netlink, matchall, u32, and parent `ffff:` variants; removed the duplicate legacy inline ingress block.
+- Watchdog: uplink health check now accepts both matchall and u32/parent fallback forms, and repairs through `tc_manager.sh ensure_ingress`.
+- Remote WebUI: 8443 can still bind `0.0.0.0` for ColorOS gateway compatibility, but watchdog now installs an INPUT guard allowing only loopback/hotspot-interface traffic and drops other interfaces.
+- Whitelist: changed whitelist ACCEPT rules to MAC-only and removes stale source-IP ACCEPT entries best-effort to avoid DHCP IP reuse leakage.
+
+## 🗂️ v5.1.0-rc1-hotfix12 · 更新日志合并 / 刷机包根目录瘦身 · 2026-04-25
+
+**主题**: 合并历史 hotfix patch notes, 清理刷机包根目录重复文档, 降低手机文件管理器里打开 ZIP 时的干扰。
+
+### 优化
+
+- **更新日志合并**: 历史 `PATCH-NOTES-hotfix*` / `PATCH-NOTES-rc2*` 内容已汇总到 `CHANGELOG.md` 与 WebUI 更新记录, 刷机包根目录不再放一堆单独 patch notes。
+- **刷机包根目录瘦身**: 正式可刷 ZIP 只保留运行必需文件、`README.md` 和 `CHANGELOG.md`; 开发文档/阶段文档不再进入 release 包。
+- **CI 打包规则同步**: `.github/workflows/build-hnc.yml` 的 Package module 步骤改为只打运行文件 + 两个说明文件, 避免后续又把 `PATCH-NOTES-*` 打进刷机包。
+
+### 说明
+
+- 本轮不改限速/iptables/BPF 逻辑, 只整理文档和 release 打包结构。
+- 不需要重新编译 C/Go 二进制。
+
+---
+
+## ⚙️ v5.1.0-rc1-hotfix11 · cleanup 去卡顿 / stats 计数保留 · 2026-04-25
+
+**主题**: 在 hotfix10 基础上做低风险优化,避免 stale cleanup 和 stats 去重重新引入 UI 卡顿或统计跳变。
+
+### 优化
+
+- **cleanup 去卡顿**:`cleanup_stale_rules.sh` 不再整轮持有 `gate_lock`,改为每台 stale 设备短暂抢锁; 单轮默认最多清理 20 台。
+- **cleanup 防重复**:新增 `cleanup_stale.lock` 和 `cleanup_stale.last_day`,避免 service / watchdog 同一天重复跑。
+- **开机更保守**:watchdog 只在 `ACTIVE:*` 状态调度 cleanup,避免 PENDING 阶段 devices.json 尚未稳定就清理规则。
+- **大写 MAC 兼容**:cleanup 保留 rules.json 里的原始 MAC key 大小写,修复 uppercase 历史规则删不掉的问题。
+- **stats 计数保留**:`ensure_stats()` 正常 1 条规则时不再删了重建,只在 0 条或重复时修改链,避免每轮扫描重置 iptables 计数器。
+- **点击限速防卡**:`notify_offload()` 对 `hnc_ipc` 增加 1 秒 timeout 保护; limit 成功路径减少一次同步 JSON 写。
+
+### 说明
+
+- 本轮只改 shell / changelog / `module.prop`,不需要重新编译 C/Go。
+
+---
+
 ## 🧹 v5.1.0-rc1-hotfix10 · stale rules 自动清理 / hotspotd 截断修复 · 2026-04-25
 
 **主题**: 补齐 hotfix9 后端 B 部分,并合入 round3 高优先级稳定性修复。

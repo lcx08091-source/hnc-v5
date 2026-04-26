@@ -165,9 +165,12 @@ start)
         svc wifi hotspot enable 2>/dev/null && STARTED=1 && log "started via svc"
     fi
 
-    [ "$STARTED" = "1" ] \
-        && log "=== Hotspot autostart SUCCESS ===" \
-        || { log "=== Hotspot autostart FAILED ==="; exit 1; }
+    if [ "$STARTED" = "1" ]; then
+        rm -f "$HNC_DIR/run/uplink_unsupported" "$HNC_DIR/run/uplink_fail_count" "$HNC_DIR/run/uplink_unsupported_logged" 2>/dev/null || true
+        log "=== Hotspot autostart SUCCESS ==="
+    else
+        log "=== Hotspot autostart FAILED ==="; exit 1
+    fi
     ;;
 
 stop)
