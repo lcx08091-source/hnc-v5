@@ -26,10 +26,10 @@ import (
 )
 
 const (
-	tokenIDBytes  = 8  // base64url encode 后约 11 字符
-	tokenSecretBytes = 24 // base64url encode 后约 32 字符
-	bcryptCost    = 10 // ~100ms on x86_64,arm64 可能 200-300ms
-	collisionRetryMax = 3 // TokenID 冲突重试上限(实际 2^64 空间几乎永不冲突)
+	tokenIDBytes      = 8  // base64url encode 后约 11 字符
+	tokenSecretBytes  = 24 // base64url encode 后约 32 字符
+	bcryptCost        = 10 // ~100ms on x86_64,arm64 可能 200-300ms
+	collisionRetryMax = 3  // TokenID 冲突重试上限(实际 2^64 空间几乎永不冲突)
 )
 
 // ErrBadCookieFormat 表示 cookie 不是合法的 TokenID.Secret 格式
@@ -121,7 +121,7 @@ func VerifyCookie(store *TokensStore, cookieValue string) (string, Token, error)
 	}
 
 	// 硬过期
-	if time.Now().Unix()-tok.LastSeen > hardExpireSec {
+	if tok.LastSeen > 0 && time.Now().Unix()-tok.LastSeen > hardExpireSec {
 		return "", Token{}, errors.New("token hard expired")
 	}
 
@@ -138,8 +138,10 @@ func VerifyCookie(store *TokensStore, cookieValue string) (string, Token, error)
 // 不允许空字符串、含 `.` 之外其他分隔符、长度异常。
 //
 // v2.a hotfix (Gemini 3.1): base64url RawURLEncoding 对固定字节数输入长度唯一:
-//   8 字节 → 恰好 11 字符
-//   24 字节 → 恰好 32 字符
+//
+//	8 字节 → 恰好 11 字符
+//	24 字节 → 恰好 32 字符
+//
 // 改成严格等号,密码学代码的标准实践。
 const (
 	tokenIDLen = 11 // base64url(8 bytes) = 11 chars

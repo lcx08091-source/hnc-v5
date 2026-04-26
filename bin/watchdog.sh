@@ -527,10 +527,23 @@ httpd_guard_install() {
     log "httpd guard installed: 8443 allowed from hotspot iface=$iface ip=$ip/hotspot iface only; dropped elsewhere"
 }
 
+# hotfix17.8: PID 复用保护。kill -0 只能证明“这个 PID 存在”,不能证明它还是 hnc_httpd。
+is_hnc_httpd_pid() {
+    local pid="$1" cmd
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+    echo "$cmd" | grep -q 'hnc_httpd'
+}
+
 ensure_httpd_running() {
     local wpid; wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
     if [ -n "$wpid" ] && ! kill -0 "$wpid" 2>/dev/null; then
         log "httpd dead (was PID $wpid), removing pid file"
+        rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
+        wpid=""
+    elif [ -n "$wpid" ] && ! is_hnc_httpd_pid "$wpid"; then
+        log "httpd pid $wpid belongs to another process, clearing stale pid file"
         rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
         wpid=""
     fi

@@ -121,7 +121,10 @@ static void *worker_fn(void *arg) {
         while (g_task_count == 0 && !g_stop) {
             pthread_cond_wait(&g_task_cond, &g_task_lock);
         }
-        if (g_stop && g_task_count == 0) {
+        if (g_stop) {
+            /* hotfix17.8: stop 时立即退出,丢弃待处理队列。
+             * mDNS 名称可在下次启动重新解析,不值得阻塞关机/重启路径。 */
+            g_task_head = g_task_tail = g_task_count = 0;
             pthread_mutex_unlock(&g_task_lock);
             break;
         }

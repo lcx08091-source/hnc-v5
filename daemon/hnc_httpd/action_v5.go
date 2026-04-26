@@ -338,7 +338,7 @@ func actionHotspotSave(hncDir string, p map[string]string) actionResp {
 		return actionResp{OK: false, Error: "bad params", Detail: "invalid ssid"}
 	}
 	if pass != "" && !validPass(pass) {
-		return actionResp{OK: false, Error: "bad params", Detail: "invalid password (8-63 printable ASCII)"}
+		return actionResp{OK: false, Error: "bad params", Detail: "invalid password (8-63 UTF-8 chars, no control characters)"}
 	}
 	delay, ok := atoiClamp(delayStr, 0, 3600)
 	if delayStr != "" && !ok {

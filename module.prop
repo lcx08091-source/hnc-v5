@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix17.7
-versionCode=509177
+version=v5.1.0-rc1-hotfix17.8
+versionCode=509178
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.7 · root HTB fallback 限速校准 · 标准/稳准/严格校准档 · 精准/兼容策略保留 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.8 · 安全小修 · 日志远程强制鉴权 · fail-closed · PID 校验 · mDNS 快速退出 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

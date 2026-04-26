@@ -1,3 +1,12 @@
+## v5.1.0-rc1-hotfix17.8
+
+- 安全：`auth_required` 字段缺失或非 bool 时 fail-closed，避免 rules.json 损坏导致匿名放行。
+- 安全：远程 `/api/logs` 即使在 `auth_required=false` 过渡模式下也强制鉴权；本机 KSU loopback 仍保持兼容。
+- 认证：`LastSeen=0` 的旧 token 不再被硬过期逻辑立即拒绝，避免升级/损坏字段导致全部 token 失效。
+- 文案：热点密码错误提示改为 UTF-8 语义，与实际 `validPass` 校验一致。
+- 稳定性：watchdog 校验 `httpd.pid` 的 `/proc/<pid>/cmdline`，避免 PID 复用误判为 hnc_httpd 仍存活。
+- 稳定性：mDNS worker stop 时丢弃未处理队列并快速退出，避免正常重启最坏等待 25 秒。
+
 
 ## v5.1.0-rc1-hotfix17.7
 
