@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix17.4 · 2026-04-27
+
+- **TC JIT 自愈**：`set_limit` / `set_delay` 执行前先确认热点口存在 HNC HTB 树；如果系统把 `wlan1` root qdisc 从 `htb` 恢复成 `mq`，立即重新 `init_tc` 后再应用规则。
+- **class add/change 失败重试**：`ensure_device_class` 在 `class add/change` 失败时，针对真实热点口自动重建 HTB 并重试一次，避免 `tc set_limit failed`。
+- **netem 失败重试**：`set_delay` 在 egress netem 写入失败时，自动重建 HTB class/leaf 后重试一次，避免 `netem apply failed`。
+- **MIUI14 状态机修复**：针对已验证的场景“root HTB 曾成功，但热点重建/清理后回到 qdisc mq”，不再把后续点击直接判为失败。
+
 # HNC v5.1.0-rc1-hotfix17.3
 
 ## 修复

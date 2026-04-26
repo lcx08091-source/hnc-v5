@@ -403,16 +403,33 @@ ensure_device_class() {
             htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
             log "  Updated class 1:$class_id on $dev (rate=$use_rate, no rebuild)"
         else
-            log_error "ensure_device_class: class change failed dev=$dev class=1:$class_id (kept existing class, no del+add)"
-            return 1
+            # hotfix17.4: root qdisc may have been restored to mq after class was
+            # observed. Rebuild HTB once and retry before failing.
+            if [ "$dev" != "$IFB_IFACE" ] && ensure_egress_htb_ready "$dev" "ensure_device_class_change" && \
+                tc class change dev "$dev" parent 1:1 classid "1:$class_id" \
+                    htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+                log "  Updated class 1:$class_id on $dev after HTB self-heal"
+            else
+                log_error "ensure_device_class: class change failed dev=$dev class=1:$class_id (kept existing class, no del+add)"
+                return 1
+            fi
         fi
     else
+        if [ "$dev" != "$IFB_IFACE" ]; then
+            ensure_egress_htb_ready "$dev" "ensure_device_class" || return 1
+        fi
         if tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
             htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
             log "  Created class 1:$class_id on $dev (rate=$use_rate)"
         else
-            log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
-            return 1
+            if [ "$dev" != "$IFB_IFACE" ] && ensure_egress_htb_ready "$dev" "ensure_device_class_retry" && \
+                tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
+                    htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+                log "  Created class 1:$class_id on $dev after HTB self-heal"
+            else
+                log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
+                return 1
+            fi
         fi
     fi
 
@@ -831,6 +848,56 @@ root_htb_replace_verified() {
     return 1
 }
 
+
+# hotfix17.4: just-in-time TC self-heal.
+# MIUI14 may restore wlan1 root qdisc from HNC HTB back to mq after hotspot
+# recreation/cleanup. set_limit/set_delay must not assume class 1:* still exists.
+egress_htb_tree_ready() {
+    local iface=$1
+    [ -n "$iface" ] || return 1
+    ip link show "$iface" >/dev/null 2>&1 || return 1
+    tc qdisc show dev "$iface" 2>/dev/null | grep -q '^qdisc htb 1:' || return 1
+    tc class show dev "$iface" 2>/dev/null | grep -q 'class htb 1:1' || return 1
+    return 0
+}
+
+egress_root_summary() {
+    local iface=$1
+    tc qdisc show dev "$iface" 2>/dev/null | grep ' root' | head -1
+}
+
+ensure_egress_htb_ready() {
+    local iface=$1 where=${2:-tc}
+    [ -n "$iface" ] || { log_error "$where: empty iface, cannot ensure HTB"; return 1; }
+    if ! ip link show "$iface" >/dev/null 2>&1; then
+        log_error "$where: iface $iface missing, cannot ensure HTB"
+        return 1
+    fi
+    if ! tc_limit_supported_runtime; then
+        log_tc_unsupported_once "$where" "tc_htb"
+        return 66
+    fi
+    if egress_htb_tree_ready "$iface"; then
+        return 0
+    fi
+
+    local before
+    before=$(egress_root_summary "$iface")
+    log "$where: HNC HTB tree missing on $iface (root=${before:-none}); re-init before applying"
+    init_tc "$iface" || {
+        log_error "$where: init_tc failed while rebuilding HTB on $iface"
+        return 1
+    }
+    if egress_htb_tree_ready "$iface"; then
+        log "$where: HNC HTB tree rebuilt on $iface"
+        return 0
+    fi
+    local after
+    after=$(egress_root_summary "$iface")
+    log_error "$where: HNC HTB tree still missing after init_tc on $iface (root=${after:-none})"
+    return 1
+}
+
 # ═══════════════════════════════════════════════════════════════
 # 初始化 TC 基础结构
 # ═══════════════════════════════════════════════════════════════
@@ -1094,10 +1161,15 @@ set_limit() {
 
     # ── Egress（下载：热点→设备）──────────────────────────────
     if gt0 "$down_mbps"; then
+        ensure_egress_htb_ready "$iface" "set_limit" || return 1
         ensure_device_class "$iface" "$class_id" "$ip" || return 1
         local dn_rate;  dn_rate=$(mbps_to_rate "$down_mbps")
         local dn_burst; dn_burst=$(burst_for_rate "$down_mbps")
-        set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst" || { log_error "set_limit: egress rate set failed dev=$iface class=1:$class_id"; return 1; }
+        if ! set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst"; then
+            log_error "set_limit: egress rate set failed dev=$iface class=1:$class_id; retrying after HTB self-heal"
+            ensure_egress_htb_ready "$iface" "set_limit_rate_retry" && ensure_device_class "$iface" "$class_id" "$ip" && \
+                set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst" || { log_error "set_limit: egress rate set failed after retry dev=$iface class=1:$class_id"; return 1; }
+        fi
         log "  Egress 1:$class_id @ $dn_rate burst $dn_burst"
     else
         # 关限速：只重置 rate，保留 leaf netem（可能承载延迟）
@@ -1226,7 +1298,8 @@ set_delay() {
     # 分支被当成"关闭延迟",把 netem 重置为 0 → loss 完全丢失。
     # 修复:入口判断改为 delay/jitter/loss 任一 > 0 都进入"启用"分支
     if gt0 "$delay_ms" || gt0 "$jitter_ms" || gt0 "$loss"; then
-        # 先确保下行/egress class；这是 MIUI14 ifb 不可用时必须保留的最小可用路径。
+        # 先确保下行/egress HTB 树和 class；这是 MIUI14 ifb 不可用时必须保留的最小可用路径。
+        ensure_egress_htb_ready "$iface" "set_delay" || return 1
         ensure_device_class "$iface" "$class_id" "$ip" || return 1
 
         # IFB/uplink 是 best-effort。失败不再短路整个 delay，否则 wlan1 会停留在 0ms placeholder。
@@ -1250,8 +1323,12 @@ set_delay() {
             ig_apply=0
         fi
 
-        set_netem_only "$iface" "$class_id" "$eg_apply" "$jitter_ms" "$loss" \
-            || { log_error "set_delay: egress netem set failed dev=$iface class=1:$class_id"; return 1; }
+        if ! set_netem_only "$iface" "$class_id" "$eg_apply" "$jitter_ms" "$loss"; then
+            log_error "set_delay: egress netem set failed dev=$iface class=1:$class_id; retrying after HTB self-heal"
+            ensure_egress_htb_ready "$iface" "set_delay_netem_retry" && ensure_device_class "$iface" "$class_id" "$ip" && \
+                set_netem_only "$iface" "$class_id" "$eg_apply" "$jitter_ms" "$loss" \
+                || { log_error "set_delay: egress netem set failed after retry dev=$iface class=1:$class_id"; return 1; }
+        fi
 
         if [ "$ifb_ok" = "1" ]; then
             set_netem_only "$IFB_IFACE" "$class_id" "$ig_apply" "$jitter_ms" "$loss" \

@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix17.3
-versionCode=509173
+version=v5.1.0-rc1-hotfix17.4
+versionCode=509174
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.3 · 强制同步新版 hnc_httpd · 固定 /system/bin/tc 路径 · MIUI14 mq root HTB fallback · ACTIVE 后能力重探测 · 跳过旧网段离线 restore · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix17.4 · JIT TC 自愈 · set_limit/set_delay 前自动重建 HTB 树 · 修复 MIUI14 wlan1 root qdisc 回到 mq 后 class/netem 失败 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
