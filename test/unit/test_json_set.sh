@@ -240,3 +240,44 @@ content=$(cat "$HNC_TEST_DIR/data/rules.json")
 assert_not_contains "$content" 'ee:01' && \
     assert_not_contains "$content" 'ee:02' && \
     assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+
+# ═══ hotfix18.0 JSON writer fuzz / regression tests ═════════════
+test_start "top update preserves comma inside existing string"
+seed_rules '{"version":1,"hotspot_ssid":"我家,客房","devices":{},"blacklist":[]}'
+js top hotspot_ssid "新家,客房"
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"hotspot_ssid":"新家,客房"' && \
+    assert_contains "$content" '"devices":{}' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "top update preserves right brace inside string"
+seed_rules '{"version":1,"hotspot_ssid":"A}B,old","devices":{},"blacklist":[]}'
+js top hotspot_ssid "A}B,new"
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"hotspot_ssid":"A}B,new"' && \
+    assert_contains "$content" '"blacklist":[]' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "device update preserves comma and brace in string field"
+seed_rules '{"version":1,"devices":{"aa:bb:cc:dd:ee:ff":{"note":"old,value}x","down_mbps":8}},"blacklist":[]}'
+js device aa:bb:cc:dd:ee:ff note "new,value}x"
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"note":"new,value}x"' && \
+    assert_contains "$content" '"down_mbps":8' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "device insert quotes IP-like strings"
+seed_rules '{"version":1,"devices":{},"blacklist":[]}'
+js device aa:bb:cc:dd:ee:ff ip 192.168.43.5
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"ip": "192.168.43.5"' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "device update preserves escaped quote in old string"
+seed_rules '{"version":1,"devices":{"aa:bb:cc:dd:ee:ff":{"note":"Bob\"s,old","down_mbps":8}},"blacklist":[]}'
+js device aa:bb:cc:dd:ee:ff note 'Bob"s,new'
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"note":"Bob\"s,new"' && \
+    assert_contains "$content" '"down_mbps":8' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass

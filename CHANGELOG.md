@@ -1,3 +1,13 @@
+# v5.1.0-rc1-hotfix18.0
+
+## JSON writer hardening
+
+- Replaced the high-risk `json_set.sh top` and `json_set.sh device` value replacement paths with a small awk state-machine writer.
+- Fixes string values containing commas, right braces, escaped quotes, and backslashes corrupting `rules.json`.
+- Keeps the existing Android-shell-only dependency model; no Python/jq runtime requirement.
+- Adds regression tests for SSID/device fields containing comma, `}`, IP-like strings, and escaped quotes.
+- This is the first step of the hotfix18 JSON unification track. Array helpers and deeper C/Go JSON unification remain scheduled for later hotfix18.x work.
+
 ## v5.1.0-rc1-hotfix17.8
 
 - 安全：`auth_required` 字段缺失或非 bool 时 fail-closed，避免 rules.json 损坏导致匿名放行。

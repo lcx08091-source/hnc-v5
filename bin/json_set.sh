@@ -115,9 +115,11 @@ json_encode() {
             if echo "$v" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
                 echo "$v"
             else
-                # 转义内嵌的双引号和反斜杠，避免破坏 JSON
+                # hotfix18.0: 字符串值统一做 JSON-safe 编码。
+                # 去掉控制字符，再转义反斜杠和双引号，避免 SSID/名称中
+                # 的逗号、右花括号、反斜杠、引号破坏 rules.json。
                 local esc
-                esc=$(printf '%s' "$v" | sed 's/\\/\\\\/g; s/"/\\"/g')
+                esc=$(printf '%s' "$v" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
                 echo "\"$esc\""
             fi
             ;;
@@ -152,6 +154,84 @@ atomic_write() {
     mv "$TMP" "$RULES"
 }
 
+# ═══════════════════════════════════════════════════════════════
+# hotfix18.0: JSON state-machine writer for rules.json
+#
+# 旧 top/device 写路径用 awk 正则 `[^,}]*` 替换值。字符串里只要
+# 出现逗号、右花括号、转义引号，就会提前截断，写坏 rules.json。
+# 这里改成字符级扫描：识别 JSON 字符串、转义、对象/数组深度，
+# 只在目标对象层级替换目标 key 的 value。
+#
+# 范围：top 与 device 两条最高频/最高风险写路径。
+# 约束：不依赖 python/jq，兼容 Android busybox/toybox awk。
+# ═══════════════════════════════════════════════════════════════
+json_update_top_safe() {
+    local field="$1"
+    local jval="$2"
+    awk -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(key,target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==key){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(findkey(field,1,1,n)) {
+            print substr(s,1,fs-1) val substr(s,fe)
+            exit
+        }
+        p=index(s,"{")
+        if(!p){ print s; exit 1 }
+        q=skipws(p+1)
+        comma=(ch(q)=="}" ? "" : ",")
+        print substr(s,1,p) "\"" field "\": " val comma substr(s,p+1)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
+json_update_device_safe() {
+    local mac="$1"
+    local field="$2"
+    local jval="$3"
+    awk -v mac="$mac" -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function objend(i,   j,c,se,depth){ depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return 0; j=se; continue } if(c=="{") depth++; else if(c=="}"){ depth--; if(depth==0) return j } } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(key,target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==key){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey("devices",1,1,n) || ch(skipws(fs))!="{") {
+            p=index(s,"{"); if(!p){ print s; exit 1 }
+            newdev="\"devices\": {\"" mac "\": {\"" field "\": " val "}}"
+            q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
+            print substr(s,1,p) newdev comma substr(s,p+1)
+            exit
+        }
+        dev_start=skipws(fs); dev_end=objend(dev_start)
+        if(!dev_end){ print s; exit 1 }
+
+        if(!findkey(mac,2,dev_start,dev_end) || ch(skipws(fs))!="{") {
+            entry="\"" mac "\": {\"" field "\": " val "}"
+            q=skipws(dev_start+1); comma=(ch(q)=="}" ? "" : ",")
+            print substr(s,1,dev_start) entry comma substr(s,dev_start+1)
+            exit
+        }
+        mac_start=skipws(fs); mac_end=objend(mac_start)
+        if(!mac_end){ print s; exit 1 }
+
+        if(findkey(field,3,mac_start,mac_end)) {
+            print substr(s,1,fs-1) val substr(s,fe)
+            exit
+        }
+        entry="\"" field "\": " val
+        q=skipws(mac_start+1); comma=(ch(q)=="}" ? "" : ",")
+        print substr(s,1,mac_start) entry comma substr(s,mac_start+1)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
 case "$CMD" in
 
 # ── 更新顶层字段（hotspot_auto / whitelist_mode 等）────────
@@ -163,115 +243,17 @@ case "$CMD" in
 top)
     FIELD=$2; VALUE=$3
     JVAL=$(json_encode "$VALUE")
-
-    if grep -q "\"$FIELD\"[[:space:]]*:" "$RULES" 2>/dev/null; then
-        # 字段已存在：精确替换该字段的值
-        # 关键：单行 JSON 不能用 line-sub，否则会替换到文件里第一个字段
-        awk -v field="$FIELD" -v val="$JVAL" '
-        {
-            pat="\"" field "\"[[:space:]]*:[[:space:]]*[^,}]*"
-            rep="\"" field "\": " val
-            gsub(pat, rep)
-            print
-        }' "$RULES" > "$TMP" && atomic_write
-    else
-        # 字段不存在：在首层对象的 "{" 之后插入
-        awk -v field="$FIELD" -v val="$JVAL" '
-        BEGIN { depth=0; inserted=0 }
-        {
-            if (!inserted) {
-                n=split($0,chars,"")
-                for(i=1;i<=n;i++){
-                    if(chars[i]=="{") {
-                        depth++
-                        if(depth==1) {
-                            # 在这一行的 "{" 后插入新字段
-                            pre=substr($0,1,i)
-                            post=substr($0,i+1)
-                            # 若 "{" 后紧接 "}"（空对象），新字段不需要逗号
-                            if (post ~ /^[[:space:]]*\}/) {
-                                $0 = pre "\"" field "\": " val post
-                            } else {
-                                $0 = pre "\"" field "\": " val "," post
-                            }
-                            inserted=1
-                            break
-                        }
-                    }
-                }
-            }
-            print
-        }' "$RULES" > "$TMP" && atomic_write
-    fi
+    json_update_top_safe "$FIELD" "$JVAL"
     ;;
+
 
 # ── 更新设备字段 ──────────────────────────────────────────
 device)
     MAC=$2; FIELD=$3; VALUE=$4
     JVAL=$(json_encode "$VALUE")
-
-    # 检查 devices 里有没有这个 MAC 的条目
-    if grep -q "\"$MAC\"[[:space:]]*:[[:space:]]*{" "$RULES" 2>/dev/null; then
-        # MAC 存在：尝试更新或插入字段
-        # v3.3.0：改用 match/substr 按 MAC 块精确定位，支持单行/多行 JSON
-        if grep -oE "\"$MAC\"[[:space:]]*:[[:space:]]*\{[^}]*\"$FIELD\"[[:space:]]*:" "$RULES" >/dev/null 2>&1; then
-            # 字段存在：在 MAC 块内替换
-            awk -v mac="$MAC" -v field="$FIELD" -v val="$JVAL" '
-            {
-                line=$0
-                mac_pat="\"" mac "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}"
-                if (match(line, mac_pat)) {
-                    block=substr(line, RSTART, RLENGTH)
-                    rest =substr(line, RSTART+RLENGTH)
-                    pre  =substr(line, 1, RSTART-1)
-                    fpat ="\"" field "\"[[:space:]]*:[[:space:]]*[^,}]*"
-                    frep ="\"" field "\": " val
-                    gsub(fpat, frep, block)
-                    print pre block rest
-                } else {
-                    print line
-                }
-            }' "$RULES" > "$TMP" && atomic_write
-        else
-            # 字段不存在：在 MAC 块的 "{" 后插入新字段
-            awk -v mac="$MAC" -v field="$FIELD" -v val="$JVAL" '
-            {
-                line=$0
-                mac_pat="\"" mac "\"[[:space:]]*:[[:space:]]*\\{"
-                if (match(line, mac_pat)) {
-                    brace_end=RSTART+RLENGTH
-                    pre =substr(line, 1, brace_end-1)
-                    post=substr(line, brace_end)
-                    if (post ~ /^[[:space:]]*\}/) {
-                        line = pre "\"" field "\": " val post
-                    } else {
-                        line = pre "\"" field "\": " val "," post
-                    }
-                }
-                print line
-            }' "$RULES" > "$TMP" && atomic_write
-        fi
-    else
-        # MAC 不存在：在 "devices": { 后插入新条目
-        awk -v mac="$MAC" -v field="$FIELD" -v val="$JVAL" '
-        {
-            line=$0
-            if (match(line, /"devices"[[:space:]]*:[[:space:]]*\{/)) {
-                brace_end=RSTART+RLENGTH
-                pre =substr(line, 1, brace_end-1)
-                post=substr(line, brace_end)
-                new_entry="\"" mac "\": {\"" field "\": " val "}"
-                if (post ~ /^[[:space:]]*\}/) {
-                    # 空 devices 对象
-                    line = pre new_entry post
-                } else {
-                    line = pre new_entry "," post
-                }
-            }
-            print line
-        }' "$RULES" > "$TMP" && atomic_write
-    fi
+    json_update_device_safe "$MAC" "$FIELD" "$JVAL"
     ;;
+
 
 # ── 删除设备整条规则记录 ────────────────────────────────────
 # hotfix10: cleanup_stale_rules.sh 需要按 MAC 删除 rules.json.devices[mac]
