@@ -79,6 +79,7 @@ UPLINK_LOG_ONCE="$HNC_DIR/run/uplink_unsupported_logged"
 # precise  = smaller burst/cburst, closer speed cap, may increase CPU/latency.
 QOS_MODE_FILE="$HNC_DIR/run/tc_qos_mode"
 QOS_FALLBACK_MARKER="$HNC_DIR/run/tc_qos_fallback"
+QOS_SCALE_FILE="$HNC_DIR/run/tc_qos_scale"
 
 json_top_string() {
     local key=$1 file=${2:-$RULES_FILE}
@@ -102,6 +103,47 @@ qos_mode_raw() {
 
 qos_mode() { qos_mode_raw; }
 qos_precise_mode() { [ "$(qos_mode)" = "precise" ]; }
+
+# hotfix17.6: root-HTB fallback rate calibration.
+# Android Wi-Fi root HTB can report higher real throughput than configured rate
+# because of driver/airtime buffering and speed-test bursts. The calibration scale
+# is only applied when root HTB fallback is active, so normal full-path devices are
+# unaffected.
+qos_scale_raw() {
+    local v
+    v=$(cat "$QOS_SCALE_FILE" 2>/dev/null | head -1 | tr -d '\r\n %')
+    [ -n "$v" ] || v=$(json_top_string tc_qos_scale | tr -d '\r\n %')
+    case "$v" in
+        ''|*[!0-9]*) v=100 ;;
+    esac
+    [ "$v" -lt 50 ] && v=50
+    [ "$v" -gt 120 ] && v=120
+    echo "$v"
+}
+qos_scale_percent() { qos_scale_raw; }
+
+qos_root_fallback_active() {
+    [ -f "$QOS_FALLBACK_MARKER" ] && return 0
+    [ -f "$CAP_FILE" ] && grep -Eq '"downlink_mode"[[:space:]]*:[[:space:]]*"(root_htb|htb_root)"|"qos_fallback_required"[[:space:]]*:[[:space:]]*true' "$CAP_FILE" 2>/dev/null && return 0
+    return 1
+}
+
+qos_effective_mbps_for_downlink() {
+    local requested=${1:-0} scale mode saved
+    mode=$(qos_mode)
+    saved=$(cat "$QOS_SCALE_FILE" 2>/dev/null | head -1 | tr -d '\r\n %')
+    [ -n "$saved" ] || saved=$(json_top_string tc_qos_scale 2>/dev/null | tr -d '\r\n %')
+    scale=$(qos_scale_percent)
+    # Precise mode defaults to 85% only when user has not saved a scale.
+    if qos_root_fallback_active; then
+        if [ -z "$saved" ] && [ "$mode" = "precise" ]; then
+            scale=85
+        fi
+        awk -v v="$requested" -v s="$scale" 'BEGIN{printf "%.6f", (v+0)*s/100}'
+    else
+        awk -v v="$requested" 'BEGIN{printf "%.6f", v+0}'
+    fi
+}
 
 qos_mark_root_fallback() {
     mkdir -p "$HNC_DIR/run" 2>/dev/null || true
@@ -1205,7 +1247,7 @@ set_limit() {
     _validate_mark_id "$mark_id" || return 1
     local class_id; class_id=$(printf "%d" "$mark_id")
 
-    log "set_limit: mark=$mark_id ip=${ip:-(none)} dn=${down_mbps}M up=${up_mbps}M qos=$(qos_mode)"
+    log "set_limit: mark=$mark_id ip=${ip:-(none)} dn=${down_mbps}M up=${up_mbps}M qos=$(qos_mode) scale=$(qos_scale_percent)%"
 
     # hotfix16.9: if capability_probe proved HTB unavailable, do not try to
     # create classes/qdiscs. On MIUI14 this used to block WebUI until timeout.
@@ -1224,14 +1266,15 @@ set_limit() {
     if gt0 "$down_mbps"; then
         ensure_egress_htb_ready "$iface" "set_limit" || return 1
         ensure_device_class "$iface" "$class_id" "$ip" || return 1
-        local dn_rate;  dn_rate=$(mbps_to_rate "$down_mbps")
-        local dn_burst; dn_burst=$(burst_for_rate "$down_mbps")
+        local dn_effective_mbps; dn_effective_mbps=$(qos_effective_mbps_for_downlink "$down_mbps")
+        local dn_rate;  dn_rate=$(mbps_to_rate "$dn_effective_mbps")
+        local dn_burst; dn_burst=$(burst_for_rate "$dn_effective_mbps")
         if ! set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst"; then
             log_error "set_limit: egress rate set failed dev=$iface class=1:$class_id; retrying after HTB self-heal"
             ensure_egress_htb_ready "$iface" "set_limit_rate_retry" && ensure_device_class "$iface" "$class_id" "$ip" && \
                 set_rate_only "$iface" "$class_id" "$dn_rate" "$dn_burst" || { log_error "set_limit: egress rate set failed after retry dev=$iface class=1:$class_id"; return 1; }
         fi
-        log "  Egress 1:$class_id @ $dn_rate burst $dn_burst"
+        log "  Egress 1:$class_id @ $dn_rate burst $dn_burst (requested=${down_mbps}M effective=${dn_effective_mbps}M)"
     else
         # 关限速：只重置 rate，保留 leaf netem（可能承载延迟）
         if class_exists "$iface" "$class_id"; then
@@ -1748,6 +1791,48 @@ cleanup_tc() {
     log "TC cleanup done"
 }
 
+# hotfix17.7: serialize TC writers and snapshot kernel state.
+# This protects set_limit/set_delay/restore/cleanup from overlapping with each other
+# when WebUI, watchdog, and delayed restore fire at the same time.
+TC_ACTION_LOCK="$HNC_DIR/run/tc_action.lock"
+TC_ACTION_STALE_SEC=25
+
+tc_action_lock() {
+    mkdir -p "$HNC_DIR/run" 2>/dev/null || true
+    local now old age owner
+    now=$(date +%s 2>/dev/null || echo 0)
+    if mkdir "$TC_ACTION_LOCK" 2>/dev/null; then
+        echo "$$ $1 $now" > "$TC_ACTION_LOCK/owner" 2>/dev/null || true
+        return 0
+    fi
+    old=$(awk '{print $3}' "$TC_ACTION_LOCK/owner" 2>/dev/null)
+    owner=$(cat "$TC_ACTION_LOCK/owner" 2>/dev/null)
+    [ -n "$old" ] || old=0
+    age=$((now - old))
+    if [ "$age" -ge "$TC_ACTION_STALE_SEC" ] 2>/dev/null; then
+        log_error "tc_action_lock: stale lock age=${age}s owner=${owner}; reclaim"
+        rm -rf "$TC_ACTION_LOCK" 2>/dev/null || true
+        if mkdir "$TC_ACTION_LOCK" 2>/dev/null; then
+            echo "$$ $1 $now" > "$TC_ACTION_LOCK/owner" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    log "tc_action_lock: busy owner=${owner} requester=$1"
+    echo "TC_ACTION_BUSY=1"
+    return 1
+}
+
+tc_action_unlock() {
+    rm -rf "$TC_ACTION_LOCK" 2>/dev/null || true
+}
+
+tc_snapshot_async() {
+    local iface="$1"
+    [ -x "$HNC_DIR/bin/tc_state_snapshot.sh" ] || return 0
+    ( HNC_DIR="$HNC_DIR" sh "$HNC_DIR/bin/tc_state_snapshot.sh" "$iface" >/dev/null 2>&1 ) &
+}
+
+
 # ─── 命令分发 ────────────────────────────────────────────────
 # v3.9.2 Patch 0 锁策略:
 #   - 全局写(init / cleanup / restore): gate 锁
@@ -1761,37 +1846,75 @@ cleanup_tc() {
 
 case "$1" in
     init)
-        gate_lock || exit 11
+        tc_action_lock init || exit 12
+        gate_lock || { tc_action_unlock; exit 11; }
         init_tc "$2"
         rc=$?
         gate_unlock
+        tc_snapshot_async "$2"
+        tc_action_unlock
         exit $rc ;;
     cleanup)
-        gate_lock || exit 11
+        tc_action_lock cleanup || exit 12
+        gate_lock || { tc_action_unlock; exit 11; }
         cleanup_tc "$2"
         rc=$?
         gate_unlock
+        tc_snapshot_async "$2"
+        tc_action_unlock
         exit $rc ;;
     restore)
-        gate_lock || exit 11
+        tc_action_lock restore || exit 12
+        gate_lock || { tc_action_unlock; exit 11; }
         restore_rules
         rc=$?
         gate_unlock
+        tc_snapshot_async "$(cat "$HNC_DIR/run/iface.cache" 2>/dev/null | head -1)"
+        tc_action_unlock
         exit $rc ;;
     ensure_ingress)
+        tc_action_lock ensure_ingress || exit 12
         ensure_ingress_mirred_v1 "$2"
-        exit $? ;;
+        rc=$?
+        tc_snapshot_async "$2"
+        tc_action_unlock
+        exit $rc ;;
 
-    set_limit)  set_limit "$2" "$3" "$4" "$5" "$6" ;;
-    set_delay)  set_delay "$2" "$3" "$4" "$5" "$6" "$7" ;;
-    set_all)    set_all   "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" ;;
-    remove)     remove_device "$2" "$3" ;;
+    set_limit)
+        tc_action_lock set_limit || exit 12
+        set_limit "$2" "$3" "$4" "$5" "$6"
+        rc=$?
+        tc_snapshot_async "$2"
+        tc_action_unlock
+        exit $rc ;;
+    set_delay)
+        tc_action_lock set_delay || exit 12
+        set_delay "$2" "$3" "$4" "$5" "$6" "$7"
+        rc=$?
+        tc_snapshot_async "$2"
+        tc_action_unlock
+        exit $rc ;;
+    set_all)
+        tc_action_lock set_all || exit 12
+        set_all "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+        rc=$?
+        tc_snapshot_async "$2"
+        tc_action_unlock
+        exit $rc ;;
+    remove)
+        tc_action_lock remove || exit 12
+        remove_device "$2" "$3"
+        rc=$?
+        tc_snapshot_async "$2"
+        tc_action_unlock
+        exit $rc ;;
 
     status)     show_status "$2" ;;
+    snapshot)   sh "$HNC_DIR/bin/tc_state_snapshot.sh" "$2" ;;
     *)
-        echo "Usage: tc_manager.sh {init|set_limit|set_delay|set_all|remove|restore|ensure_ingress|status|cleanup}"
+        echo "Usage: tc_manager.sh {init|set_limit|set_delay|set_all|remove|restore|ensure_ingress|status|snapshot|cleanup}"
         echo ""
-        echo "v5.1.0-rc1-hotfix13: unified ingress mirred path; root qdisc ownership-aware cleanup"
+        echo "v5.1.0-rc1-hotfix17.7: TC writer serialization + state snapshot"
         echo ""
         echo "验证限速命令："
         echo "  tc qdisc show dev \$IFACE"
@@ -1802,4 +1925,3 @@ case "$1" in
         echo "  iptables -t mangle -L HNC_MARK -nv"
         exit 1 ;;
 esac
-

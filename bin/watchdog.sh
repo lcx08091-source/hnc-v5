@@ -118,6 +118,46 @@ run_capability_probe_active() {
     _HEALTH_TS=0
 }
 
+# hotfix17.7: TC repair circuit breaker.
+# If tc init/restore keeps failing, stop automatic repairs for a while to avoid
+# UI stalls, battery drain, and watchdog log storms. Manual WebUI operations still
+# call tc_manager directly and can recover the state.
+TC_REPAIR_OPEN_UNTIL="$RUN/tc_repair_open_until"
+TC_REPAIR_FAIL_COUNT="$RUN/tc_repair_fail_count"
+TC_REPAIR_FUSE_THRESHOLD=3
+TC_REPAIR_FUSE_SEC=300
+
+tc_repair_allowed() {
+    local now until left
+    now=$(date +%s 2>/dev/null || echo 0)
+    until=$(cat "$TC_REPAIR_OPEN_UNTIL" 2>/dev/null || echo 0)
+    if [ -n "$until" ] && [ "$until" -gt "$now" ] 2>/dev/null; then
+        left=$((until - now))
+        log "tc repair circuit open, skip auto restore for ${left}s"
+        return 1
+    fi
+    return 0
+}
+
+tc_repair_record() {
+    local ok=${1:-0} cnt now until
+    if [ "$ok" = "1" ]; then
+        rm -f "$TC_REPAIR_FAIL_COUNT" "$TC_REPAIR_OPEN_UNTIL" 2>/dev/null || true
+        return 0
+    fi
+    cnt=$(cat "$TC_REPAIR_FAIL_COUNT" 2>/dev/null || echo 0)
+    cnt=$((cnt + 1))
+    echo "$cnt" > "$TC_REPAIR_FAIL_COUNT" 2>/dev/null || true
+    if [ "$cnt" -ge "$TC_REPAIR_FUSE_THRESHOLD" ]; then
+        now=$(date +%s 2>/dev/null || echo 0)
+        until=$((now + TC_REPAIR_FUSE_SEC))
+        echo "$until" > "$TC_REPAIR_OPEN_UNTIL" 2>/dev/null || true
+        echo 0 > "$TC_REPAIR_FAIL_COUNT" 2>/dev/null || true
+        log_error "tc repair failed ${cnt} times; circuit open for ${TC_REPAIR_FUSE_SEC}s"
+    fi
+}
+
+
 # v4.0 Patch 1.6 心跳 + 轮转的最后时间
 # 每 5 分钟至少打一行 "alive" log(即使啥都没发生也有证据 watchdog 活着)
 # 每次主循环也顺便调用一次 log_rotate,防止任何 log 涨爆
@@ -290,6 +330,12 @@ full_restore() {
         return 1
     fi
 
+    if ! tc_repair_allowed; then
+        _HEALTH_TS=0
+        _HEALTH_RC=0
+        return 0
+    fi
+
     sh "$HNC_DIR/bin/iptables_manager.sh" init >> "$LOG" 2>&1
     run_capability_probe_active "$iface"
     if ! watchdog_tc_core_supported; then
@@ -318,10 +364,17 @@ full_restore() {
     if [ $tc_init_rc -ne 0 ]; then
         log "full_restore: tc init rc=$tc_init_rc, continuing to restore anyway (hotfix1 fallback)"
     fi
-    sh "$HNC_DIR/bin/tc_manager.sh" restore >> "$LOG" 2>&1
+    sh "/bin/tc_manager.sh" restore >> "" 2>&1
+    local tc_restore_rc=0
+    if [  -eq 0 ] && [  -eq 0 ]; then
+        tc_repair_record 1
+        _HEALTH_RC=0
+    else
+        tc_repair_record 0
+        _HEALTH_RC=1
+    fi
     _HEALTH_TS=0
-    _HEALTH_RC=1
-    log "RESTORE complete"
+    log "RESTORE complete init_rc= restore_rc="
 }
 
 # ── 子服务存活检查 ──────────────────────────────────────────

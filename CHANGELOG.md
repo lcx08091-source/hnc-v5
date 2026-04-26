@@ -1,4 +1,12 @@
 
+## v5.1.0-rc1-hotfix17.7
+
+- 稳定性：TC 写操作串行化，避免 WebUI、watchdog、延迟恢复同时修改 qdisc/class/filter。
+- 稳定性：WebUI 设备卡增加操作 busy guard，防止连续点击导致状态漂移。
+- 观测性：新增 `bin/tc_state_snapshot.sh`，生成 `run/tc_state.json` 与 qdisc/class/filter 摘要。
+- 稳定性：watchdog TC 自动修复增加失败熔断，连续失败后暂停自动修复，避免刷日志和耗电。
+
+
 
 ## v5.1.0-rc1-hotfix17.5
 
@@ -6311,3 +6319,12 @@ v3.3.1 → v3.3.2 升级路径：刷入后重启 → `service.sh` 调 `init_tc` 
 - 初始公开版本
 - 支持限速 / 延迟 / 黑白名单 / 热点自动启动
 - 纯 shell 实现，兼容 Magisk 与 KernelSU
+
+
+## v5.1.0-rc1-hotfix17.6
+
+- Added root HTB fallback rate calibration for Android Wi-Fi hotspot shaping.
+- WebUI now shows calibration choices only when root HTB fallback is active: 标准 / 稳准 / 严格.
+- `tc_manager.sh` reads `tc_qos_scale` from run state or rules.json and applies it only to fallback downlink shaping.
+- Precise mode defaults to a mild 85% calibration when no explicit scale was saved, reducing common speed-test overshoot.
+- Normal full-path HTB devices are not affected by calibration.

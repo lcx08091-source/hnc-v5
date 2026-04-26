@@ -1438,6 +1438,10 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
 .qos-mode-seg {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
 }
+.qos-scale-seg {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;
+  margin-top: 6px;
+}
 .qos-mode-btn {
   min-height: 32px;
   border-radius: 10px;
@@ -1526,6 +1530,10 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
 }
 .btn-icon { flex: 0 0 auto; width: 40px; padding: 11px; }
 .btn.loading { pointer-events: none; color: transparent; }
+.device-card.op-busy { opacity: .92; }
+.device-card.op-busy .card-body-inner { position: relative; }
+.device-card.op-busy .ctrl-section { filter: saturate(.9); }
+.device-card.op-busy button:not(.loading) { cursor: wait; opacity: .72; }
 .btn.loading::after {
   content: "";
   position: absolute; inset: 0;
@@ -3372,6 +3380,20 @@ body.kb-open .container {
     return 'compat';
   }
   function qosModeLabel(mode) { return normalizeQosMode(mode) === 'precise' ? '精确' : '兼容'; }
+  function normalizeQosScale(scale) {
+    let n = parseInt(String(scale || '').replace(/[^0-9]/g, ''), 10);
+    if (!Number.isFinite(n)) n = 100;
+    if (n < 50) n = 50;
+    if (n > 120) n = 120;
+    return n;
+  }
+  function qosScaleLabel(scale) {
+    const n = normalizeQosScale(scale);
+    if (n === 100) return '标准';
+    if (n === 85) return '稳准';
+    if (n === 75) return '严格';
+    return n + '%';
+  }
   function shouldShowQosModeSwitch() {
     const cap = state.capabilities || {};
     if (!isDownlinkLimitSupported()) return false;
@@ -3382,13 +3404,52 @@ body.kb-open .container {
     if (mode === 'root_htb' || mode === 'htb_root') return true;
     return false;
   }
+
+  /* hotfix17.7 · UI action guard: one card-level write at a time.
+   * Backend has its own tc action lock; this keeps KSU WebView responsive and
+   * prevents repeated taps from queueing conflicting limit/delay/clear actions. */
+  function cardBusyKey(card) {
+    return card ? ('card:' + (card.dataset.mac || 'unknown')) : 'global';
+  }
+  function isCardBusy(card) {
+    return !!state.actionBusy[cardBusyKey(card)];
+  }
+  function setCardBusy(card, busy, reason) {
+    if (!card) return;
+    const key = cardBusyKey(card);
+    if (busy) state.actionBusy[key] = reason || 'busy';
+    else delete state.actionBusy[key];
+    card.classList.toggle('op-busy', !!busy);
+    card.querySelectorAll('button[data-action], button[data-qos-mode], button[data-qos-scale]').forEach(b => {
+      if (busy) {
+        if (!b.dataset.prevDisabled) b.dataset.prevDisabled = b.disabled ? '1' : '0';
+        b.disabled = true;
+      } else {
+        if (b.dataset.prevDisabled === '0') b.disabled = false;
+        delete b.dataset.prevDisabled;
+      }
+    });
+  }
+  function guardCardAction(card) {
+    if (isCardBusy(card)) {
+      toast('该设备正在应用上一条操作，请稍后', 'warn');
+      return false;
+    }
+    return true;
+  }
+
   async function readLocalQosHints() {
     try {
-      const raw = await kexec('printf "mode="; cat /data/local/hnc/run/tc_qos_mode 2>/dev/null; printf "\nfallback="; cat /data/local/hnc/run/tc_qos_fallback 2>/dev/null');
+      const raw = await kexec('printf "mode="; cat /data/local/hnc/run/tc_qos_mode 2>/dev/null; printf "\nscale="; cat /data/local/hnc/run/tc_qos_scale 2>/dev/null; printf "\nfallback="; cat /data/local/hnc/run/tc_qos_fallback 2>/dev/null');
       const m = String(raw || '').match(/mode=([^\n\r ]+)/);
       if (m && m[1]) {
         state.qosMode = normalizeQosMode(m[1]);
         try { localStorage.setItem('hnc.qos-mode', state.qosMode); } catch (_) {}
+      }
+      const sm = String(raw || '').match(/scale=([^\n\r ]+)/);
+      if (sm && sm[1]) {
+        state.qosScale = normalizeQosScale(sm[1]);
+        try { localStorage.setItem('hnc.qos-scale', String(state.qosScale)); } catch (_) {}
       }
       state.qosFallbackRequired = /fallback=.+/.test(String(raw || ''));
     } catch (_) {}
@@ -3399,6 +3460,13 @@ body.kb-open .container {
     try { localStorage.setItem('hnc.qos-mode', mode); } catch (_) {}
     await kexec('mkdir -p ' + HNC + '/run; echo ' + sq(mode) + ' > ' + HNC + '/run/tc_qos_mode; sh ' + HNC + '/bin/json_set.sh top tc_qos_mode ' + sq(mode));
     return mode;
+  }
+  async function setQosScaleBackend(scale) {
+    scale = normalizeQosScale(scale);
+    state.qosScale = scale;
+    try { localStorage.setItem('hnc.qos-scale', String(scale)); } catch (_) {}
+    await kexec('mkdir -p ' + HNC + '/run; echo ' + sq(String(scale)) + ' > ' + HNC + '/run/tc_qos_scale; sh ' + HNC + '/bin/json_set.sh top tc_qos_scale ' + sq(String(scale)));
+    return scale;
   }
   function unsupportedError(message, detail) {
     const e = new Error(message);
@@ -3419,6 +3487,7 @@ body.kb-open .container {
     state.capabilities = cap;
     if (typeof cap.uplink_supported === 'boolean') state.uplinkSupported = !!cap.uplink_supported;
     if (cap.tc_qos_mode) state.qosMode = normalizeQosMode(cap.tc_qos_mode);
+    if (cap.tc_qos_scale) state.qosScale = normalizeQosScale(cap.tc_qos_scale);
     if (typeof cap.qos_fallback_required === 'boolean') state.qosFallbackRequired = !!cap.qos_fallback_required;
     state.downlinkSupported = isDownlinkLimitSupported();
     state.delaySupported = isDelaySupported();
@@ -3672,8 +3741,10 @@ body.kb-open .container {
     capabilitiesApiUnavailable: false,
     capabilitiesApiWarned: false,
     qosMode: localStorage.getItem('hnc.qos-mode') || 'compat',
+    qosScale: normalizeQosScale(localStorage.getItem('hnc.qos-scale') || '100'),
     qosFallbackRequired: false,
-    refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced'
+    refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced',
+    actionBusy: Object.create(null)
   };
 
   /* ═══════════════════════════════════════════════════════════════
@@ -3825,6 +3896,7 @@ body.kb-open .container {
     const applyDelayAttr = delayDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 netem/HTB，延迟注入不可用"' : '';
     const showQosSwitch = shouldShowQosModeSwitch();
     const qm = normalizeQosMode(state.qosMode);
+    const qs = normalizeQosScale(state.qosScale);
     const qosModePanel = showQosSwitch ? `
               <div class="qos-mode-panel">
                 <div class="qos-mode-head">
@@ -3834,7 +3906,12 @@ body.kb-open .container {
                   <button type="button" class="qos-mode-btn ${qm === 'precise' ? 'active' : ''}" data-qos-mode="precise">精确</button>
                   <button type="button" class="qos-mode-btn ${qm === 'compat' ? 'active' : ''}" data-qos-mode="compat">兼容</button>
                 </div>
-                <div class="qos-mode-desc">当前设备无法使用最精确队列链路，已进入 root HTB fallback。精确模式会减小 burst，让测速更接近设定；兼容模式更稳，允许短暂突发。</div>
+                <div class="qos-scale-seg">
+                  <button type="button" class="qos-mode-btn ${qs === 100 ? 'active' : ''}" data-qos-scale="100">标准</button>
+                  <button type="button" class="qos-mode-btn ${qs === 85 ? 'active' : ''}" data-qos-scale="85">稳准</button>
+                  <button type="button" class="qos-mode-btn ${qs === 75 ? 'active' : ''}" data-qos-scale="75">严格</button>
+                </div>
+                <div class="qos-mode-desc">当前设备无法使用最精确队列链路，已进入 root HTB fallback。精确模式会减小 burst；校准越严格，实际测速越接近设定，但可能略低于目标。兼容模式更稳，允许短暂突发。</div>
               </div>` : '';
     const upValue = uplinkDisabled ? '' : (d.up ? mbpsToMBsStr(d.up) : '');
     const selected = state.selected.has(d.mac) ? 'selected' : '';
@@ -5533,6 +5610,19 @@ body.kb-open .container {
       return;
     }
 
+    const qosScaleBtn = e.target.closest('[data-qos-scale]');
+    if (qosScaleBtn) {
+      const scale = normalizeQosScale(qosScaleBtn.dataset.qosScale);
+      qosScaleBtn.disabled = true;
+      setQosScaleBackend(scale).then(() => {
+        toast('限速校准已切换为' + qosScaleLabel(scale), 'ok');
+        renderDeviceList();
+      }).catch(err => {
+        toast('切换失败: ' + (err.message || err), 'err');
+      }).finally(() => { qosScaleBtn.disabled = false; });
+      return;
+    }
+
     /* 设备卡按钮操作 */
     const btn = e.target.closest('.btn[data-action]');
     if (!btn) return;
@@ -5547,16 +5637,18 @@ body.kb-open .container {
     if (action === 'apply-limit') {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
+      if (!guardCardAction(card)) return;
       const rates = readLimitInputs(card);
+      setCardBusy(card, true, action);
       btn.disabled = true; btn.classList.add('loading');
       applyLimitBackend(mac, rates.down, rates.up).then(() => {
         return requestForceRefresh();
       }).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('限速已应用: ↓' + mbpsToMBsStr(rates.down) + ' ↑' + mbpsToMBsStr(rates.up) + ' MB/s' + (state.uplinkSupported === false ? ' · 仅下行' : ''), 'ok');
-        setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
+        setTimeout(() => { btn.classList.remove('success'); setCardBusy(card, false); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
-        btn.classList.remove('loading'); btn.disabled = false;
+        btn.classList.remove('loading'); setCardBusy(card, false); btn.disabled = false;
         const detail = e.detail ? (': ' + e.detail) : ''; toast('失败: ' + e.message + detail, 'err'); dbg('apply-limit err: ' + e.message + detail, true);
       });
       return;
@@ -5564,13 +5656,15 @@ body.kb-open .container {
     if (action === 'clear-limit') {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
+      if (!guardCardAction(card)) return;
+      setCardBusy(card, true, action);
       btn.disabled = true; btn.classList.add('loading');
       clearLimitBackend(mac).then(() => requestForceRefresh()).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('限速已清除', 'ok');
-        setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
+        setTimeout(() => { btn.classList.remove('success'); setCardBusy(card, false); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
-        btn.classList.remove('loading'); btn.disabled = false;
+        btn.classList.remove('loading'); setCardBusy(card, false); btn.disabled = false;
         const detail = e.detail ? (': ' + e.detail) : ''; toast('失败: ' + e.message + detail, 'err'); dbg('clear-limit err: ' + e.message + detail, true);
       });
       return;
@@ -5578,6 +5672,8 @@ body.kb-open .container {
     if (action === 'apply-delay') {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
+      if (!guardCardAction(card)) return;
+      setCardBusy(card, true, action);
       const delay = parseInt((card.querySelector('input[data-field="delay"]')||{}).value || 0, 10);
       const jitter = parseInt((card.querySelector('input[data-field="jitter"]')||{}).value || 0, 10);
       const loss = parseFloat((card.querySelector('input[data-field="loss"]')||{}).value || 0);
@@ -5585,9 +5681,9 @@ body.kb-open .container {
       applyDelayBackend(mac, delay, jitter, loss).then(() => requestForceRefresh()).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('延迟已注入: ' + delay + 'ms ±' + jitter + 'ms ' + loss + '%', 'warn');
-        setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
+        setTimeout(() => { btn.classList.remove('success'); setCardBusy(card, false); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
-        btn.classList.remove('loading'); btn.disabled = false;
+        btn.classList.remove('loading'); setCardBusy(card, false); btn.disabled = false;
         const detail = e.detail ? (': ' + e.detail) : '';
         toast('失败: ' + e.message + detail, 'err');
         dbg('apply-delay err: ' + e.message + detail, true);
@@ -5597,13 +5693,15 @@ body.kb-open .container {
     if (action === 'clear-delay') {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;
+      if (!guardCardAction(card)) return;
+      setCardBusy(card, true, action);
       btn.disabled = true; btn.classList.add('loading');
       clearDelayBackend(mac).then(() => requestForceRefresh()).then(() => {
         btn.classList.remove('loading'); btn.classList.add('success');
         toast('延迟已清除', 'ok');
-        setTimeout(() => { btn.classList.remove('success'); btn.disabled = false; updateCardInPlace(mac); }, 650);
+        setTimeout(() => { btn.classList.remove('success'); setCardBusy(card, false); btn.disabled = false; updateCardInPlace(mac); }, 650);
       }).catch(e => {
-        btn.classList.remove('loading'); btn.disabled = false;
+        btn.classList.remove('loading'); setCardBusy(card, false); btn.disabled = false;
         const detail = e.detail ? (': ' + e.detail) : '';
         toast('失败: ' + e.message + detail, 'err');
         dbg('clear-delay err: ' + e.message + detail, true);
@@ -5777,6 +5875,7 @@ body.kb-open .container {
       }
       { const el = $("#hotspot-iface-pref"); if (el) el.value = cfg.hotspot_iface || "auto"; }
       if (cfg.tc_qos_mode) { state.qosMode = normalizeQosMode(cfg.tc_qos_mode); try { localStorage.setItem('hnc.qos-mode', state.qosMode); } catch (_) {} }
+      if (cfg.tc_qos_scale) { state.qosScale = normalizeQosScale(cfg.tc_qos_scale); try { localStorage.setItem('hnc.qos-scale', String(state.qosScale)); } catch (_) {} }
       // Whitelist / Auth / Offload · 全部 add/remove 对称
       setTog($$('[data-action="toggle-wl"]')[0],            !!cfg.whitelist_mode);
       setTog($$('[data-action="toggle-auth"]')[0],          !!cfg.auth_required);
