@@ -42,6 +42,8 @@ var remoteSnapshotStale = false;
 var hotspotActive = false;
 var remoteCapabilities = null;
 var remoteUplinkSupported = null;
+var remoteLiveApiUnavailable = false;
+var remoteCapabilitiesApiUnavailable = false;
 
 // UI sync/perf hotfix: avoid overlapping polls and stale slow responses.
 // Mobile browsers may take >5s on bad links; without this, old /api/devices
@@ -98,8 +100,9 @@ function deviceMacSignature(list) {
   return (list || []).map(function(d){ return d && d.mac || ''; }).sort().join('|');
 }
 function fetchLiveState() {
+  if (remoteLiveApiUnavailable) return Promise.resolve(null);
   return fetchWithTimeout('/api/live', { cache: 'no-store', credentials: 'same-origin' }, 5000)
-    .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(function(r){ if (!r.ok) { if (r.status === 404) remoteLiveApiUnavailable = true; throw new Error('HTTP '+r.status); } return r.json(); })
     .catch(function(){ return null; });
 }
 
@@ -109,8 +112,9 @@ function applyRemoteCapabilities(cap) {
   if (typeof cap.uplink_supported === 'boolean') remoteUplinkSupported = !!cap.uplink_supported;
 }
 function fetchRemoteCapabilities() {
+  if (remoteCapabilitiesApiUnavailable) return Promise.resolve(null);
   return fetchWithTimeout('/api/capabilities', { cache: 'no-store', credentials: 'same-origin' }, 5000)
-    .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(function(r){ if (!r.ok) { if (r.status === 404) remoteCapabilitiesApiUnavailable = true; throw new Error('HTTP '+r.status); } return r.json(); })
     .then(function(d){
       if (d && d.available === false) return null;
       var cap = d && (d.capabilities || d);

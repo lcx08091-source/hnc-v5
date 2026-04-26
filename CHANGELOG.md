@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix16.8
+
+- 修复 WebUI 轮询 `/api/live`、`/api/capabilities`、`/api/metrics` 时后端返回 404，导致调试弹窗连续显示 `invalid JSON: 404 page not found` 的问题。
+- 本地 WebUI 增加兼容降级：`/api/live` 缺失时回退到 `/api/devices` 轮询；`/api/capabilities` 缺失时直接读取 `/data/local/hnc/run/capabilities.json`。
+- hnc_httpd 源码补齐 `/api/live`、`/api/capabilities`、`/api/metrics` 兼容 endpoint，后续重新编译二进制后不再 404。
+- 远程 WebUI 遇到旧后端缺少 live/capability endpoint 时不再反复请求刷日志。
+
 ## v5.1.0-rc1-hotfix16.6 - P0 uplink downgrade closure / remote UI parity
 
 - 在 hotfix16.5 的基础上补齐第一阶段 P0 修复：上行能力不可用时，本地 WebUI、远程 WebUI、Go action、tc_manager 和 watchdog 都统一降级为 downlink-only。

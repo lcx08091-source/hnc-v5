@@ -3293,8 +3293,18 @@ body.kb-open .container {
     catch (e) { dbg('fetchConfig err: ' + e.message); return {}; }
   }
   async function fetchLive() {
+    if (state.liveApiUnavailable) return null;
     try { return await apiGet('/api/live'); }
-    catch (e) { dbg('fetchLive err: ' + e.message); return null; }
+    catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      if (/404|page not found/i.test(msg)) {
+        state.liveApiUnavailable = true;
+        if (!state.liveApiWarned) { dbg('/api/live 不存在，已降级为 /api/devices 轮询'); state.liveApiWarned = true; }
+      } else {
+        dbg('fetchLive err: ' + msg);
+      }
+      return null;
+    }
   }
 
   function applyCapabilities(cap) {
@@ -3303,15 +3313,32 @@ body.kb-open .container {
     if (typeof cap.uplink_supported === 'boolean') state.uplinkSupported = !!cap.uplink_supported;
   }
   async function fetchCapabilities() {
-    try {
-      const r = await apiGet('/api/capabilities');
-      const cap = (r && (r.capabilities || r)) || null;
-      applyCapabilities(cap);
-      return cap;
-    } catch (e) {
-      dbg('fetchCapabilities err: ' + e.message);
-      return null;
+    const readLocal = async () => {
+      try {
+        const raw = await kexec('cat /data/local/hnc/run/capabilities.json 2>/dev/null || true');
+        if (!raw || !raw.trim()) return null;
+        const cap = JSON.parse(raw);
+        applyCapabilities(cap);
+        return cap;
+      } catch (_) { return null; }
+    };
+    if (!state.capabilitiesApiUnavailable) {
+      try {
+        const r = await apiGet('/api/capabilities');
+        const cap = (r && (r.capabilities || r)) || null;
+        applyCapabilities(cap);
+        return cap;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (/404|page not found/i.test(msg)) {
+          state.capabilitiesApiUnavailable = true;
+          if (!state.capabilitiesApiWarned) { dbg('/api/capabilities 不存在，改读本地 capabilities.json'); state.capabilitiesApiWarned = true; }
+        } else {
+          dbg('fetchCapabilities err: ' + msg);
+        }
+      }
     }
+    return await readLocal();
   }
 
   function applyHotspotClosedState() {
@@ -3530,6 +3557,10 @@ body.kb-open .container {
     snapshotStale: false,
     capabilities: null,
     uplinkSupported: null,
+    liveApiUnavailable: false,
+    liveApiWarned: false,
+    capabilitiesApiUnavailable: false,
+    capabilitiesApiWarned: false,
     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced'
   };
 
