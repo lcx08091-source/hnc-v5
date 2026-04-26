@@ -180,6 +180,12 @@ if [ -n "$IFACE" ]; then
     REAL_QDISC=$("$TC_BIN" qdisc show dev "$IFACE" 2>&1 | head -3 | tr '\r\n' ' ' | cut -c1-240)
 fi
 
+# hotfix17.5: surface root-HTB fallback and QoS profile to WebUI.
+QOS_MODE=$(cat "$RUN/tc_qos_mode" 2>/dev/null | head -1 | tr -d '\r\n ' | tr 'A-Z' 'a-z')
+case "$QOS_MODE" in precise|precision|strict|accurate) QOS_MODE=precise ;; *) QOS_MODE=compat ;; esac
+QOS_FALLBACK_REQUIRED=false
+[ -s "$RUN/tc_qos_fallback" ] && QOS_FALLBACK_REQUIRED=true
+
 NOW=$(date +%s 2>/dev/null || echo 0)
 TMP="$OUT.tmp.$$"
 cat > "$TMP" <<EOF_JSON
@@ -195,6 +201,8 @@ cat > "$TMP" <<EOF_JSON
   "dummy_iface": "$(json_escape "$DUMMY")",
   "probe_iface": "$(json_escape "$IFACE")",
   "probe_iface_qdisc": "$(json_escape "$REAL_QDISC")",
+  "tc_qos_mode": "$(json_escape "$QOS_MODE")",
+  "qos_fallback_required": $QOS_FALLBACK_REQUIRED,
 
   "tc_htb": $TC_HTB,
   "tc_htb_supported": $TC_HTB,
@@ -235,7 +243,7 @@ chmod 644 "$OUT" 2>/dev/null || true
 
 {
     log "tc=$TC_BIN version=$TC_VERSION dummy=$DUMMY_CREATE htb=$TC_HTB tbf=$TC_TBF netem=$TC_NETEM ifb=$IFB_CREATE mirred=$TC_MIRRED police=$TC_POLICE"
-    log "modes: downlink=$DOWNLINK_MODE uplink=$UPLINK_MODE delay=$DELAY_MODE iface=$IFACE qdisc=$REAL_QDISC"
+    log "modes: downlink=$DOWNLINK_MODE uplink=$UPLINK_MODE delay=$DELAY_MODE qos=$QOS_MODE fallback=$QOS_FALLBACK_REQUIRED iface=$IFACE qdisc=$REAL_QDISC"
 } | tee "$RAW" 2>/dev/null
 
 exit 0

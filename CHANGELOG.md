@@ -1,3 +1,12 @@
+
+
+## v5.1.0-rc1-hotfix17.5
+
+- WebUI 新增 root HTB fallback 场景下的“精确模式 / 兼容模式”限速策略切换。
+- 该切换仅在无法使用最精确队列链路时显示，正常设备不额外显示。
+- 精确模式降低 burst/cburst，尽量减少测速瞬时超出设定值；兼容模式稳定优先。
+- tc_manager.sh 读取 `tc_qos_mode`，root fallback 成功后写入 `tc_qos_fallback` 标记。
+- capability_probe.sh 增加 `tc_qos_mode`、`qos_fallback_required` 字段。
 ## v5.1.0-rc1-hotfix17.4 · 2026-04-27
 
 - **TC JIT 自愈**：`set_limit` / `set_delay` 执行前先确认热点口存在 HNC HTB 树；如果系统把 `wlan1` root qdisc 从 `htb` 恢复成 `mq`，立即重新 `init_tc` 后再应用规则。

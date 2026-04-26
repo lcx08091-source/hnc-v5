@@ -1416,6 +1416,47 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
   line-height: 1.45;
 }
 .input-hint.warn { color: var(--sys-orange); }
+.qos-mode-panel {
+  margin-top: 8px;
+  padding: 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 149, 0, .22);
+  background: rgba(255, 149, 0, .075);
+}
+.qos-mode-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 7px;
+}
+.qos-mode-title {
+  font-size: 11px; font-weight: 700; color: var(--text-1);
+  letter-spacing: .02em;
+}
+.qos-mode-desc {
+  font-size: 10px; line-height: 1.45; color: var(--text-3);
+  margin-top: 6px;
+}
+.qos-mode-seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.qos-mode-btn {
+  min-height: 32px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: var(--glass-bg-2);
+  color: var(--text-1);
+  font-size: 12px; font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-spring),
+              background var(--dur-fast) var(--ease-crisp),
+              border-color var(--dur-fast) var(--ease-crisp);
+}
+.qos-mode-btn:active { transform: scale(.96); }
+.qos-mode-btn.active {
+  color: white;
+  background: linear-gradient(135deg, var(--sys-blue), var(--sys-indigo));
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, .26);
+}
 .input-suffix {
   position: absolute; right: 10px; top: 50%;
   transform: translateY(-50%);
@@ -3325,6 +3366,40 @@ body.kb-open .container {
     // Current netem path depends on HTB leaf classes, so either explicit false disables delay.
     return capBool('tc_netem') !== false && capBool('tc_htb') !== false;
   }
+  function normalizeQosMode(mode) {
+    mode = String(mode || '').trim().toLowerCase();
+    if (mode === 'precise' || mode === 'precision' || mode === 'strict' || mode === 'accurate') return 'precise';
+    return 'compat';
+  }
+  function qosModeLabel(mode) { return normalizeQosMode(mode) === 'precise' ? '精确' : '兼容'; }
+  function shouldShowQosModeSwitch() {
+    const cap = state.capabilities || {};
+    if (!isDownlinkLimitSupported()) return false;
+    // Only expose this UI when HNC had to fall back from the ideal per-queue path
+    // to root HTB on Android/MIUI mq hotspots. Normal devices stay clean.
+    if (state.qosFallbackRequired === true || cap.qos_fallback_required === true) return true;
+    const mode = String(cap.downlink_mode || '').toLowerCase();
+    if (mode === 'root_htb' || mode === 'htb_root') return true;
+    return false;
+  }
+  async function readLocalQosHints() {
+    try {
+      const raw = await kexec('printf "mode="; cat /data/local/hnc/run/tc_qos_mode 2>/dev/null; printf "\nfallback="; cat /data/local/hnc/run/tc_qos_fallback 2>/dev/null');
+      const m = String(raw || '').match(/mode=([^\n\r ]+)/);
+      if (m && m[1]) {
+        state.qosMode = normalizeQosMode(m[1]);
+        try { localStorage.setItem('hnc.qos-mode', state.qosMode); } catch (_) {}
+      }
+      state.qosFallbackRequired = /fallback=.+/.test(String(raw || ''));
+    } catch (_) {}
+  }
+  async function setQosModeBackend(mode) {
+    mode = normalizeQosMode(mode);
+    state.qosMode = mode;
+    try { localStorage.setItem('hnc.qos-mode', mode); } catch (_) {}
+    await kexec('mkdir -p ' + HNC + '/run; echo ' + sq(mode) + ' > ' + HNC + '/run/tc_qos_mode; sh ' + HNC + '/bin/json_set.sh top tc_qos_mode ' + sq(mode));
+    return mode;
+  }
   function unsupportedError(message, detail) {
     const e = new Error(message);
     e.detail = detail || '';
@@ -3343,6 +3418,8 @@ body.kb-open .container {
     if (!cap || typeof cap !== 'object') return;
     state.capabilities = cap;
     if (typeof cap.uplink_supported === 'boolean') state.uplinkSupported = !!cap.uplink_supported;
+    if (cap.tc_qos_mode) state.qosMode = normalizeQosMode(cap.tc_qos_mode);
+    if (typeof cap.qos_fallback_required === 'boolean') state.qosFallbackRequired = !!cap.qos_fallback_required;
     state.downlinkSupported = isDownlinkLimitSupported();
     state.delaySupported = isDelaySupported();
   }
@@ -3353,6 +3430,7 @@ body.kb-open .container {
         const r = await apiGet('/api/capabilities');
         const cap = (r && (r.capabilities || r)) || null;
         applyCapabilities(cap);
+        await readLocalQosHints();
         return cap;
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -3364,7 +3442,9 @@ body.kb-open .container {
         }
       }
     }
-    return await readLocal();
+    const cap = await readLocal();
+    await readLocalQosHints();
+    return cap;
   }
 
   function applyHotspotClosedState() {
@@ -3591,6 +3671,8 @@ body.kb-open .container {
     liveApiWarned: false,
     capabilitiesApiUnavailable: false,
     capabilitiesApiWarned: false,
+    qosMode: localStorage.getItem('hnc.qos-mode') || 'compat',
+    qosFallbackRequired: false,
     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced'
   };
 
@@ -3741,6 +3823,19 @@ body.kb-open .container {
     const delayDisAttr = delayDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 netem/HTB，延迟注入不可用"' : '';
     const applyLimitAttr = downlinkDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 HTB，限速不可用"' : '';
     const applyDelayAttr = delayDisabled ? ' disabled aria-disabled="true" title="当前内核/TC 不支持 netem/HTB，延迟注入不可用"' : '';
+    const showQosSwitch = shouldShowQosModeSwitch();
+    const qm = normalizeQosMode(state.qosMode);
+    const qosModePanel = showQosSwitch ? `
+              <div class="qos-mode-panel">
+                <div class="qos-mode-head">
+                  <div class="qos-mode-title">限速策略 · ${qosModeLabel(qm)}模式</div>
+                </div>
+                <div class="qos-mode-seg">
+                  <button type="button" class="qos-mode-btn ${qm === 'precise' ? 'active' : ''}" data-qos-mode="precise">精确</button>
+                  <button type="button" class="qos-mode-btn ${qm === 'compat' ? 'active' : ''}" data-qos-mode="compat">兼容</button>
+                </div>
+                <div class="qos-mode-desc">当前设备无法使用最精确队列链路，已进入 root HTB fallback。精确模式会减小 burst，让测速更接近设定；兼容模式更稳，允许短暂突发。</div>
+              </div>` : '';
     const upValue = uplinkDisabled ? '' : (d.up ? mbpsToMBsStr(d.up) : '');
     const selected = state.selected.has(d.mac) ? 'selected' : '';
     const blocked = d.status === 'blocked';
@@ -3799,6 +3894,7 @@ body.kb-open .container {
                 </div>
               </div>
               ${downlinkDisabled ? '<div class="input-hint warn">当前内核/TC 不支持 HTB，下行限速不可用；已禁用应用限速，避免后端超时。</div>' : (uplinkDisabled ? '<div class="input-hint warn">当前设备内核不支持 IFB/mirred，上行限速已禁用；下行限速仍可用。</div>' : '')}
+              ${qosModePanel}
               <div class="btn-row">
                 <button class="btn btn-primary" data-action="apply-limit"${applyLimitAttr}>应用限速</button>
                 <button class="btn btn-ghost" data-action="clear-limit">清除</button>
@@ -5423,6 +5519,20 @@ body.kb-open .container {
       return;
     }
 
+    /* root HTB fallback 限速策略切换 */
+    const qosBtn = e.target.closest('[data-qos-mode]');
+    if (qosBtn) {
+      const mode = normalizeQosMode(qosBtn.dataset.qosMode);
+      qosBtn.disabled = true;
+      setQosModeBackend(mode).then(() => {
+        toast('限速策略已切换为' + qosModeLabel(mode) + '模式', 'ok');
+        renderDeviceList();
+      }).catch(err => {
+        toast('切换失败: ' + (err.message || err), 'err');
+      }).finally(() => { qosBtn.disabled = false; });
+      return;
+    }
+
     /* 设备卡按钮操作 */
     const btn = e.target.closest('.btn[data-action]');
     if (!btn) return;
@@ -5666,6 +5776,7 @@ body.kb-open .container {
         const el = $("#hs-delay"); if (el) el.value = cfg.hotspot_delay_sec;
       }
       { const el = $("#hotspot-iface-pref"); if (el) el.value = cfg.hotspot_iface || "auto"; }
+      if (cfg.tc_qos_mode) { state.qosMode = normalizeQosMode(cfg.tc_qos_mode); try { localStorage.setItem('hnc.qos-mode', state.qosMode); } catch (_) {} }
       // Whitelist / Auth / Offload · 全部 add/remove 对称
       setTog($$('[data-action="toggle-wl"]')[0],            !!cfg.whitelist_mode);
       setTog($$('[data-action="toggle-auth"]')[0],          !!cfg.auth_required);

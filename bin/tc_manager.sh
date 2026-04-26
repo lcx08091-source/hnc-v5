@@ -74,6 +74,41 @@ CAP_FILE="$HNC_DIR/run/capabilities.json"
 UPLINK_MARKER="$HNC_DIR/run/uplink_unsupported"
 UPLINK_LOG_ONCE="$HNC_DIR/run/uplink_unsupported_logged"
 
+# hotfix17.5: QoS profile for MIUI/root-HTB fallback.
+# compat   = safer bursts, better compatibility with Android Wi-Fi drivers.
+# precise  = smaller burst/cburst, closer speed cap, may increase CPU/latency.
+QOS_MODE_FILE="$HNC_DIR/run/tc_qos_mode"
+QOS_FALLBACK_MARKER="$HNC_DIR/run/tc_qos_fallback"
+
+json_top_string() {
+    local key=$1 file=${2:-$RULES_FILE}
+    [ -f "$file" ] || return 1
+    tr -d '\n' < "$file" 2>/dev/null \
+        | grep -oE '"'"$key"'"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
+        | head -1 \
+        | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
+}
+
+qos_mode_raw() {
+    local v
+    v=$(cat "$QOS_MODE_FILE" 2>/dev/null | head -1 | tr -d '\r\n ' | tr 'A-Z' 'a-z')
+    [ -n "$v" ] || v=$(json_top_string tc_qos_mode | tr -d '\r\n ' | tr 'A-Z' 'a-z')
+    case "$v" in
+        precise|precision|strict|accurate) echo precise ;;
+        compat|compatible|safe|balance|balanced|"") echo compat ;;
+        *) echo compat ;;
+    esac
+}
+
+qos_mode() { qos_mode_raw; }
+qos_precise_mode() { [ "$(qos_mode)" = "precise" ]; }
+
+qos_mark_root_fallback() {
+    mkdir -p "$HNC_DIR/run" 2>/dev/null || true
+    echo root_htb > "$QOS_FALLBACK_MARKER" 2>/dev/null || true
+}
+qos_clear_root_fallback() { rm -f "$QOS_FALLBACK_MARKER" 2>/dev/null || true; }
+
 cap_bool_value() {
     local key=$1
     [ -f "$CAP_FILE" ] || return 1
@@ -236,11 +271,34 @@ mbps_to_rate() {
     fi
 }
 
-# burst = 约20ms数据量，防多线程集体冲破限速（旧方案128×Mbps太宽松）
+# burst/cburst strategy.
+# hotfix17.5:
+# - compat  : keep ~20ms bucket for driver tolerance.
+# - precise : smaller bucket for root-HTB fallback, closer to requested MB/s.
+# Very high DEFAULT_RATE classes keep a safe 200k bucket to avoid accidental
+# throttling of delay-only/unlimited paths.
 burst_for_rate() {
-    local mbps; mbps=$(rate_to_mbps_num "$1")
-    awk -v v="$mbps" 'BEGIN{b=int(v * 2.5); print (b<16?16:b) "k"}'
+    local mbps mode
+    mbps=$(rate_to_mbps_num "$1")
+    mode=$(qos_mode)
+    awk -v v="$mbps" -v m="$mode" '
+      BEGIN {
+        if (v <= 0) { print "16k"; exit }
+        if (v >= 100) { print "200k"; exit }
+        if (m == "precise") {
+          b = int(v * 1.0);
+          if (b < 8) b = 8;
+          if (b > 64) b = 64;
+        } else {
+          b = int(v * 2.5);
+          if (b < 16) b = 16;
+          if (b > 256) b = 256;
+        }
+        print b "k"
+      }'
 }
+
+qos_class_burst_for_rate() { burst_for_rate "$1"; }
 
 # HTB class add-or-change（幂等）
 tc_class_set() {
@@ -398,16 +456,17 @@ ensure_device_class() {
 
     # 2. class 生命周期: 已存在就 change, 不存在才 add。绝不在 ensure 路径 del class。
     local use_rate="${saved_rate:-$DEFAULT_RATE}"
+    local use_burst; use_burst=$(qos_class_burst_for_rate "$use_rate")
     if [ "$class_present" = "1" ]; then
         if tc class change dev "$dev" parent 1:1 classid "1:$class_id" \
-            htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+            htb rate "$use_rate" ceil "$use_rate" burst "$use_burst" cburst "$use_burst" 2>/dev/null; then
             log "  Updated class 1:$class_id on $dev (rate=$use_rate, no rebuild)"
         else
             # hotfix17.4: root qdisc may have been restored to mq after class was
             # observed. Rebuild HTB once and retry before failing.
             if [ "$dev" != "$IFB_IFACE" ] && ensure_egress_htb_ready "$dev" "ensure_device_class_change" && \
                 tc class change dev "$dev" parent 1:1 classid "1:$class_id" \
-                    htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+                    htb rate "$use_rate" ceil "$use_rate" burst "$use_burst" cburst "$use_burst" 2>/dev/null; then
                 log "  Updated class 1:$class_id on $dev after HTB self-heal"
             else
                 log_error "ensure_device_class: class change failed dev=$dev class=1:$class_id (kept existing class, no del+add)"
@@ -419,12 +478,12 @@ ensure_device_class() {
             ensure_egress_htb_ready "$dev" "ensure_device_class" || return 1
         fi
         if tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
-            htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+            htb rate "$use_rate" ceil "$use_rate" burst "$use_burst" cburst "$use_burst" 2>/dev/null; then
             log "  Created class 1:$class_id on $dev (rate=$use_rate)"
         else
             if [ "$dev" != "$IFB_IFACE" ] && ensure_egress_htb_ready "$dev" "ensure_device_class_retry" && \
                 tc class add dev "$dev" parent 1:1 classid "1:$class_id" \
-                    htb rate "$use_rate" ceil "$use_rate" burst 200k cburst 200k 2>/dev/null; then
+                    htb rate "$use_rate" ceil "$use_rate" burst "$use_burst" cburst "$use_burst" 2>/dev/null; then
                 log "  Created class 1:$class_id on $dev after HTB self-heal"
             else
                 log_error "ensure_device_class: class add failed dev=$dev class=1:$class_id"
@@ -828,6 +887,7 @@ try_mq_child_htb() {
         if [ -z "$out" ]; then
             log "init_tc: mq child htb installed on $iface parent $parent"
             echo "$iface parent=$parent" > "$HNC_DIR/run/tc_mq_child_$iface" 2>/dev/null || true
+            qos_clear_root_fallback
             return 0
         fi
         last_out=$out
@@ -841,7 +901,8 @@ root_htb_replace_verified() {
     out=$(tc qdisc replace dev "$iface" root handle 1: htb default 9999 2>&1)
     if [ -z "$out" ]; then
         echo "$iface" > "$HNC_DIR/run/tc_root_owned_$iface" 2>/dev/null || true
-        log "init_tc: root HTB installed on $iface via verified root fallback"
+        qos_mark_root_fallback
+        log "init_tc: root HTB installed on $iface via verified root fallback (qos=$(qos_mode))"
         return 0
     fi
     log_error "init_tc: verified root HTB fallback failed on $iface: $out"
@@ -1144,7 +1205,7 @@ set_limit() {
     _validate_mark_id "$mark_id" || return 1
     local class_id; class_id=$(printf "%d" "$mark_id")
 
-    log "set_limit: mark=$mark_id ip=${ip:-(none)} dn=${down_mbps}M up=${up_mbps}M"
+    log "set_limit: mark=$mark_id ip=${ip:-(none)} dn=${down_mbps}M up=${up_mbps}M qos=$(qos_mode)"
 
     # hotfix16.9: if capability_probe proved HTB unavailable, do not try to
     # create classes/qdiscs. On MIUI14 this used to block WebUI until timeout.
