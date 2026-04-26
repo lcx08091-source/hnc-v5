@@ -217,6 +217,11 @@ func (s *server) handleAction(w http.ResponseWriter, r *http.Request) {
 		defer s.stateMu.Unlock()
 		return dispatchAction(s.hncDir, req.Action, req.Params, tid == "loopback")
 	}()
+	if resp.OK {
+		// hotfix15: a successful write usually changes rules/devices-derived UI state.
+		// Trigger the snapshot loop now instead of waiting for the next tick.
+		s.requestSnapshotRefresh()
+	}
 	result := "ok"
 	if !resp.OK {
 		result = "error"
@@ -279,6 +284,8 @@ func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool)
 		return actionAuthRequiredSet(hncDir, p)
 	case "remote_enabled_set":
 		return actionRemoteEnabledSet(hncDir, p)
+	case "hotspot_iface_set":
+		return actionHotspotIfaceSet(hncDir, p)
 	case "refresh":
 		return actionRefresh(hncDir)
 	case "pair_new":
@@ -312,6 +319,25 @@ func readUplinkCapability(hncDir string) (bool, bool) {
 		return v, true
 	}
 	return true, false
+}
+
+func numberStringPositive(s string) bool {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	return err == nil && v > 0
+}
+
+func rateStringPositive(r string) bool {
+	r = strings.TrimSpace(strings.ToLower(r))
+	if r == "" || r == "0" {
+		return false
+	}
+	for _, suf := range []string{"kbit", "mbit"} {
+		if strings.HasSuffix(r, suf) {
+			n, err := strconv.Atoi(strings.TrimSuffix(r, suf))
+			return err == nil && n > 0
+		}
+	}
+	return numberStringPositive(r)
 }
 
 // actionRuleSet · 设置限速
@@ -360,9 +386,9 @@ func actionRuleSet(hncDir string, p map[string]string) actionResp {
 
 	// hotfix16.5: capabilities.json is authoritative for unsupported uplink.
 	// Do not call shell paths that would try IFB/mirred and block/timeout on MIUI14.
-	if supported, known := readUplinkCapability(hncDir); known && !supported && ruleNumberPositive(upMbps) {
+	if supported, known := readUplinkCapability(hncDir); known && !supported && numberStringPositive(upMbps) {
 		upMbps = "0"
-		if !ruleNumberPositive(dnMbps) {
+		if !numberStringPositive(dnMbps) {
 			return actionResp{OK: true, Detail: "uplink unsupported on this ROM; no downlink rate requested, skipped"}
 		}
 		log.Printf("rule_set: uplink unsupported; applying downlink-only mac=%s down=%s", mac, dnMbps)
@@ -377,7 +403,7 @@ func actionRuleSet(hncDir string, p map[string]string) actionResp {
 	if strings.Contains(detail, "partial_tc_fail=uplink") || strings.Contains(detail, "limit_apply_mode=down_only") {
 		return actionResp{OK: true, Detail: "download limit applied; uplink unsupported/disabled on this ROM, kept up=0"}
 	}
-	if supported, known := readUplinkCapability(hncDir); known && !supported && ruleNumberPositive(p["rate_up"]) {
+	if supported, known := readUplinkCapability(hncDir); known && !supported && rateStringPositive(p["rate_up"]) {
 		return actionResp{OK: true, Detail: "download limit applied; uplink unsupported on this ROM, kept up=0"}
 	}
 	return actionResp{OK: true, Detail: "limit applied"}

@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix10
-versionCode=50910
+version=v5.1.0-rc1-hotfix16.6
+versionCode=509166
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix10 · BPF LSM Limit Map Guard (拦截 framework enforce, 真正关闭 BPF tethering offload fast path) · ColorOS tc class change hotfix · 设备列表过滤 · stale rules 自动清理 · hotspotd 16KB 截断修复 · stats 去重 · scheduler 周期重探 cold-start race fix · netlink 直通 tc · WebUI · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix16.6 · MIUI14 tc capability-gated backend · 修复 delay 0ms · IFB 不可用时 egress-only 延迟 / downlink-only 限速 · uplink_unsupported 降级标记 · capability_probe dummy 探测 · WebUI partial 状态显示 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

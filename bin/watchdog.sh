@@ -106,6 +106,11 @@ rotate_logs_periodic() {
 cleanup_stale_rules_daily() {
     local day
     day=$(date +%Y%m%d 2>/dev/null) || day=unknown
+    # hotfix11: 不在 PENDING/热点未就绪时跑清理,避免开机早期 devices.json 还没稳定就删规则。
+    case "$(cat "$STATE_FILE" 2>/dev/null || echo PENDING)" in
+        ACTIVE:*) ;;
+        *) return 0 ;;
+    esac
     [ "$day" = "$LAST_STALE_CLEANUP_DAY" ] && return 0
     LAST_STALE_CLEANUP_DAY="$day"
     [ -x "$HNC_DIR/bin/cleanup_stale_rules.sh" ] || return 0
@@ -392,6 +397,25 @@ check_services() {
 #   1. httpd.pid 进程死了 → 清 pid 文件,准备重拉
 #   2. httpd.wanted marker 存在 + 进程没跑 → 用当前 iface + IP 拉
 #   3. 校验 iface + IP + RFC1918(跟 patch1.4 的四层校验一致)
+httpd_guard_remove() {
+    iptables -D INPUT -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -F HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -X HNC_HTTPD_GUARD 2>/dev/null || true
+}
+
+httpd_guard_install() {
+    local iface="$1" ip="$2"
+    [ -z "$iface" ] && return 1
+    iptables -N HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -F HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -I INPUT 1 -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -A HNC_HTTPD_GUARD -i lo -j ACCEPT 2>/dev/null || true
+    iptables -A HNC_HTTPD_GUARD -i "$iface" -j ACCEPT 2>/dev/null || true
+    iptables -A HNC_HTTPD_GUARD -j DROP 2>/dev/null || true
+    log "httpd guard installed: 8443 allowed from hotspot iface=$iface ip=$ip/hotspot iface only; dropped elsewhere"
+}
+
 ensure_httpd_running() {
     local wpid; wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
     if [ -n "$wpid" ] && ! kill -0 "$wpid" 2>/dev/null; then
@@ -424,6 +448,7 @@ ensure_httpd_running() {
         local probe_out httpd_iface httpd_ip
         probe_out=$(probe_valid_hotspot) || {
             log "httpd launch deferred (remote_on): no valid hotspot yet. starting loopback-only for now."
+            httpd_guard_remove
             "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
                 >> "$HNC_DIR/logs/httpd.log" 2>&1 &
             echo $! > "$RUN/httpd.pid"
@@ -433,6 +458,7 @@ ensure_httpd_running() {
         }
         httpd_iface=$(echo "$probe_out" | awk '{print $1}')
         httpd_ip=$(echo "$probe_out" | awk '{print $2}')
+        httpd_guard_install "$httpd_iface" "$httpd_ip"
         log "starting httpd on 0.0.0.0:8443 (all ifaces) + loopback:8444 (hotspot iface=$httpd_iface ip=$httpd_ip)"
         "$httpd_bin" -bind 0.0.0.0 -port 8443 -loopback-port 8444 \
             -hnc-dir "$HNC_DIR" -http-port 8080 \
@@ -442,6 +468,7 @@ ensure_httpd_running() {
         log "httpd launched (PID=$(cat "$RUN/httpd.pid"), bound=0.0.0.0:8443 · hotspot ip=$httpd_ip)"
     else
         # 仅 loopback, 不需要热点 IP
+        httpd_guard_remove
         log "starting httpd loopback-only on 127.0.0.1:8444"
         "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
             >> "$HNC_DIR/logs/httpd.log" 2>&1 &
@@ -474,6 +501,19 @@ check_httpd_bind_drift() {
     current_ip=$(ip -4 addr show "$current_iface" 2>/dev/null | \
         awk '/inet /{split($2,a,"/");print a[1];exit}')
     [ -z "$current_ip" ] && return 0
+
+    # hotfix13: if user turned remote access off while httpd is still bound to :8443,
+    # kill it so next ensure_httpd_running restarts loopback-only and removes the guard.
+    local remote_on_now
+    remote_on_now=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
+        "$HNC_DIR/data/rules.json" 2>/dev/null | awk -F: '{print $2}' | tr -d ' ')
+    if [ "$remote_on_now" != "true" ] && [ "$bound_ip" != "loopback-only" ]; then
+        log "httpd remote disabled: killing remote-bound httpd and removing 8443 guard"
+        kill -9 "$wpid" 2>/dev/null
+        rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
+        httpd_guard_remove
+        return 0
+    fi
 
     if [ "$current_ip" != "$bound_ip" ]; then
         # rc3.1.1 修: bound_ip="loopback-only" 是占位符, 不是真 IP 漂移.
@@ -663,38 +703,72 @@ ensure_httpd_running 2>/dev/null || log "bootstrap: ensure_httpd_running failed 
 # ─── v5.1 RC1 主动 uplink health check ─────────────────────────
 # 每 60s 轮询一次, 不触发 full_restore, 直接 inline 修复
 ensure_tc_uplink_healthy() {
-    # rc2 修 S2: rc5.1.1 只改了注释没改变量, ${IFACE:-wlan2} 里 IFACE 全文件从未赋值,
-    #          永远 fallback 到 wlan2. 现在真调 get_iface (本文件 line 87 的 5 分钟缓存).
+    # hotfix16.4/16.5: IFB/mirred unsupported is a degraded uplink state, not a fatal health failure.
+    local capv
+    capv=$(watchdog_cap_uplink_value 2>/dev/null || echo unknown)
+    if [ "$capv" = "false" ]; then
+        watchdog_mark_uplink_unsupported_once
+        rm -f "$RUN/uplink_fail_count" 2>/dev/null || true
+        return 0
+    fi
+
     local iface
     iface=$(get_iface)
     [ -z "$iface" ] && iface="wlan2"
-    # 1. ifb0 root 必须是 htb
-    local _ifb_root
-    _ifb_root=$(tc qdisc show dev ifb0 2>/dev/null | awk '$4 == "root" {print $2; exit}')
-    if [ "$_ifb_root" != "htb" ]; then
-        log "ensure_tc_uplink: ifb0 root='$_ifb_root' repairing"
-        ip link set dev ifb0 up 2>/dev/null || true
-        tc qdisc del dev ifb0 root 2>/dev/null || true
-        tc qdisc add dev ifb0 root handle 1: htb default 9999 r2q 10 2>/dev/null
-        tc class add dev ifb0 parent 1:  classid 1:1    htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null
-        tc class add dev ifb0 parent 1:1 classid 1:9999 htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null
-        tc qdisc add dev ifb0 parent 1:9999 handle 9999: fq_codel 2>/dev/null \
-            || tc qdisc add dev ifb0 parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null
-        log "ensure_tc_uplink: ifb0 htb rebuilt"
+    local marker="$RUN/uplink_unsupported"
+    local fail_file="$RUN/uplink_fail_count"
+    local threshold=8
+    local cooldown=1800
+    local now since
+    now=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$marker" ]; then
+        since=$(sed -n 's/.*"since"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$marker" 2>/dev/null | head -n1)
+        if [ -n "$since" ] && [ $((now - since)) -lt $cooldown ]; then
+            return 0
+        fi
+        log "ensure_tc_uplink: re-probing after degraded cooldown"
+        rm -f "$marker" "$fail_file" 2>/dev/null || true
     fi
-    # 2. wlan2 ingress pref 1 matchall mirred 必须在
-    if ! tc filter show dev "$iface" ingress 2>/dev/null | grep -q "pref 1.*matchall"; then
-        log "ensure_tc_uplink: $iface ingress pref 1 missing, reinstalling"
-        tc qdisc show dev "$iface" 2>/dev/null | grep -qE "clsact ffff:|ingress " \
-            || tc qdisc add dev "$iface" clsact 2>/dev/null
-        tc filter del dev "$iface" ingress pref 1 2>/dev/null
-        if tc filter add dev "$iface" ingress prio 1 protocol all matchall \
-               action mirred egress redirect dev ifb0 2>/dev/null; then
-            log "ensure_tc_uplink: $iface pref 1 mirred reinstalled"
-        else
-            log_error "ensure_tc_uplink: $iface pref 1 mirred reinstall FAILED"
+
+    local ok=1
+    if ! ip link show ifb0 >/dev/null 2>&1; then
+        ip link add ifb0 type ifb 2>/dev/null || true
+    fi
+    if ! ip link show ifb0 >/dev/null 2>&1; then
+        ok=0
+    else
+        local _ifb_root
+        _ifb_root=$(tc qdisc show dev ifb0 2>/dev/null | awk '$4 == "root" {print $2; exit}')
+        if [ "$_ifb_root" != "htb" ]; then
+            log "ensure_tc_uplink: ifb0 root='$_ifb_root' repairing"
+            ip link set dev ifb0 up 2>/dev/null || true
+            tc qdisc del dev ifb0 root 2>/dev/null || true
+            tc qdisc add dev ifb0 root handle 1: htb default 9999 r2q 10 2>/dev/null || ok=0
+            tc class add dev ifb0 parent 1:  classid 1:1    htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null || true
+            tc class add dev ifb0 parent 1:1 classid 1:9999 htb rate 1Gbit ceil 1Gbit burst 200k cburst 200k 2>/dev/null || true
+            tc qdisc add dev ifb0 parent 1:9999 handle 9999: fq_codel 2>/dev/null || tc qdisc add dev ifb0 parent 1:9999 handle 9999: sfq perturb 10 2>/dev/null || true
         fi
     fi
+
+    if ! tc filter show dev "$iface" ingress 2>/dev/null | grep -q "mirred.*redirect dev ifb0" \
+       && ! tc filter show dev "$iface" parent ffff: 2>/dev/null | grep -q "mirred.*redirect dev ifb0"; then
+        log "ensure_tc_uplink: $iface ingress mirred missing, repairing via tc_manager"
+        sh "$HNC_DIR/bin/tc_manager.sh" ensure_ingress "$iface" >> "$LOG" 2>&1 || ok=0
+    fi
+
+    if [ "$ok" = "0" ]; then
+        local cnt
+        cnt=$(cat "$fail_file" 2>/dev/null || echo 0)
+        cnt=$((cnt + 1))
+        echo "$cnt" > "$fail_file" 2>/dev/null || true
+        if [ $cnt -ge $threshold ]; then
+            log "ensure_tc_uplink: marking uplink_unsupported after $cnt failures"
+            echo "{\"ifb_unsupported\":true,\"since\":$now,\"reason\":\"ifb0 or ingress mirred unrecoverable\"}" > "$marker" 2>/dev/null || true
+        fi
+    else
+        rm -f "$fail_file" "$marker" 2>/dev/null || true
+    fi
+    return 0
 }
 
 while true; do

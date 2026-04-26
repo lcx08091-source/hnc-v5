@@ -1,4 +1,199 @@
+<!-- v5.1.0-rc1-hotfix16.6 P0 uplink downgrade closure -->
+<div class="cl-section">
+  <div class="cl-title">🧊 v5.1.0-rc1-hotfix16.6: P0 上行降级闭环 / 远程 WebUI 同步 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-26</span></div>
+  <ul class="cl-list">
+    <li><b>编译修复</b>: 修复 hotfix16.5 Go 源码补丁中的 helper 命名错误，确保 hnc_httpd 可重新编译。</li>
+    <li><b>设置页修复</b>: 修复本地 WebUI 进入设置页时诊断刷新函数作用域错误。</li>
+    <li><b>远程同步</b>: 远程 WebUI 也会读取 <code>/api/capabilities</code>，上行不可用时禁用上行输入。</li>
+    <li><b>构建优化</b>: Go 构建脚本优先使用 vendor 依赖，降低 Termux/GitHub Actions 编译卡住概率。</li>
+    <li><b>闭环目标</b>: 小米10 / MIUI14 等 <code>uplink_supported=false</code> 环境点击限速不再卡死，下行继续生效。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix16.5 capability-gated uplink downgrade -->
+<div class="cl-section">
+  <div class="cl-title">🧊 v5.1.0-rc1-hotfix16.5: 上行能力降级 / MIUI14 限速防卡死 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-26</span></div>
+  <ul class="cl-list">
+    <li><b>防卡死</b>: 当 <code>uplink_supported=false</code> 时, 不再反复尝试 <code>ifb0</code> / <code>mirred</code>, 避免点击限速后后端超时。</li>
+    <li><b>下行保留</b>: 上行不可用时自动降级为 <code>downlink_only</code>, 下行限速继续生效。</li>
+    <li><b>watchdog 降噪</b>: watchdog 读取能力检测结果, 不支持上行整形时跳过 uplink repair, 减少刷日志和耗电。</li>
+    <li><b>WebUI 提示</b>: WebUI 会禁用上行输入框并提示当前设备不支持上行限速, 模板/批量应用也会自动把上行置 0。</li>
+    <li><b>适用场景</b>: 小米10 / MIUI14、部分 ColorOS 内核等 IFB/mirred 不可用环境。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix16.4 MIUI14 TC degraded backend -->
+<div class="cl-section">
+  <div class="cl-title">🛠️ v5.1.0-rc1-hotfix16.4: MIUI14 TC 降级兼容 / delay 0ms 修复 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-26</span></div>
+  <ul class="cl-list">
+    <li><b>延迟修复</b>: 修复 <code>set_delay()</code> 在 IFB 失败后短路, 导致热点接口 leaf netem 停留在 <code>delay 0ms</code> 的问题。</li>
+    <li><b>降级生效</b>: IFB/mirred 不可用时, 延迟降级为 <code>egress_only</code>, 下行/热点到客户端方向仍写入真实 delay。</li>
+    <li><b>限速降级</b>: 双向限速在上行 IFB 不可用时保留下行限速, 标记为 <code>down_only</code>, 不再整体失败或回滚。</li>
+    <li><b>watchdog 降噪</b>: 新增 <code>uplink_unsupported</code> marker 和冷却, 避免不支持上行整形的设备反复修复到 passive。</li>
+    <li><b>能力检测</b>: <code>capability_probe.sh</code> 改用 dummy 设备优先, 增加 <code>uplink_supported</code> 等字段, 减少 MIUI14 假阴性。</li>
+    <li><b>诊断增强</b>: 诊断包增加 <code>tc -s qdisc/class/filter</code> 与 ifb0 状态输出。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix16.2 rules write / TC fallback repair -->
+<div class="cl-section">
+  <div class="cl-title">🧯 v5.1.0-rc1-hotfix16.2: rules.json 写入回归 / TC fallback 修复 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul class="cl-list">
+    <li><b>修复写入回归</b>: 修复 <code>json_set.sh</code> / <code>json_set_batch.sh</code> 被打包成空路径写入的问题, 之前会导致 <code>atomic_write: tmp empty</code>。</li>
+    <li><b>自动修复坏配置</b>: 新增 <code>rules_repair.sh</code>, 启动时自动把遗留的裸 IP 写法 <code>"ip": 192.168.x.x</code> 修成合法 JSON 字符串。</li>
+    <li><b>TC fallback</b>: 当 ColorOS 热点接口保持 <code>qdisc mq</code> root 且 root HTB 添加失败时, 尝试在 mq child <code>:1</code> 下挂载 HNC handle <code>1:</code>。</li>
+    <li><b>IFB fallback</b>: <code>hnc_tc_ingress</code> 误报 ifb0 不存在时不再立即放弃, 会继续尝试 shell tc fallback。</li>
+    <li><b>边界</b>: 本轮仍不做 SSE/WebSocket, 不进行大规模 tc / iptables / watchdog 重构。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix16.1 local diagnostics visibility -->
+<div class="cl-section">
+  <div class="cl-title">🩺 v5.1.0-rc1-hotfix16.1: 本地诊断可视化 / 诊断包补充 API 快照 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul class="cl-list">
+    <li><b>控制面指标</b>: 设置页新增 <code>/api/metrics</code> 摘要, 可直接查看 snapshot age、JSON cache、shell fallback、offload check 等计数。</li>
+    <li><b>兼容性能力</b>: 设置页新增 <code>/api/capabilities</code> 摘要, 更容易确认 iptables/tc/IFB/netem 能力检测结果。</li>
+    <li><b>诊断包增强</b>: <code>debug_bundle.sh</code> 会额外保存 <code>/api/live</code>、<code>/api/metrics</code>、<code>/api/capabilities</code> 输出, 便于后续排查。</li>
+    <li><b>边界</b>: 本轮仍不改 tc / iptables / watchdog 数据面, 不新增 SSE/WebSocket。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix16 diagnostics / schema hardening -->
+<div class="cl-section">
+  <div class="cl-title">🧰 v5.1.0-rc1-hotfix16: 诊断包 / 接口偏好 / 配置写入加固 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul class="cl-list">
+    <li><b>诊断包导出</b>: 本地 WebUI 维护页新增一键导出, 会收集脱敏规则、设备快照、日志尾部、能力检测和 ip/tc/iptables 状态到 <code>/sdcard/Download</code>。</li>
+    <li><b>热点接口偏好</b>: 设置页可填写 <code>auto</code> / <code>wlan2</code> / <code>ap0</code> 等偏好值, 便于 ColorOS/多 ROM 兼容调试。</li>
+    <li><b>规则导出</b>: 维护页保留一键复制 <code>rules.json</code>, 便于备份与审查。</li>
+    <li><b>配置 schema</b>: 新增 <code>schema_version</code> 与 <code>hotspot_iface</code> 默认字段, 升级时自动补齐。</li>
+    <li><b>写入加固</b>: <code>json_set.sh</code> / <code>json_set_batch.sh</code> 写入前保存 last-good 备份, 降低半写/误写后的恢复成本。</li>
+    <li><b>边界</b>: 本轮仍不重构 tc / iptables / watchdog 数据面。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix15.2 live freshness / refresh modes / metrics -->
+<div class="cl-section">
+  <div class="cl-title">📡 v5.1.0-rc1-hotfix15.2: 数据新鲜度 / 刷新模式 / Metrics <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul class="cl-list">
+    <li><b>/api/live 首屏优化</b>: 当 snapshot 因空闲降频而过旧时, 先立即返回旧缓存并异步唤醒刷新。</li>
+    <li><b>数据新鲜度显示</b>: 本地与远程 WebUI 显示“已更新/数据可能已过期/正在刷新”。</li>
+    <li><b>刷新模式</b>: 新增实时 / 均衡 / 省电三档, 只调整 WebUI 前台轮询频率。</li>
+    <li><b>/api/metrics</b>: 新增控制面指标接口, 可查看 snapshot、JSON cache、shell fallback、offload 和 API 计数。</li>
+  </ul>
+</div>
+<!-- v5.1.0-rc1-hotfix15.1 idle power polish -->
+<div class="changelog-entry">
+  <div class="cl-title">🌙 v5.1.0-rc1-hotfix15.1: 空闲降频 / 按需 offload / JSON 缓存 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul>
+    <li>WebUI 关闭时 snapshot 后台刷新降到 15s/30s，降低空闲功耗。</li>
+    <li>offload 状态改为按需缓存，不再后台每 30s 跑含 sleep 5 的 check_offload.sh。</li>
+    <li>devices/rules/names JSON 增加 mtime/size 缓存与 last-valid 保留，半写/损坏时不让规则从 UI 消失。</li>
+    <li>远程 WebUI 改用 /api/live + devices_sig，页面隐藏时暂停轮询。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix15.1 control-plane latency -->
+<div class="cl-item">
+  <div class="cl-title">⚡ v5.1.0-rc1-hotfix15.1: 控制面低延迟 / 低功耗轮询 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <div class="cl-tags">
+    <span class="cl-tag fix">/api/live</span>
+    <span class="cl-tag opt">Snapshot 缓存</span>
+    <span class="cl-tag opt">低功耗轮询</span>
+  </div>
+  <ul>
+    <li><b>新增轻量接口</b>: <code>/api/live</code> 返回热点状态、在线数、总速率与 <code>devices_sig</code>, 前端不再每秒拉完整设备表。</li>
+    <li><b>后端缓存</b>: <code>hnc_httpd</code> 后台维护不可变 snapshot, <code>/api/live</code> / <code>/api/devices</code> 直接读缓存, 减少 JSON 读取和合并开销。</li>
+    <li><b>减少 shell fork</b>: 热点接口探测优先走 Go 原生 <code>net.Interfaces()</code> + 私网 IPv4 校验 + ARP hint, <code>device_detect.sh iface</code> 只作低频 fallback。</li>
+    <li><b>WebUI 自适应刷新</b>: 设备页高频只拉 live, <code>devices_sig</code> 变化或写操作后才 full refresh; 后台暂停, 回前台立即刷新。</li>
+    <li><b>热点关闭体验</b>: UI 立即显示 0 在线 / 0 速率, 但不删除历史设备和规则。</li>
+    <li><b>边界</b>: 本轮不改 tc / iptables / watchdog 数据面, 降低破坏限速链路的风险。</li>
+  </ul>
+</div>
+
+<!-- v5.1.0-rc1-hotfix14 hotspot-off UI latency -->
+<div class="cl-entry">
+  <div class="cl-title">📴 v5.1.0-rc1-hotfix14: 热点关闭后的在线状态 / UI 延迟修复 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+  <ul>
+    <li>修复“只看在线”过滤下所有设备离线时误显示“渲染失败”的问题。</li>
+    <li>设备页轮询从 2.5s 调整为 1s,并在回到前台时立即刷新。</li>
+    <li>热点关闭后通过 iface_info 实时闸门把在线数和上下行速率立即归零,避免 devices.json 的 60-90s 拖尾。</li>
+    <li>iface.cache 增加私网 IPv4 校验,避免热点关闭后缓存接口继续被当成热点接口。</li>
+  </ul>
+</div>
+
 <!-- HNC v4.0 完整变更记录, 由 webroot/index.html lazy load -->
+<!-- v5.1.0-rc1-hotfix13 compatibility rollup -->
+      <div class="cl-item">
+        <div class="cl-left">
+          <div class="cl-dot"></div>
+          <div class="cl-line"></div>
+        </div>
+        <div class="cl-right">
+          <div class="cl-title">🧩 v5.1.0-rc1-hotfix13: 兼容性一次性修复 &nbsp;<span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+          <div class="cl-tags">
+            <span class="cl-tag fix">安装脚本</span>
+            <span class="cl-tag fix">tc/IFB</span>
+            <span class="cl-tag fix">远程 WebUI</span>
+            <span class="cl-tag fix">白名单</span>
+          </div>
+          <ul class="cl-changes">
+            <li><b>📦 安装兼容</b>: 更新 <code>update-binary</code>,移除旧 v3.x <code>api/server.sh</code> 逻辑和 brace expansion,增加 arm64 ABI 检测。</li>
+            <li><b>🧬 schema 修复</b>: 首装直接使用完整 <code>data/rules.json</code>,老配置自动补齐新字段,不覆盖用户设置。</li>
+            <li><b>🛠️ tc 兼容</b>: root qdisc 只复用 HNC 兼容的 <code>htb 1:</code>;清理时只删除 HNC 自己创建的 root。</li>
+            <li><b>🌉 ingress/IFB</b>: 上行 mirred 统一走 netlink/shell fallback,watchdog 可识别 matchall/u32/parent ffff 多种形式。</li>
+            <li><b>🌐 远程 WebUI</b>: 保留 ColorOS 需要的 <code>0.0.0.0</code> 绑定兼容性,但新增 INPUT guard,仅允许热点接口/loopback 访问 8443。</li>
+            <li><b>✅ 白名单</b>: 改为 MAC-only ACCEPT,并尽量清理旧 IP ACCEPT,避免 DHCP 复用导致误放行。</li>
+            <li><b>🔍 能力探测</b>: 新增 <code>capability_probe.sh</code>,生成 <code>run/capabilities.json</code> 便于判断当前 ROM 支持哪些 iptables/tc 能力。</li>
+          </ul>
+        </div>
+      </div>
+
+<!-- v5.1.0-rc1-hotfix12 release docs consolidation -->
+      <div class="cl-item">
+        <div class="cl-left">
+          <div class="cl-dot"></div>
+          <div class="cl-line"></div>
+        </div>
+        <div class="cl-right">
+          <div class="cl-title">🗂️ v5.1.0-rc1-hotfix12: 更新日志合并 / 刷机包根目录瘦身 &nbsp;<span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+          <div class="cl-tags">
+            <span class="cl-tag fix">更新日志</span>
+            <span class="cl-tag fix">刷机包瘦身</span>
+            <span class="cl-tag fix">CI 打包</span>
+          </div>
+          <ul class="cl-changes">
+            <li><b>📝 更新日志合并</b>: 历史 <code>PATCH-NOTES-*</code> 已汇总进 <code>CHANGELOG.md</code> 与 WebUI 更新记录, release 包根目录不再堆很多单独说明文件。</li>
+            <li><b>📦 根目录瘦身</b>: 可刷 ZIP 只保留运行必需文件、<code>README.md</code> 和 <code>CHANGELOG.md</code>, 手机文件管理器里更清爽。</li>
+            <li><b>🔁 CI 同步</b>: GitHub Actions 打包规则同步排除历史 patch notes 和开发阶段文档, 避免后续版本再次变臃肿。</li>
+            <li><b>ℹ️ 说明</b>: 本轮不改限速/iptables/BPF 逻辑, 不需要重新编译二进制。</li>
+          </ul>
+        </div>
+      </div>
+
+<!-- v5.1.0-rc1-hotfix11 cleanup jank / stats counter preservation -->
+      <div class="cl-item">
+        <div class="cl-left">
+          <div class="cl-dot"></div>
+          <div class="cl-line"></div>
+        </div>
+        <div class="cl-right">
+          <div class="cl-title">⚙️ v5.1.0-rc1-hotfix11: cleanup 去卡顿 / stats 计数保留 &nbsp;<span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-25</span></div>
+          <div class="cl-tags">
+            <span class="cl-tag fix">cleanup</span>
+            <span class="cl-tag fix">stats</span>
+            <span class="cl-tag fix">UI 卡顿</span>
+            <span class="cl-tag fix">offload IPC</span>
+          </div>
+          <ul class="cl-changes">
+            <li><b>🧹 cleanup 去卡顿</b>:不再整轮持有 <code>gate_lock</code>,改为每台 stale 设备短暂抢锁; 单轮默认最多清理 20 台。</li>
+            <li><b>🧯 cleanup 防重复</b>:新增私有 cleanup lock 和每日 stamp,避免 service / watchdog 同一天重复跑。</li>
+            <li><b>🔠 大写 MAC 兼容</b>:保留 rules.json 原始 MAC key 大小写,修复 uppercase 历史规则无法自动清理。</li>
+            <li><b>📊 stats 保留计数</b>:<code>ensure_stats()</code> 正常 1 条规则时不再删除重建,避免扫描时重置 iptables 计数器。</li>
+            <li><b>⚡ 点击限速防卡</b>:<code>hnc_ipc OFFLOAD_NOTIFY_LIMIT</code> 增加 1 秒 timeout; limit 成功路径减少一次同步 JSON 写。</li>
+          </ul>
+        </div>
+      </div>
+
 
 <!-- v5.1.0-rc1-hotfix10 stale rules cleanup / hotspotd truncate fix -->
       <div class="cl-item">

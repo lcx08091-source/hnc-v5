@@ -8,6 +8,10 @@ cd "$(dirname "$0")"
 export GOOS=android
 export GOARCH=arm64
 export CGO_ENABLED=0
+# hotfix16.6: use vendored deps and avoid hanging on blocked networks.
+export GOPROXY=${GOPROXY:-off}
+export GOSUMDB=${GOSUMDB:-off}
+export GOFLAGS=${GOFLAGS:-"-mod=vendor"}
 
 # rc5.1.1 修 X-G2: 从 module.prop 读 version 注入 binary, 消除硬编码
 # rc2 修 N4: 读不到 module.prop 直接失败, 不静默 fallback 到 "dev"

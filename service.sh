@@ -14,6 +14,8 @@ LOG=$HNC_DIR/logs/service.log
 RUN=$HNC_DIR/run
 
 mkdir -p $HNC_DIR/logs $RUN
+# hotfix16.4: clear stale uplink degraded marker on service start; watchdog will re-probe.
+rm -f $RUN/uplink_unsupported $RUN/uplink_fail_count $RUN/uplink_unsupported_logged 2>/dev/null || true
 
 # rc3.1 修 N-15R: 记下自己路径让 cleanup.sh restart 时能找到我们
 # (KSU / SukiSU / Magisk 的 MODDIR 路径不一样, 不能硬编码)
@@ -31,7 +33,13 @@ log() {
 }
 
 log "=== HNC Service Starting ==="
+# hotfix16.2: best-effort repair before reading rules.json in late_start.
+[ -x "$HNC_DIR/bin/rules_repair.sh" ] && HNC=$HNC_DIR sh "$HNC_DIR/bin/rules_repair.sh" >> $LOG 2>&1 || true
 log "Android $(getprop ro.build.version.release) / $(getprop ro.product.brand) $(getprop ro.product.model)"
+# hotfix13: record platform/kernel capability profile for diagnostics and UI fallback hints
+if [ -x $HNC_DIR/bin/capability_probe.sh ]; then
+    ( sh $HNC_DIR/bin/capability_probe.sh >> $HNC_DIR/logs/capabilities.log 2>&1 ) &
+fi
 
 # 等待系统网络服务就绪
 wait_for_network() {
