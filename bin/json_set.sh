@@ -696,6 +696,23 @@ json_name_del_hnc_json() {
 }
 
 
+# hotfix19.8: bridge templates.json flat object writes to hnc_json.
+# templates.json is a template-name -> settings-object map. hnc_json writes the
+# complete object value as a validated JSON literal, avoiding legacy awk JSON
+# mutation for tpl_set/tpl_del while keeping legacy fallback available.
+json_tpl_set_hnc_json() {
+    local tpl_file="$1" name="$2" entry_obj="$3"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" set-object-key "$tpl_file" "$name" "$entry_obj" json
+}
+
+json_tpl_del_hnc_json() {
+    local tpl_file="$1" name="$2"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" del-object-key "$tpl_file" "$name"
+}
+
+
 case "$CMD" in
 
 # ── 更新顶层字段（hotspot_auto / whitelist_mode 等）────────
@@ -975,12 +992,15 @@ tpl_set)
     TPL_FILE=$HNC/data/templates.json
     [ -f "$TPL_FILE" ] || echo '{}' > "$TPL_FILE"
 
-    # hotfix18.1: template names are JSON object keys. Escape the key once
-    # and use the generic object writer, so comma/brace/quote/backslash in
-    # template names cannot corrupt templates.json.
-    NAME_KEY=$(json_escape_string_inner "$NAME")
+    # hotfix19.8: prefer hnc_json for template writes. Template values are JSON
+    # objects, so pass them as validated JSON literals instead of strings. The
+    # hotfix18.1 safe writer remains as fallback for older installs.
     ENTRY_OBJ="{\"down_mbps\":$DOWN,\"up_mbps\":$UP,\"delay_ms\":$DELAY,\"jitter_ms\":$JITTER,\"loss_pct\":$LOSS}"
-    json_object_set_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY" "$ENTRY_OBJ"
+    if ! json_tpl_set_hnc_json "$TPL_FILE" "$NAME" "$ENTRY_OBJ"; then
+        echo "json_set: hnc_json tpl_set unavailable/failed, using legacy fallback" >&2
+        NAME_KEY=$(json_escape_string_inner "$NAME")
+        json_object_set_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY" "$ENTRY_OBJ"
+    fi
     ;;
 
 tpl_del)
@@ -988,8 +1008,11 @@ tpl_del)
     [ -z "$NAME" ] && exit 0
     TPL_FILE=$HNC/data/templates.json
     [ -f "$TPL_FILE" ] || exit 0
-    NAME_KEY=$(json_escape_string_inner "$NAME")
-    json_object_del_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY"
+    if ! json_tpl_del_hnc_json "$TPL_FILE" "$NAME"; then
+        echo "json_set: hnc_json tpl_del unavailable/failed, using legacy fallback" >&2
+        NAME_KEY=$(json_escape_string_inner "$NAME")
+        json_object_del_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY"
+    fi
     ;;
 
 tpl_list)

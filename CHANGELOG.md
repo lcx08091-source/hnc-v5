@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix19.8
+
+- `hnc_json set-object-key` 新增 `json/raw` 值类型，用于安全写入对象值。
+- `json_set.sh tpl_set/tpl_del` 优先接入 `hnc_json`，`templates.json` 继续保留 legacy fallback。
+- 顺手修复 `hnc_json set_top_inner` 在非空对象插入新 key 时可能漏逗号的变量名问题。
+- 新增 templates JSON 回归测试，覆盖特殊模板名、对象值不是字符串、更新覆盖和删除不存在模板。
+
 ## v5.1.0-rc1-hotfix19.7
 
 - `hnc_json` 新增 flat object key 读写/删除能力：`get-object-key`、`set-object-key`、`del-object-key`。

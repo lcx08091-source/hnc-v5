@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix19.6 - unified JSON helper frontend
+# HNC hotfix19.8 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -8,9 +8,9 @@
 # Usage:
 #   hnc_json validate <file>
 #   hnc_json get-top <file> <key>
-#   hnc_json set-top <file> <key> <value> [str|num|bool|null]
+#   hnc_json set-top <file> <key> <value> [str|num|bool|null|json]
 #   hnc_json get-device <file> <mac> <key>
-#   hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null]
+#   hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null|json]
 #   hnc_json version
 
 set -eu
@@ -27,12 +27,12 @@ usage() {
 Usage:
   hnc_json validate <file>
   hnc_json get-top <file> <key>
-  hnc_json set-top <file> <key> <value> [str|num|bool|null]
+  hnc_json set-top <file> <key> <value> [str|num|bool|null|json]
   hnc_json get-device <file> <mac> <key>
-  hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null]
+  hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null|json]
   hnc_json set-device-batch <file> <mac> <key> <value> <type> [<key> <value> <type> ...]
   hnc_json get-object-key <file> <key>
-  hnc_json set-object-key <file> <key> <value> [str|num|bool|null]
+  hnc_json set-object-key <file> <key> <value> [str|num|bool|null|json]
   hnc_json del-object-key <file> <key>
   hnc_json version
 USAGE
@@ -108,6 +108,14 @@ json_literal() {
     null)
       [ "$v" = "null" ] || { echo "hnc_json: invalid null literal: $v" >&2; return 2; }
       printf 'null\n'
+      ;;
+    json|raw)
+      tmp="$HNC_BASE/run/hnc_json_literal.$$"
+      mkdir -p "$HNC_BASE/run" 2>/dev/null || true
+      printf '%s\n' "$v" > "$tmp" || return 1
+      validate_file "$tmp" || { rm -f "$tmp"; echo "hnc_json: invalid json literal" >&2; return 2; }
+      rm -f "$tmp"
+      printf '%s\n' "$v"
       ;;
     *) echo "hnc_json: bad type: $typ" >&2; return 2 ;;
   esac
@@ -332,7 +340,7 @@ set_top_inner() {
     }
     before=substr(s,1,last_close-1)
     after=substr(s,last_close)
-    inner=substr(s,obj_start+1,last_closepos-obj_start-1)
+    inner=substr(s,obj_start+1,last_close-obj_start-1)
     tmp=inner; gsub(/[ \t\r\n]/,"",tmp)
     if(tmp=="") sep="\n  "
     else sep=",\n  "
@@ -358,7 +366,11 @@ set_top() {
   cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
 
   # awk -v consumes backslash escapes, so double backslashes in JSON string literals before passing them in.
-  awk_lit="$(printf '%s' "$lit" | sed 's/\\/\\\\/g')"
+  # Raw JSON object values must not be escaped as a string literal.
+  case "$typ" in
+    json|raw) awk_lit="$lit" ;;
+    *) awk_lit="$(printf '%s' "$lit" | sed 's/\\/\\\\/g')" ;;
+  esac
   if ! set_top_inner "$target" "$key" "$awk_lit" > "$tmp"; then
     rm -f "$tmp"
     echo "hnc_json: set-top parser failed for $target" >&2
@@ -721,7 +733,7 @@ case "$cmd" in
     del_object_key "$2" "$3"
     ;;
   version)
-    echo "hnc_json hotfix19.7 object-key"
+    echo "hnc_json hotfix19.8 object-key-json"
     ;;
   -h|--help|help|"")
     usage
