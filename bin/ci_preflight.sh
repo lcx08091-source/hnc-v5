@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.7 preflight checker
+# HNC hotfix20.8 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight hotfix20.7"
+say "HNC preflight hotfix20.8"
 say "root=$ROOT"
 
 # 1. Patch residue check

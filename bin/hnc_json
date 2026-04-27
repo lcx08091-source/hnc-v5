@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.7 - unified JSON helper frontend with guarded optional C helper
+# HNC hotfix20.8 - unified JSON helper frontend with read-only default C helper
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -43,7 +43,8 @@ Usage:
   hnc_json version
 
 Notes:
-  If bin/hnc_json_c exists and is executable, selected read and write commands may try it first.
+  If bin/hnc_json_c exists and is executable, read-only commands may try it first.
+  C write commands are disabled by default and require HNC_JSON_C_WRITE_ENABLE=1.
   Shell implementation remains the fallback for every write path.
 USAGE
 }
@@ -88,10 +89,20 @@ hnc_json_c_available() {
   return 0
 }
 
+hnc_json_c_write_enabled() {
+  # hotfix20.8: keep the optional C helper read-only by default. The C writer
+  # is still useful for controlled experiments, but normal runtime writes stay
+  # on the shell/json_guard path unless explicitly opted in.
+  [ "${HNC_JSON_C_WRITE_ENABLE:-0}" = "1" ]
+}
+
 hnc_json_c_try() {
   hnc_json_c_available || return 127
   case "${1:-}" in
-    validate|get-top|get|version|set-object-key|object-set|del-object-key|object-del|add-array-unique|array-add-unique|del-array-value|array-del-value|token-revoke|token-revoke-all)
+    validate|get-top|get|version)
+      "$HNC_JSON_C" "$@"; return $? ;;
+    set-object-key|object-set|del-object-key|object-del|add-array-unique|array-add-unique|del-array-value|array-del-value|token-revoke|token-revoke-all)
+      hnc_json_c_write_enabled || return 127
       "$HNC_JSON_C" "$@"; return $? ;;
     *) return 127 ;;
   esac
@@ -1096,7 +1107,7 @@ case "$cmd" in
     token_revoke_all "$2"
     ;;
   version)
-    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.7 guarded-c-bridge+c-helper" || echo "hnc_json hotfix20.7 guarded-c-bridge"
+    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.8 readonly-c-bridge+c-helper" || echo "hnc_json hotfix20.8 readonly-c-bridge"
     ;;
   -h|--help|help|"")
     usage

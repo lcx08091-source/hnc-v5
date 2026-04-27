@@ -1,4 +1,4 @@
-/* HNC hotfix20.6 - optional hnc_json C helper.
+/* HNC hotfix20.8 - optional hnc_json C helper.
  * Conservative helper: bin/hnc_json tries this helper first for selected
  * commands and falls back to the shell implementation on any failure.
  */
@@ -93,7 +93,7 @@ static int token_revoke_all(const char *file) {
 }
 static int get_top(const char *file, const char *key) { size_t n = 0; char *s = read_file(file, &n); if (!s) return 2; char *val = NULL, *end = NULL; if (!find_key(s, key, &val, &end)) { free(s); return 3; } fwrite(val, 1, (size_t)(end - val), stdout); putchar('\n'); free(s); return 0; }
 int main(int argc, char **argv) {
-    if (argc >= 2 && !strcmp(argv[1], "version")) { puts("hnc_json_c hotfix20.6 optional write helper"); return 0; }
+    if (argc >= 2 && !strcmp(argv[1], "version")) { puts("hnc_json_c hotfix20.8 optional write helper"); return 0; }
     if (argc == 3 && !strcmp(argv[1], "validate")) { size_t n = 0; char *s = read_file(argv[2], &n); if (!s) return 2; int rc = valid_json(s); free(s); return rc; }
     if (argc == 4 && (!strcmp(argv[1], "get-top") || !strcmp(argv[1], "get"))) return get_top(argv[2], argv[3]);
     if ((argc == 5 || argc == 6) && (!strcmp(argv[1], "set-object-key") || !strcmp(argv[1], "object-set"))) return set_object_key(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : "str");

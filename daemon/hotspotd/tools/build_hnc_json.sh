@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Build helper for the optional hnc_json C helper.
-# hotfix20.7: refuse accidental host/Linux helper builds unless explicitly allowed.
+# hotfix20.8: refuse accidental host/Linux helper builds unless explicitly allowed.
 # Default output path is the module runtime location bin/hnc_json_c when the
 # script is run from the source tree; pass an explicit output path to override.
 set -eu

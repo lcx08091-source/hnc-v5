@@ -45,6 +45,19 @@ printf '  "present": true,\n'
 printf '  "executable": %s,\n' "$([ -x "$BIN" ] && echo true || echo false)"
 printf '  "machine": "%s",\n' "$M"
 printf '  "arch": "%s",\n' "$ARCH"
+WRITE_EN=false
+WRITE_REASON="disabled_by_default"
+if [ "$EN" = "true" ]; then
+  if [ "${HNC_JSON_C_WRITE_ENABLE:-0}" = "1" ]; then
+    WRITE_EN=true
+    WRITE_REASON="enabled_by_env"
+  fi
+else
+  WRITE_REASON="helper_not_enabled"
+fi
+
 printf '  "enabled": %s,\n' "$EN"
-printf '  "reason": "%s"\n' "$REASON"
+printf '  "reason": "%s",\n' "$REASON"
+printf '  "write_enabled": %s,\n' "$WRITE_EN"
+printf '  "write_reason": "%s"\n' "$WRITE_REASON"
 printf '}\n'
