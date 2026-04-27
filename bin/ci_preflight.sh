@@ -1,0 +1,125 @@
+#!/system/bin/sh
+# HNC hotfix18.8 preflight checker
+# Runs in Termux/Android shell or GitHub Actions bash/sh.
+# Usage:
+#   sh bin/ci_preflight.sh                 # source tree checks
+#   sh bin/ci_preflight.sh --artifact ZIP  # also inspect built module ZIP/artifact ZIP
+
+set +e
+ROOT="$(pwd)"
+ARTIFACT=""
+FAIL=0
+WARN=0
+
+say(){ printf '%s\n' "$*"; }
+ok(){ say "[OK] $*"; }
+warn(){ WARN=$((WARN+1)); say "[WARN] $*"; }
+fail(){ FAIL=$((FAIL+1)); say "[FAIL] $*"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --artifact) shift; ARTIFACT="$1" ;;
+    --artifact=*) ARTIFACT="${1#--artifact=}" ;;
+  esac
+  shift
+ done
+
+say "HNC preflight hotfix18.8"
+say "root=$ROOT"
+
+# 1. Patch residue check
+RESIDUE="$(find . -path './.git' -prune -o \( -name '*.rej' -o -name '*.orig' \) -print 2>/dev/null | head -50)"
+if [ -n "$RESIDUE" ]; then
+  fail "patch residue found (.rej/.orig):"
+  say "$RESIDUE"
+else
+  ok "no .rej/.orig residue"
+fi
+
+# 2. Secrets / accidental home repo files
+SECRET_HITS="$(find . -path './.git' -prune -o \( -path './.ssh/*' -o -name 'id_rsa' -o -name 'id_ed25519' -o -name '*_ed25519' -o -name '*_rsa' -o -name '*.pem' \) -print 2>/dev/null | head -50)"
+if [ -n "$SECRET_HITS" ]; then
+  fail "possible private key / .ssh files in repo:"
+  say "$SECRET_HITS"
+else
+  ok "no obvious private keys/.ssh files"
+fi
+
+# 3. module.prop sanity
+if [ ! -f module.prop ]; then
+  fail "module.prop missing"
+else
+  VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop)"
+  VC="$(awk -F= '$1=="versionCode"{print $2; exit}' module.prop)"
+  say "module.prop version=$VER versionCode=$VC"
+  case "$VER" in
+    *hotfix18.8*) ok "module.prop version is hotfix18.8" ;;
+    *) warn "module.prop is not hotfix18.8 yet; bump before final package" ;;
+  esac
+  case "$VC" in
+    509188) ok "module.prop versionCode=509188" ;;
+    *) warn "module.prop versionCode is not 509188 yet" ;;
+  esac
+fi
+
+# 4. Required files
+for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh; do
+  if [ -e "$f" ]; then ok "required file exists: $f"; else warn "required file missing: $f"; fi
+done
+
+# 5. Executable bits, source tree check only.
+for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/tc_manager.sh bin/watchdog.sh daemon/hnc_httpd/build.sh; do
+  [ -e "$f" ] || continue
+  if [ -x "$f" ]; then ok "executable: $f"; else fail "not executable: $f"; fi
+done
+
+# 6. hnc_httpd binary/source sanity
+if [ -f daemon/hnc_httpd/hnc_httpd ]; then
+  if [ -x daemon/hnc_httpd/hnc_httpd ]; then ok "hnc_httpd binary exists and executable"; else fail "hnc_httpd binary exists but is not executable"; fi
+else
+  warn "daemon/hnc_httpd/hnc_httpd not present in source tree; CI must build it before packaging"
+fi
+
+# 7. Version drift warning: detect very old hotfix strings in live web/go files.
+OLD_HITS="$(grep -R "hotfix4\|hotfix10\|hotfix16\.7\|hotfix17\.3" -n webroot daemon/hnc_httpd 2>/dev/null | head -30)"
+if [ -n "$OLD_HITS" ]; then
+  warn "old hotfix strings found; verify they are changelog-only, not runtime version:"
+  say "$OLD_HITS"
+else
+  ok "no obvious stale runtime hotfix strings"
+fi
+
+# 8. Optional JSON regression test
+if [ -x bin/json_regression_test.sh ]; then
+  say "running bin/json_regression_test.sh"
+  sh bin/json_regression_test.sh
+  RC=$?
+  if [ "$RC" = "0" ]; then ok "json regression test passed"; else fail "json regression test failed rc=$RC"; fi
+else
+  warn "bin/json_regression_test.sh missing/skipped"
+fi
+
+# 9. Artifact ZIP checks, if supplied.
+if [ -n "$ARTIFACT" ]; then
+  if [ ! -f "$ARTIFACT" ]; then
+    fail "artifact not found: $ARTIFACT"
+  elif ! command -v unzip >/dev/null 2>&1; then
+    warn "unzip not available; artifact checks skipped"
+  else
+    say "checking artifact=$ARTIFACT"
+    unzip -t "$ARTIFACT" >/tmp/hnc_zip_test.$$ 2>&1
+    if [ $? -eq 0 ]; then ok "artifact zip integrity OK"; else fail "artifact zip integrity failed"; cat /tmp/hnc_zip_test.$$; fi
+    LIST="$(unzip -l "$ARTIFACT" 2>/dev/null)"
+    echo "$LIST" | grep -E '\.rej|\.orig' >/dev/null && fail "artifact contains .rej/.orig" || ok "artifact has no .rej/.orig"
+    echo "$LIST" | grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)' >/dev/null && fail "artifact may contain secrets" || ok "artifact has no obvious secrets"
+    echo "$LIST" | grep -E 'daemon/hnc_httpd/hnc_httpd$' >/dev/null && ok "artifact contains hnc_httpd" || fail "artifact missing daemon/hnc_httpd/hnc_httpd"
+    echo "$LIST" | grep -E 'webroot/index.html$' >/dev/null && ok "artifact contains webroot/index.html" || fail "artifact missing webroot/index.html"
+    echo "$LIST" | grep -E 'webroot/json-health.html$' >/dev/null && ok "artifact contains json-health.html" || warn "artifact missing json-health.html"
+    echo "$LIST" | awk '{print $4}' | grep -E '\.zip$' >/dev/null && warn "artifact contains nested zip; verify this is not an Actions outer wrapper" || ok "artifact has no nested zip"
+    rm -f /tmp/hnc_zip_test.$$
+  fi
+fi
+
+say "summary: failures=$FAIL warnings=$WARN"
+[ "$FAIL" -eq 0 ] || exit 1
+exit 0

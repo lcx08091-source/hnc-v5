@@ -1,0 +1,26 @@
+name: HNC Preflight
+
+on:
+  push:
+    branches: [ main, 'hotfix**' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make scripts executable
+        run: |
+          chmod 755 bin/*.sh service.sh post-fs-data.sh daemon/hnc_httpd/build.sh 2>/dev/null || true
+      - name: Version consistency check
+        run: |
+          sh bin/version_consistency_check.sh
+      - name: Source preflight
+        run: |
+          sh bin/ci_preflight.sh
+      - name: JSON writer regression smoke test
+        run: |
+          sh bin/json_regression_test.sh
