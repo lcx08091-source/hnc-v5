@@ -124,6 +124,10 @@ if [ -x "$BIN/stats_v52_rc_control.sh" ]; then
   run_cmd stats_v52_rc_control_json sh "$BIN/stats_v52_rc_control.sh" json
   run_cmd stats_v52_rc_control_text sh "$BIN/stats_v52_rc_control.sh" text
 fi
+if [ -x "$BIN/stats_v52_rc_smoke.sh" ]; then
+  run_cmd stats_v52_rc_smoke_json sh "$BIN/stats_v52_rc_smoke.sh" json
+  run_cmd stats_v52_rc_smoke_text sh "$BIN/stats_v52_rc_smoke.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -140,6 +144,10 @@ copy_if_exists "$RUN/stats_health_summary.json" "$OUT/run/stats_health_summary.j
 copy_if_exists "$RUN/stats_health_summary.txt" "$OUT/run/stats_health_summary.txt"
 copy_if_exists "$RUN/stats_migration_readiness.json" "$OUT/run/stats_migration_readiness.json"
 copy_if_exists "$RUN/stats_migration_readiness.txt" "$OUT/run/stats_migration_readiness.txt"
+copy_if_exists "$RUN/stats_v52_rc_control.json" "$OUT/run/stats_v52_rc_control.json"
+copy_if_exists "$RUN/stats_v52_rc_control.txt" "$OUT/run/stats_v52_rc_control.txt"
+copy_if_exists "$RUN/stats_v52_rc_smoke.json" "$OUT/run/stats_v52_rc_smoke.json"
+copy_if_exists "$RUN/stats_v52_rc_smoke.txt" "$OUT/run/stats_v52_rc_smoke.txt"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
@@ -205,7 +213,8 @@ done
   echo "  \"has_stats_compare\": $([ -x "$BIN/stats_compare.sh" ] && echo true || echo false),"
   echo "  \"has_stats_health_summary\": $([ -x "$BIN/stats_health_summary.sh" ] && echo true || echo false),"
   echo "  \"has_stats_migration_readiness\": $([ -x "$BIN/stats_migration_readiness.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_v52_rc_control\": $([ -x "$BIN/stats_v52_rc_control.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_v52_rc_control\": $([ -x "$BIN/stats_v52_rc_control.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_v52_rc_smoke\": $([ -x "$BIN/stats_v52_rc_smoke.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

@@ -159,6 +159,17 @@ if [ -x "$BIN/stats_v52_rc_control.sh" ]; then
   esac
 fi
 
+STATS_V52_RC_SMOKE_RAW=""
+STATS_V52_RC_SMOKE_PRESENT=false
+if [ -x "$BIN/stats_v52_rc_smoke.sh" ]; then
+  STATS_V52_RC_SMOKE_PRESENT=true
+  STATS_V52_RC_SMOKE_RAW="$(sh "$BIN/stats_v52_rc_smoke.sh" json 2>/dev/null)"
+  case "$STATS_V52_RC_SMOKE_RAW" in
+    *'"status":"fail"'*) OVERALL="fail" ;;
+    *'"status":"warn"'*|*'"status":"disabled"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -213,7 +224,9 @@ cat <<JSON
     "has_migration_readiness_helper": $STATS_MIGRATION_READINESS_PRESENT,
     "migration_readiness_raw": "$(json_escape "$STATS_MIGRATION_READINESS_RAW")",
     "has_v52_rc_control_helper": $STATS_V52_RC_PRESENT,
-    "v52_rc_control_raw": "$(json_escape "$STATS_V52_RC_RAW")"
+    "v52_rc_control_raw": "$(json_escape "$STATS_V52_RC_RAW")",
+    "has_v52_rc_smoke_helper": $STATS_V52_RC_SMOKE_PRESENT,
+    "v52_rc_smoke_raw": "$(json_escape "$STATS_V52_RC_SMOKE_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
