@@ -1,4 +1,12 @@
 
+## v5.1.0-rc1-hotfix18.4
+
+- 新增 `bin/json_doctor.sh`，提供 JSON 健康检查、备份列表、单文件恢复和批量 repair 入口。
+- 生成 `/data/local/hnc/run/json_health.json` 与 `json_health.txt`，方便 debug 包和 WebUI 后续读取。
+- 默认 `status` 模式只读，不影响运行状态；只有显式 `restore/repair` 才会修改 live JSON。
+- 恢复前会先备份当前文件，并只允许恢复 `rules.json`、`device_names.json`、`templates.json`、`remote_tokens.json`。
+
+
 ## v5.1.0-rc1-hotfix18.3
 
 - JSON 写入增加写前/写后语法校验，避免异常候选文件覆盖 live JSON。

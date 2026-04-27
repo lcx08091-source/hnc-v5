@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix18.3
-versionCode=509183
+version=v5.1.0-rc1-hotfix18.4
+versionCode=509184
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix18.3 · JSON 写入安全加固 · JSON 写后校验 · 自动备份回滚 · json_guard 语法验证 · KernelSU/SukiSU/Magisk · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix18.4 · JSON 健康检查 · 备份列表 · 手动恢复入口 · json_doctor 自检修复 · KernelSU/SukiSU/Magisk · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
