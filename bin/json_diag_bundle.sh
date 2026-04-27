@@ -104,6 +104,10 @@ if [ -x "$BIN/stats_compare.sh" ]; then
   run_cmd stats_compare_json sh "$BIN/stats_compare.sh" json
   run_cmd stats_compare_text sh "$BIN/stats_compare.sh" text
 fi
+if [ -x "$BIN/stats_health_summary.sh" ]; then
+  run_cmd stats_health_summary_json sh "$BIN/stats_health_summary.sh" json
+  run_cmd stats_health_summary_text sh "$BIN/stats_health_summary.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -113,6 +117,8 @@ copy_if_exists "$RUN/stats_last_date" "$OUT/run/stats_last_date"
 copy_if_exists "$RUN/stats_shadow_last_date" "$OUT/run/stats_shadow_last_date"
 copy_if_exists "$RUN/stats_compare.json" "$OUT/run/stats_compare.json"
 copy_if_exists "$RUN/stats_compare.txt" "$OUT/run/stats_compare.txt"
+copy_if_exists "$RUN/stats_health_summary.json" "$OUT/run/stats_health_summary.json"
+copy_if_exists "$RUN/stats_health_summary.txt" "$OUT/run/stats_health_summary.txt"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
@@ -173,7 +179,8 @@ done
   echo "  \"has_stats_retention_diag\": $([ -x "$BIN/stats_retention_diag.sh" ] && echo true || echo false),"
   echo "  \"has_stats_shadow_diag\": $([ -x "$BIN/stats_shadow_diag.sh" ] && echo true || echo false),"
   echo "  \"has_stats_shadow_rollup\": $([ -x "$BIN/stats_shadow_rollup.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_compare\": $([ -x "$BIN/stats_compare.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_compare\": $([ -x "$BIN/stats_compare.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_health_summary\": $([ -x \"$BIN/stats_health_summary.sh\" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

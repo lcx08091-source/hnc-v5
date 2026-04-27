@@ -111,6 +111,17 @@ if [ -x "$BIN/stats_compare.sh" ]; then
   STATS_COMPARE_RAW="$(sh "$BIN/stats_compare.sh" json 2>/dev/null)"
 fi
 
+STATS_HEALTH_RAW=""
+STATS_HEALTH_PRESENT=false
+if [ -x "$BIN/stats_health_summary.sh" ]; then
+  STATS_HEALTH_PRESENT=true
+  STATS_HEALTH_RAW="$(sh "$BIN/stats_health_summary.sh" json 2>/dev/null)"
+  case "$STATS_HEALTH_RAW" in
+    *'"status":"fail"'*) OVERALL="fail" ;;
+    *'"status":"warn"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -155,7 +166,9 @@ cat <<JSON
     "has_shadow_rollup_helper": $STATS_SHADOW_ROLLUP_PRESENT,
     "shadow_raw": "$(json_escape "$STATS_SHADOW_RAW")",
     "has_compare_helper": $STATS_COMPARE_PRESENT,
-    "compare_raw": "$(json_escape "$STATS_COMPARE_RAW")"
+    "compare_raw": "$(json_escape "$STATS_COMPARE_RAW")",
+    "has_health_summary_helper": $STATS_HEALTH_PRESENT,
+    "health_summary_raw": "$(json_escape "$STATS_HEALTH_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
