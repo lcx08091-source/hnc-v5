@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix18.5
+
+- 新增 `bin/json_diag_bundle.sh`，一键导出 JSON 健康、备份列表、live JSON、json_guard 校验、TC 状态快照和日志 tail。
+- `diag.sh` 新增 JSON 健康检查与诊断快照检查，能直接提示 `json_doctor` 状态、`.json_backups` 数量和 `tc_state.json` 是否存在。
+- debug 包会包含 `/data/local/hnc/run/json_health.*`、`tc_state.*`、`capabilities.*` 与最近 JSON 备份，方便定位 rules.json / device_names / templates / tokens 损坏和回滚问题。
+- 不修改 live JSON；`json_diag_bundle.sh` 只读收集，适合用户把结果直接发给审查/排障。
+
 
 ## v5.1.0-rc1-hotfix18.4
 

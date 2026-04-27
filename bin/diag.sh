@@ -2,7 +2,7 @@
 
 # v3.8.6 alpha-0: PATH 健壮性,见 service.sh
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
-# diag.sh — HNC v4.1.x 自检脚本 (rc3.1.34)
+# diag.sh — HNC 自检脚本 (hotfix18.5)
 # rc3.1.34 修 #28: 之前固定写 v3.8.6 的版本号字面, 每次发版都过期. 改成版本前缀
 # 不带具体补丁号. 真实版本以 module.prop 为准 (script 内可读 $HNC_DIR/module.prop).
 #
@@ -10,7 +10,7 @@
 #   sh /data/local/hnc/bin/diag.sh
 #   sh /data/local/hnc/bin/diag.sh --json     # 输出 JSON 格式
 #
-# 检查 12 项核心系统状态,每项 OK / FAIL / WARN,
+# 检查核心系统状态,每项 OK / FAIL / WARN,
 # 帮助快速定位问题。LTS 版本必备的故障排查工具。
 #
 # 退出码:
@@ -233,6 +233,35 @@ else
     else
         warn "dumpsys 格式探针" "输出存在但无 hwAddr/hostname 字段,Android 版本格式已变,HNC 需要更新"
     fi
+fi
+
+# ── [15/16] JSON 健康状态(hotfix18.5) ───────────────────
+# hotfix18.3/18.4 引入 json_guard/json_doctor 后,diag 也显示 JSON 健康情况。
+# 这里只调用只读 status,不会修改 live JSON。
+if [ -x "$HNC/bin/json_doctor.sh" ]; then
+    JSON_STATUS_OUT=$(sh "$HNC/bin/json_doctor.sh" status 2>/dev/null)
+    JSON_STATUS_RC=$?
+    if [ "$JSON_STATUS_RC" -eq 0 ]; then
+        ok "JSON 健康" "rules/names/templates/tokens 校验通过"
+    else
+        warn "JSON 健康" "json_doctor status rc=$JSON_STATUS_RC,建议运行 json_diag_bundle.sh 导出诊断包"
+    fi
+else
+    warn "JSON 健康" "json_doctor.sh 未安装(hotfix18.4+ 应存在)"
+fi
+
+# ── [16/16] JSON 备份与 TC 快照(hotfix18.5) ─────────────
+JSON_BACKUP_COUNT=$(ls "$HNC/data/.json_backups"/* 2>/dev/null | wc -l)
+HAS_TC_STATE=0
+[ -f "$HNC/run/tc_state.json" ] && HAS_TC_STATE=1
+if [ "$JSON_BACKUP_COUNT" -gt 0 ] && [ "$HAS_TC_STATE" -eq 1 ]; then
+    ok "诊断快照" "json_backups=$JSON_BACKUP_COUNT / tc_state.json 已生成"
+elif [ "$JSON_BACKUP_COUNT" -gt 0 ]; then
+    warn "诊断快照" "json_backups=$JSON_BACKUP_COUNT / tc_state.json 未生成"
+elif [ "$HAS_TC_STATE" -eq 1 ]; then
+    warn "诊断快照" "无 JSON 备份 / tc_state.json 已生成"
+else
+    warn "诊断快照" "无 JSON 备份且无 tc_state.json,可运行 json_diag_bundle.sh"
 fi
 
 # ── 汇总输出 ────────────────────────────────────────────
