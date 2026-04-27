@@ -104,6 +104,13 @@ if [ -x "$BIN/stats_shadow_diag.sh" ]; then
 fi
 [ -x "$BIN/stats_shadow_rollup.sh" ] && STATS_SHADOW_ROLLUP_PRESENT=true
 
+STATS_COMPARE_RAW=""
+STATS_COMPARE_PRESENT=false
+if [ -x "$BIN/stats_compare.sh" ]; then
+  STATS_COMPARE_PRESENT=true
+  STATS_COMPARE_RAW="$(sh "$BIN/stats_compare.sh" json 2>/dev/null)"
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -146,7 +153,9 @@ cat <<JSON
     "retention_raw": "$(json_escape "$STATS_RETENTION_RAW")",
     "has_shadow_diag_helper": $STATS_SHADOW_PRESENT,
     "has_shadow_rollup_helper": $STATS_SHADOW_ROLLUP_PRESENT,
-    "shadow_raw": "$(json_escape "$STATS_SHADOW_RAW")"
+    "shadow_raw": "$(json_escape "$STATS_SHADOW_RAW")",
+    "has_compare_helper": $STATS_COMPARE_PRESENT,
+    "compare_raw": "$(json_escape "$STATS_COMPARE_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
