@@ -22,6 +22,30 @@ JSON_GUARD=${JSON_GUARD:-$SCRIPT_DIR/json_guard.sh}
 HNC_JSON=${HNC_JSON:-$SCRIPT_DIR/hnc_json}
 JSON_BACKUP_DIR=${JSON_BACKUP_DIR:-$HNC/data/.json_backups}
 
+# hotfix20.1: legacy fallback telemetry.
+# Do not remove legacy paths yet; record when they are used so later releases
+# can decide whether it is safe to prune them. Keep this best-effort and
+# non-fatal because json_set.sh is used on recovery/early-boot paths.
+JSON_LEGACY_FALLBACK_LOG=${JSON_LEGACY_FALLBACK_LOG:-$HNC/run/json_legacy_fallback.log}
+JSON_LEGACY_FALLBACK_COUNT=${JSON_LEGACY_FALLBACK_COUNT:-$HNC/run/json_legacy_fallback.count}
+json_legacy_fallback_warn() {
+    local op="$1"
+    local reason="$2"
+    local ts cnt
+    ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date 2>/dev/null || echo unknown)
+    mkdir -p "$HNC/run" 2>/dev/null || true
+    printf '%s json_set op=%s reason=%s\n' "$ts" "$op" "$reason" >> "$JSON_LEGACY_FALLBACK_LOG" 2>/dev/null || true
+    if [ -f "$JSON_LEGACY_FALLBACK_COUNT" ]; then
+        cnt=$(cat "$JSON_LEGACY_FALLBACK_COUNT" 2>/dev/null)
+        case "$cnt" in *[!0-9]*|'') cnt=0 ;; esac
+    else
+        cnt=0
+    fi
+    cnt=$((cnt + 1))
+    echo "$cnt" > "$JSON_LEGACY_FALLBACK_COUNT" 2>/dev/null || true
+    echo "json_set: [WARN] hnc_json $op unavailable/failed, using legacy fallback; count=$cnt" >&2
+}
+
 # ═══════════════════════════════════════════════════════════════
 # v3.4.11 P0-2 修复:加 mkdir 文件锁,防并发写竞态
 #
@@ -758,7 +782,7 @@ top)
     # hotfix19.1: prefer hnc_json set-top so top-level JSON writes use the
     # unified helper. Fallback preserves hotfix18 state-machine behavior.
     if ! json_update_top_hnc_json "$FIELD" "$VALUE"; then
-        echo "json_set: hnc_json top writer unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "top" "writer"
         JVAL=$(json_encode "$VALUE")
         json_update_top_safe "$FIELD" "$JVAL"
     fi
@@ -805,7 +829,7 @@ bl_add)
     MAC=$2
     [ -z "$MAC" ] && { echo "bl_add: mac required" >&2; exit 1; }
     if ! json_blacklist_add_hnc_json "$MAC"; then
-        echo "json_set: hnc_json bl_add unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "bl_add" "array-add"
         json_array_add_string_top_safe "blacklist" "$MAC"
     fi
     ;;
@@ -816,7 +840,7 @@ bl_del)
     MAC=$2
     [ -z "$MAC" ] && exit 0
     if ! json_blacklist_del_hnc_json "$MAC"; then
-        echo "json_set: hnc_json bl_del unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "bl_del" "array-del"
         json_array_del_string_top_safe "blacklist" "$MAC"
     fi
     ;;
@@ -879,7 +903,7 @@ top_get)
     # grep-based reads that break on escaped quotes and keeps read/write paths
     # moving toward one JSON abstraction. Fallback preserves legacy behavior.
     if ! json_top_get_hnc_json "$KEY"; then
-        echo "json_set: hnc_json top_get unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "top_get" "reader"
         # 先尝试字符串字段（带引号），取引号内的完整内容
         result=$(grep -o "\"$KEY\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$RULES" 2>/dev/null \
             | head -1 | sed 's/^[^:]*:[[:space:]]*"//; s/"$//')
@@ -908,7 +932,7 @@ device_get)
     # fallback is intentionally kept because device_get is used by delay/clear
     # hot paths and must not hard-fail if hnc_json is unavailable.
     if ! json_device_get_hnc_json "$MAC" "$KEY"; then
-        echo "json_set: hnc_json device_get unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "device_get" "reader"
         # awk 扫整个文件, 找 "<mac>":{ ... "<key>": <value> ... }
         awk -v m="$MAC" -v k="$KEY" '
         BEGIN { RS="" }
@@ -956,7 +980,7 @@ name_set)
     ensure_names_file
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
     if ! json_name_set_hnc_json "$MAC" "$NAME"; then
-        echo "json_set: hnc_json name_set unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "name_set" "object-set"
         JNAME=$(json_string_encode "$NAME")
         json_object_set_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC" "$JNAME"
     fi
@@ -968,7 +992,7 @@ name_get)
     [ -f "$NAMES_FILE" ] || exit 0
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
     if ! json_name_get_hnc_json "$MAC"; then
-        echo "json_set: hnc_json name_get unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "name_get" "object-get"
         # 提取 "mac":"name" 中的 name
         grep -o "\"$MAC\":\"[^\"]*\"" "$NAMES_FILE" 2>/dev/null \
             | head -1 \
@@ -982,7 +1006,7 @@ name_del)
     [ -f "$NAMES_FILE" ] || exit 0
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
     if ! json_name_del_hnc_json "$MAC"; then
-        echo "json_set: hnc_json name_del unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "name_del" "object-del"
         json_object_del_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC"
     fi
     ;;
@@ -1035,7 +1059,7 @@ tpl_set)
     # hotfix18.1 safe writer remains as fallback for older installs.
     ENTRY_OBJ="{\"down_mbps\":$DOWN,\"up_mbps\":$UP,\"delay_ms\":$DELAY,\"jitter_ms\":$JITTER,\"loss_pct\":$LOSS}"
     if ! json_tpl_set_hnc_json "$TPL_FILE" "$NAME" "$ENTRY_OBJ"; then
-        echo "json_set: hnc_json tpl_set unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "tpl_set" "object-set-json"
         NAME_KEY=$(json_escape_string_inner "$NAME")
         json_object_set_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY" "$ENTRY_OBJ"
     fi
@@ -1047,7 +1071,7 @@ tpl_del)
     TPL_FILE=$HNC/data/templates.json
     [ -f "$TPL_FILE" ] || exit 0
     if ! json_tpl_del_hnc_json "$TPL_FILE" "$NAME"; then
-        echo "json_set: hnc_json tpl_del unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "tpl_del" "object-del"
         NAME_KEY=$(json_escape_string_inner "$NAME")
         json_object_del_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY"
     fi
@@ -1092,7 +1116,7 @@ token_revoke)
     # as the owner of token issue/last_seen while replacing the fragile shell
     # mutation path with guarded validate/backup/commit. Legacy fallback remains.
     if ! json_token_revoke_hnc_json "$TOKENS_FILE" "$TID"; then
-        echo "json_set: hnc_json token_revoke unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "token_revoke" "token-revoke"
         # 策略: 用 awk 状态机进入 "TokenID":{ 对象后改 revoked:false -> true
         # POSIX awk(busybox/toybox 通用), 不用 gawk match(,,arr)
         awk -v tid="$TID" '
@@ -1135,7 +1159,7 @@ token_revoke_all)
     TOKENS_TMP=$HNC/data/remote_tokens.tmp
     [ -f "$TOKENS_FILE" ] || echo '{"version":1,"tokens":{}}' > "$TOKENS_FILE"
     if ! json_token_revoke_all_hnc_json "$TOKENS_FILE"; then
-        echo "json_set: hnc_json token_revoke_all unavailable/failed, using legacy fallback" >&2
+        json_legacy_fallback_warn "token_revoke_all" "token-revoke-all"
         awk '
         { gsub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true"); print }
         ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"

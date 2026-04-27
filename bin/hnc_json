@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.0 - unified JSON helper frontend
+# HNC hotfix20.1 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -1030,7 +1030,7 @@ case "$cmd" in
     token_revoke_all "$2"
     ;;
   version)
-    echo "hnc_json hotfix20.0 token-json"
+    echo "hnc_json hotfix20.1 token-json"
     ;;
   -h|--help|help|"")
     usage

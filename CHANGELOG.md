@@ -1,3 +1,10 @@
+
+
+## v5.1.0-rc1-hotfix20.1
+
+- Added telemetry for legacy JSON fallback usage in `json_set.sh` and `json_set_batch.sh`.
+- Fallback events are written to `/data/local/hnc/run/json_legacy_fallback.log` and counted in `/data/local/hnc/run/json_legacy_fallback.count`.
+- Kept all legacy fallback code paths available; this release only warns and measures.
 ## v5.1.0-rc1-hotfix20.0
 
 - hnc_json: added guarded token revoke helpers on top of a generic `set-map-field` primitive.

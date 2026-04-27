@@ -18,6 +18,28 @@ SCRIPT_DIR=${0%/*}
 HNC_JSON=${HNC_JSON:-$SCRIPT_DIR/hnc_json}
 JSON_SET=${JSON_SET:-$SCRIPT_DIR/json_set.sh}
 
+# hotfix20.1: record when the hnc_json batch writer is missing and the legacy
+# serial fallback is used. Best-effort only; never make recovery writes fail
+# because telemetry cannot be persisted.
+JSON_LEGACY_FALLBACK_LOG=${JSON_LEGACY_FALLBACK_LOG:-$HNC/run/json_legacy_fallback.log}
+JSON_LEGACY_FALLBACK_COUNT=${JSON_LEGACY_FALLBACK_COUNT:-$HNC/run/json_legacy_fallback.count}
+json_batch_legacy_fallback_warn() {
+    local reason="$1"
+    local ts cnt
+    ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date 2>/dev/null || echo unknown)
+    mkdir -p "$HNC/run" 2>/dev/null || true
+    printf '%s json_set_batch op=device-batch reason=%s\n' "$ts" "$reason" >> "$JSON_LEGACY_FALLBACK_LOG" 2>/dev/null || true
+    if [ -f "$JSON_LEGACY_FALLBACK_COUNT" ]; then
+        cnt=$(cat "$JSON_LEGACY_FALLBACK_COUNT" 2>/dev/null)
+        case "$cnt" in *[!0-9]*|'') cnt=0 ;; esac
+    else
+        cnt=0
+    fi
+    cnt=$((cnt + 1))
+    echo "$cnt" > "$JSON_LEGACY_FALLBACK_COUNT" 2>/dev/null || true
+    echo "json_set_batch: [WARN] hnc_json set-device-batch unavailable, using legacy serial fallback; count=$cnt" >&2
+}
+
 usage() {
     echo "usage: $0 device <MAC> <k> <v> [<k> <v> ...]" >&2
     exit 2
@@ -82,6 +104,7 @@ fi
 
 # Legacy fallback: use json_set.sh device, which itself may use hnc_json if this
 # script is invoked from an older package layout. Kept for recovery builds.
+json_batch_legacy_fallback_warn "missing-hnc_json-batch"
 while [ $# -ge 2 ]; do
     K=$1; V=$2; shift 2
     valid_field "$K" || { echo "bad field: $K" >&2; exit 2; }
