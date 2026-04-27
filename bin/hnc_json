@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix19.0 - unified JSON helper frontend
+# HNC hotfix19.3 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -9,6 +9,7 @@
 #   hnc_json validate <file>
 #   hnc_json get-top <file> <key>
 #   hnc_json set-top <file> <key> <value> [str|num|bool|null]
+#   hnc_json get-device <file> <mac> <key>
 #   hnc_json version
 
 set -eu
@@ -25,6 +26,7 @@ Usage:
   hnc_json validate <file>
   hnc_json get-top <file> <key>
   hnc_json set-top <file> <key> <value> [str|num|bool|null]
+  hnc_json get-device <file> <mac> <key>
   hnc_json version
 USAGE
 }
@@ -160,6 +162,94 @@ get_top() {
   }' "$f"
 }
 
+get_device() {
+  f="$1"; mac="$2"; key="$3"
+  [ -n "$mac" ] || { echo "hnc_json: empty mac" >&2; return 2; }
+  [ -n "$key" ] || { echo "hnc_json: empty key" >&2; return 2; }
+  validate_file "$f" || return $?
+  awk -v mac="$mac" -v key="$key" '
+  function ch(i){ return substr(s,i,1) }
+  function skip_ws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+  function parse_string(i,   j,c,out,esc){
+    out=""; esc=0
+    if(ch(i)!="\"") return 0
+    for(j=i+1; j<=n; j++){
+      c=ch(j)
+      if(esc){ out=out c; esc=0; continue }
+      if(c=="\\"){ esc=1; continue }
+      if(c=="\""){ str_val=out; return j+1 }
+      out=out c
+    }
+    return 0
+  }
+  function value_end(i,   j,c,depth,ins,esc,ni){
+    i=skip_ws(i); c=ch(i)
+    if(c=="\""){ ni=parse_string(i); return ni ? ni : n+1 }
+    if(c=="{" || c=="["){
+      depth=0; ins=0; esc=0
+      for(j=i; j<=n; j++){
+        c=ch(j)
+        if(ins){
+          if(esc){esc=0; continue}
+          if(c=="\\"){esc=1; continue}
+          if(c=="\""){ins=0; continue}
+          continue
+        }
+        if(c=="\""){ins=1; continue}
+        if(c=="{" || c=="[") depth++
+        else if(c=="}" || c=="]"){
+          depth--
+          if(depth==0) return j+1
+          if(depth<0) return j
+        }
+      }
+      return n+1
+    }
+    for(j=i; j<=n; j++){
+      c=ch(j)
+      if(c=="," || c=="}" || c=="]" || c ~ /[ \t\r\n]/) return j
+    }
+    return n+1
+  }
+  function find_key(os, oe, target,   i,ni,k,colon,vs,ve,c){
+    fk=fs=fe=0
+    i=skip_ws(os+1)
+    while(i<oe){
+      i=skip_ws(i); c=ch(i)
+      if(c==","){ i++; continue }
+      if(c=="}") return 0
+      if(c!="\"") return 0
+      ni=parse_string(i); if(!ni) return 0
+      k=str_val
+      colon=skip_ws(ni)
+      if(ch(colon) != ":") return 0
+      vs=skip_ws(colon+1); ve=value_end(vs)
+      if(k==target){ fk=i; fs=vs; fe=ve; return 1 }
+      i=ve
+    }
+    return 0
+  }
+  BEGIN{ s="" }
+  { s=s $0 "\n" }
+  END{
+    n=length(s); root=skip_ws(1)
+    if(ch(root)!="{") exit 2
+    root_end=value_end(root)
+    if(!find_key(root, root_end, "devices")) exit 3
+    devs_start=fs; devs_end=fe
+    if(ch(skip_ws(devs_start))!="{") exit 3
+    if(!find_key(devs_start, devs_end, mac)) exit 3
+    dev_start=fs; dev_end=fe
+    if(ch(skip_ws(dev_start))!="{") exit 3
+    if(!find_key(dev_start, dev_end, key)) exit 3
+    v=substr(s, fs, fe-fs)
+    gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", v)
+    print v
+    exit 0
+  }' "$f"
+}
+
+
 set_top_inner() {
   f="$1"; key="$2"; lit="$3"
   awk -v key="$key" -v lit="$lit" '
@@ -291,8 +381,12 @@ case "$cmd" in
     [ $# -ge 4 ] && [ $# -le 5 ] || { usage >&2; exit 2; }
     set_top "$2" "$3" "$4" "${5:-str}"
     ;;
+  get-device|device-get)
+    [ $# -eq 4 ] || { usage >&2; exit 2; }
+    get_device "$2" "$3" "$4"
+    ;;
   version)
-    echo "hnc_json hotfix19.0 self-contained set-top"
+    echo "hnc_json hotfix19.3 get-device bridge"
     ;;
   -h|--help|help|"")
     usage

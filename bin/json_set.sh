@@ -651,6 +651,23 @@ json_top_get_hnc_json() {
     return 0
 }
 
+# hotfix19.3: bridge per-device reads to hnc_json when available.
+# hnc_json get-device returns JSON literals; json_set.sh device_get historically
+# returns unquoted string values, so reuse the same decoder as top_get.
+json_device_get_hnc_json() {
+    local mac="$1" key="$2" raw rc
+    [ -x "$HNC_JSON" ] || return 127
+    raw=$("$HNC_JSON" get-device "$RULES" "$mac" "$key" 2>/dev/null)
+    rc=$?
+    [ $rc -eq 0 ] || return $rc
+    case "$raw" in
+        \"*) hnc_json_decode_string_literal "$raw" ;;
+        *) printf '%s\n' "$raw" ;;
+    esac
+    return 0
+}
+
+
 case "$CMD" in
 
 # ── 更新顶层字段（hotspot_auto / whitelist_mode 等）────────
@@ -804,31 +821,33 @@ device_get)
     KEY=$3
     [ -z "$MAC" ] && { echo "device_get: mac required" >&2; exit 1; }
     [ -z "$KEY" ] && { echo "device_get: key required" >&2; exit 1; }
-    # awk 扫整个文件, 找 "<mac>":{ ... "<key>": <value> ... }
-    awk -v m="$MAC" -v k="$KEY" '
-    BEGIN { RS="" }
-    {
-        # 在整个文件内容里找 "<mac>"
-        idx = index($0, "\"" m "\"")
-        if (idx == 0) next
-        tail = substr($0, idx)
-        # 在 tail 里找 "<key>":<value>
-        pat = "\"" k "\"[[:space:]]*:[[:space:]]*"
-        if (match(tail, pat)) {
-            rest = substr(tail, RSTART + RLENGTH)
-            # 字符串值
-            if (match(rest, /^"[^"]*"/)) {
-                print substr(rest, RSTART + 1, RLENGTH - 2)
-                exit 0
-            }
-            # 数字/布尔值 (到逗号/空白/} 为止)
-            if (match(rest, /^[^,}[:space:]]+/)) {
-                print substr(rest, RSTART, RLENGTH)
-                exit 0
+    # hotfix19.3: prefer hnc_json get-device for per-device reads. The legacy
+    # fallback is intentionally kept because device_get is used by delay/clear
+    # hot paths and must not hard-fail if hnc_json is unavailable.
+    if ! json_device_get_hnc_json "$MAC" "$KEY"; then
+        echo "json_set: hnc_json device_get unavailable/failed, using legacy fallback" >&2
+        # awk 扫整个文件, 找 "<mac>":{ ... "<key>": <value> ... }
+        awk -v m="$MAC" -v k="$KEY" '
+        BEGIN { RS="" }
+        {
+            idx = index($0, "\"" m "\"")
+            if (idx == 0) next
+            tail = substr($0, idx)
+            pat = "\"" k "\"[[:space:]]*:[[:space:]]*"
+            if (match(tail, pat)) {
+                rest = substr(tail, RSTART + RLENGTH)
+                if (match(rest, /^"[^"]*"/)) {
+                    print substr(rest, RSTART + 1, RLENGTH - 2)
+                    exit 0
+                }
+                if (match(rest, /^[^,}[:space:]]+/)) {
+                    print substr(rest, RSTART, RLENGTH)
+                    exit 0
+                }
             }
         }
-    }
-    ' "$RULES" 2>/dev/null
+        ' "$RULES" 2>/dev/null
+    fi
     ;;
 
 # ═══════════════════════════════════════════════════════════════
