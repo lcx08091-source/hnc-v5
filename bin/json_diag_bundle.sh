@@ -120,6 +120,10 @@ if [ -x "$BIN/stats_migration_readiness.sh" ]; then
   run_cmd stats_migration_readiness_json sh "$BIN/stats_migration_readiness.sh" json
   run_cmd stats_migration_readiness_text sh "$BIN/stats_migration_readiness.sh" text
 fi
+if [ -x "$BIN/stats_v52_rc_control.sh" ]; then
+  run_cmd stats_v52_rc_control_json sh "$BIN/stats_v52_rc_control.sh" json
+  run_cmd stats_v52_rc_control_text sh "$BIN/stats_v52_rc_control.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -129,6 +133,7 @@ copy_if_exists "$RUN/stats_last_date" "$OUT/run/stats_last_date"
 copy_if_exists "$RUN/stats_shadow_last_date" "$OUT/run/stats_shadow_last_date"
 copy_if_exists "$RUN/stats_shadow.enabled" "$OUT/run/stats_shadow.enabled"
 copy_if_exists "$RUN/stats_webui_source" "$OUT/run/stats_webui_source"
+copy_if_exists "$RUN/stats_v52_rc.enabled" "$OUT/run/stats_v52_rc.enabled"
 copy_if_exists "$RUN/stats_compare.json" "$OUT/run/stats_compare.json"
 copy_if_exists "$RUN/stats_compare.txt" "$OUT/run/stats_compare.txt"
 copy_if_exists "$RUN/stats_health_summary.json" "$OUT/run/stats_health_summary.json"
@@ -199,7 +204,8 @@ done
   echo "  \"has_stats_source_diag\": $([ -x "$BIN/stats_source_diag.sh" ] && echo true || echo false),"
   echo "  \"has_stats_compare\": $([ -x "$BIN/stats_compare.sh" ] && echo true || echo false),"
   echo "  \"has_stats_health_summary\": $([ -x "$BIN/stats_health_summary.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_migration_readiness\": $([ -x "$BIN/stats_migration_readiness.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_migration_readiness\": $([ -x "$BIN/stats_migration_readiness.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_v52_rc_control\": $([ -x "$BIN/stats_v52_rc_control.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

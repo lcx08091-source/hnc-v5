@@ -147,6 +147,18 @@ if [ -x "$BIN/stats_migration_readiness.sh" ]; then
   esac
 fi
 
+
+STATS_V52_RC_RAW=""
+STATS_V52_RC_PRESENT=false
+if [ -x "$BIN/stats_v52_rc_control.sh" ]; then
+  STATS_V52_RC_PRESENT=true
+  STATS_V52_RC_RAW="$(sh "$BIN/stats_v52_rc_control.sh" json 2>/dev/null)"
+  case "$STATS_V52_RC_RAW" in
+    *'"status":"blocked"'*|*'"status":"enabled_not_ready"'*) OVERALL="fail" ;;
+    *'"status":"disabled"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -199,7 +211,9 @@ cat <<JSON
     "has_health_summary_helper": $STATS_HEALTH_PRESENT,
     "health_summary_raw": "$(json_escape "$STATS_HEALTH_RAW")",
     "has_migration_readiness_helper": $STATS_MIGRATION_READINESS_PRESENT,
-    "migration_readiness_raw": "$(json_escape "$STATS_MIGRATION_READINESS_RAW")"
+    "migration_readiness_raw": "$(json_escape "$STATS_MIGRATION_READINESS_RAW")",
+    "has_v52_rc_control_helper": $STATS_V52_RC_PRESENT,
+    "v52_rc_control_raw": "$(json_escape "$STATS_V52_RC_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
