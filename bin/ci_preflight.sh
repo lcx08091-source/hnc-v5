@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.8 preflight checker
+# HNC hotfix20.9 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight hotfix20.8"
+say "HNC preflight hotfix20.9"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -82,7 +82,6 @@ else
   warn "daemon/hnc_httpd/hnc_httpd not present in source tree; CI must build it before packaging"
 fi
 
-
 # 6b. Optional hnc_json_c helper architecture sanity.
 # The source tree must not accidentally ship a Linux/x86 helper binary; Android
 # packages should only contain an Android ARM/AArch64 build, or no helper at all.
@@ -138,8 +137,42 @@ if [ -n "$ARTIFACT" ]; then
     echo "$LIST" | grep -E 'daemon/hnc_httpd/hnc_httpd$' >/dev/null && ok "artifact contains hnc_httpd" || fail "artifact missing daemon/hnc_httpd/hnc_httpd"
     echo "$LIST" | grep -E 'webroot/index.html$' >/dev/null && ok "artifact contains webroot/index.html" || fail "artifact missing webroot/index.html"
     echo "$LIST" | grep -E 'webroot/json-health.html$' >/dev/null && ok "artifact contains json-health.html" || warn "artifact missing json-health.html"
+
+    # hotfix20.9: artifact-level version and optional C helper checks. This
+    # catches the common mistake where CI builds an old module.prop, or a host
+    # x86 hnc_json_c accidentally gets packaged into the Android module.
+    MOD_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)module\.prop$' | head -1)"
+    if [ -n "$MOD_ENTRY" ]; then
+      unzip -p "$ARTIFACT" "$MOD_ENTRY" > "$ZIPTMP.module.prop" 2>/dev/null
+      ZIP_VER="$(awk -F= '$1=="version"{print $2; exit}' "$ZIPTMP.module.prop" 2>/dev/null)"
+      ZIP_VC="$(awk -F= '$1=="versionCode"{print $2; exit}' "$ZIPTMP.module.prop" 2>/dev/null)"
+      SRC_VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop 2>/dev/null)"
+      SRC_VC="$(awk -F= '$1=="versionCode"{print $2; exit}' module.prop 2>/dev/null)"
+      say "artifact module.prop version=$ZIP_VER versionCode=$ZIP_VC"
+      [ -n "$ZIP_VER" ] && [ "$ZIP_VER" = "$SRC_VER" ] && ok "artifact version matches source" || fail "artifact version mismatch: source=$SRC_VER artifact=$ZIP_VER"
+      [ -n "$ZIP_VC" ] && [ "$ZIP_VC" = "$SRC_VC" ] && ok "artifact versionCode matches source" || fail "artifact versionCode mismatch: source=$SRC_VC artifact=$ZIP_VC"
+    else
+      fail "artifact missing module.prop"
+    fi
+
+    C_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)bin/hnc_json_c$' | head -1)"
+    if [ -n "$C_ENTRY" ]; then
+      unzip -p "$ARTIFACT" "$C_ENTRY" > "$ZIPTMP.hnc_json_c" 2>/dev/null
+      if [ -s "$ZIPTMP.hnc_json_c" ] && command -v od >/dev/null 2>&1; then
+        CM="$(od -An -tx1 -j18 -N2 "$ZIPTMP.hnc_json_c" 2>/dev/null | awk '{print $1 " " $2}')"
+        case "$CM" in
+          "b7 00"|"28 00") ok "artifact hnc_json_c is Android ARM ELF: $CM" ;;
+          *) fail "artifact hnc_json_c is not Android ARM/AArch64 ELF: machine='$CM'" ;;
+        esac
+      else
+        fail "artifact hnc_json_c present but cannot inspect ELF machine"
+      fi
+    else
+      ok "artifact has no optional hnc_json_c helper"
+    fi
+
     echo "$LIST" | awk '{print $4}' | grep -E '\.zip$' >/dev/null && warn "artifact contains nested zip; verify this is not an Actions outer wrapper" || ok "artifact has no nested zip"
-    rm -f "$ZIPTMP"
+    rm -f "$ZIPTMP" "$ZIPTMP.module.prop" "$ZIPTMP.hnc_json_c"
   fi
 fi
 
