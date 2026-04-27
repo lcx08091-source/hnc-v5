@@ -16,7 +16,7 @@
 # PATH 健壮性
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
-HNC_DIR=${HNC_DIR:-/data/local/hnc}
+HNC_DIR=${HNC_DIR:-${HNC:-/data/local/hnc}}
 RAW_FILE="$HNC_DIR/data/stats_raw.jsonl"
 DEVICES_FILE="$HNC_DIR/data/devices.json"
 LOG="$HNC_DIR/logs/stats.log"
@@ -130,12 +130,23 @@ fi
 
 echo "$aggregated" >> "$RAW_FILE"
 
-# hotfix21.3: optional shadow stats stream for the v5.2 migration.
-# Disabled by default; enable with HNC_STATS_SHADOW_ENABLE=1 or
-# data/config.json {"stats_shadow_enabled":true}.
+# hotfix21.7: optional shadow stats stream for the v5.2 migration.
+# Legacy stats remains the source of truth. Shadow stats only runs when one of
+# these opt-in switches is present:
+#   HNC_STATS_SHADOW_ENABLE=1
+#   data/config.json {"stats_shadow_enabled":true}
+#   run/stats_shadow.enabled created by stats_shadow_control.sh enable
 shadow_enabled="${HNC_STATS_SHADOW_ENABLE:-}"
-if [ -z "$shadow_enabled" ] && [ -f "$HNC_DIR/data/config.json" ]; then
-    if grep -q '"stats_shadow_enabled"[[:space:]]*:[[:space:]]*true' "$HNC_DIR/data/config.json" 2>/dev/null; then
+shadow_reason="env"
+if [ -z "$shadow_enabled" ]; then
+    shadow_reason="config"
+    if [ -f "$HNC_DIR/data/config.json" ] && grep -q '"stats_shadow_enabled"[[:space:]]*:[[:space:]]*true' "$HNC_DIR/data/config.json" 2>/dev/null; then
+        shadow_enabled=1
+    fi
+fi
+if [ -z "$shadow_enabled" ]; then
+    shadow_reason="flag"
+    if [ -f "$HNC_DIR/run/stats_shadow.enabled" ]; then
         shadow_enabled=1
     fi
 fi
@@ -143,6 +154,8 @@ case "$shadow_enabled" in
     1|true|TRUE|yes|YES)
         if [ -x "$HNC_DIR/bin/stats_shadow_sample.sh" ]; then
             sh "$HNC_DIR/bin/stats_shadow_sample.sh" >> "$LOG" 2>&1 || log "WARN: shadow sample failed (rc=$?)"
+        else
+            log "WARN: shadow enabled by $shadow_reason but stats_shadow_sample.sh missing"
         fi
         ;;
 esac

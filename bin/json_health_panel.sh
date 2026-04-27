@@ -104,6 +104,13 @@ if [ -x "$BIN/stats_shadow_diag.sh" ]; then
 fi
 [ -x "$BIN/stats_shadow_rollup.sh" ] && STATS_SHADOW_ROLLUP_PRESENT=true
 
+STATS_SHADOW_CONTROL_RAW=""
+STATS_SHADOW_CONTROL_PRESENT=false
+if [ -x "$BIN/stats_shadow_control.sh" ]; then
+  STATS_SHADOW_CONTROL_PRESENT=true
+  STATS_SHADOW_CONTROL_RAW="$(sh "$BIN/stats_shadow_control.sh" json 2>/dev/null)"
+fi
+
 STATS_COMPARE_RAW=""
 STATS_COMPARE_PRESENT=false
 if [ -x "$BIN/stats_compare.sh" ]; then
@@ -165,6 +172,8 @@ cat <<JSON
     "has_shadow_diag_helper": $STATS_SHADOW_PRESENT,
     "has_shadow_rollup_helper": $STATS_SHADOW_ROLLUP_PRESENT,
     "shadow_raw": "$(json_escape "$STATS_SHADOW_RAW")",
+    "has_shadow_control_helper": $STATS_SHADOW_CONTROL_PRESENT,
+    "shadow_control_raw": "$(json_escape "$STATS_SHADOW_CONTROL_RAW")",
     "has_compare_helper": $STATS_COMPARE_PRESENT,
     "compare_raw": "$(json_escape "$STATS_COMPARE_RAW")",
     "has_health_summary_helper": $STATS_HEALTH_PRESENT,

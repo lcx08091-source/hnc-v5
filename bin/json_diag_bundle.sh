@@ -100,6 +100,10 @@ if [ -x "$BIN/stats_shadow_diag.sh" ]; then
   run_cmd stats_shadow_diag_json sh "$BIN/stats_shadow_diag.sh" json
   run_cmd stats_shadow_diag_text sh "$BIN/stats_shadow_diag.sh" text
 fi
+if [ -x "$BIN/stats_shadow_control.sh" ]; then
+  run_cmd stats_shadow_control_json sh "$BIN/stats_shadow_control.sh" json
+  run_cmd stats_shadow_control_text sh "$BIN/stats_shadow_control.sh" text
+fi
 if [ -x "$BIN/stats_compare.sh" ]; then
   run_cmd stats_compare_json sh "$BIN/stats_compare.sh" json
   run_cmd stats_compare_text sh "$BIN/stats_compare.sh" text
@@ -115,6 +119,7 @@ mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_shadow_daily.jsonl" ] && tail -200 "$DATA/stats_shadow_daily.jsonl" > "$OUT/stats_tail/stats_shadow_daily.tail.jsonl" 2>/dev/null
 copy_if_exists "$RUN/stats_last_date" "$OUT/run/stats_last_date"
 copy_if_exists "$RUN/stats_shadow_last_date" "$OUT/run/stats_shadow_last_date"
+copy_if_exists "$RUN/stats_shadow.enabled" "$OUT/run/stats_shadow.enabled"
 copy_if_exists "$RUN/stats_compare.json" "$OUT/run/stats_compare.json"
 copy_if_exists "$RUN/stats_compare.txt" "$OUT/run/stats_compare.txt"
 copy_if_exists "$RUN/stats_health_summary.json" "$OUT/run/stats_health_summary.json"
@@ -178,9 +183,10 @@ done
   echo "  \"has_stats_identity_diag\": $([ -x "$BIN/stats_identity_diag.sh" ] && echo true || echo false),"
   echo "  \"has_stats_retention_diag\": $([ -x "$BIN/stats_retention_diag.sh" ] && echo true || echo false),"
   echo "  \"has_stats_shadow_diag\": $([ -x "$BIN/stats_shadow_diag.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_shadow_control\": $([ -x "$BIN/stats_shadow_control.sh" ] && echo true || echo false),"
   echo "  \"has_stats_shadow_rollup\": $([ -x "$BIN/stats_shadow_rollup.sh" ] && echo true || echo false),"
   echo "  \"has_stats_compare\": $([ -x "$BIN/stats_compare.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_health_summary\": $([ -x \"$BIN/stats_health_summary.sh\" ] && echo true || echo false)"
+  echo "  \"has_stats_health_summary\": $([ -x "$BIN/stats_health_summary.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_shadow_diag.sh — hotfix21.4 read-only diagnostics for shadow stats.
+# stats_shadow_diag.sh — hotfix21.7 read-only diagnostics for shadow stats.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -11,6 +11,7 @@ RAW="$DATA/stats_shadow_raw.jsonl"
 DAILY="$DATA/stats_shadow_daily.jsonl"
 CONFIG="$DATA/config.json"
 MARKER="$RUN/stats_shadow_last_date"
+FLAG="$RUN/stats_shadow.enabled"
 MODE=${1:-json}
 NOW=$(date +%s 2>/dev/null)
 case "$NOW" in ''|*[!0-9]*) NOW=0 ;; esac
@@ -20,15 +21,23 @@ line_count() { [ -f "$1" ] && wc -l < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 
 enabled="false"
 reason="disabled_by_default"
-case "${HNC_STATS_SHADOW_ENABLE:-}" in
-  1|true|TRUE|yes|YES) enabled="true"; reason="env:HNC_STATS_SHADOW_ENABLE" ;;
-  0|false|FALSE|no|NO) enabled="false"; reason="env:HNC_STATS_SHADOW_ENABLE" ;;
+env_value="${HNC_STATS_SHADOW_ENABLE:-}"
+env_state="unset"
+case "$env_value" in
+  1|true|TRUE|yes|YES) enabled="true"; reason="env:HNC_STATS_SHADOW_ENABLE"; env_state="enabled" ;;
+  0|false|FALSE|no|NO) enabled="false"; reason="env:HNC_STATS_SHADOW_ENABLE"; env_state="disabled" ;;
   *)
     if [ -f "$CONFIG" ] && grep -q '"stats_shadow_enabled"[[:space:]]*:[[:space:]]*true' "$CONFIG" 2>/dev/null; then
       enabled="true"; reason="config:stats_shadow_enabled"
+    elif [ -f "$FLAG" ]; then
+      enabled="true"; reason="flag:stats_shadow.enabled"
     fi
     ;;
 esac
+flag_enabled=false
+[ -f "$FLAG" ] && flag_enabled=true
+control_helper_present=false
+[ -x "$BIN/stats_shadow_control.sh" ] && control_helper_present=true
 
 raw_exists=false
 [ -f "$RAW" ] && raw_exists=true
@@ -87,6 +96,11 @@ HNC stats shadow diagnostics
 status=$status
 enabled=$enabled
 reason=$reason
+env_state=$env_state
+flag_enabled=$flag_enabled
+control_helper_present=$control_helper_present
+control_helper=$BIN/stats_shadow_control.sh
+flag_file=$FLAG
 sample_helper=$BIN/stats_shadow_sample.sh
 rollup_helper=$BIN/stats_shadow_rollup.sh
 raw_file=$RAW
@@ -113,6 +127,6 @@ EOF2
 fi
 
 cat <<EOF2
-{"ok":true,"status":"$status","enabled":$enabled,"reason":"$reason","sample_helper":"$BIN/stats_shadow_sample.sh","rollup_helper":"$BIN/stats_shadow_rollup.sh","raw_file":"$RAW","raw_exists":$raw_exists,"raw_lines":${raw_lines:-0},"raw_size_bytes":${raw_size:-0},"invalid_lines":${invalid_lines:-0},"legacy_no_date_lines":${legacy_no_date_lines:-0},"unique_devices":${unique_devices:-0},"unique_dates":${unique_dates:-0},"last_ts":${last_ts:-0},"stale_seconds":${stale_seconds:-0},"daily_file":"$DAILY","daily_exists":$daily_exists,"daily_lines":${daily_lines:-0},"daily_size_bytes":${daily_size:-0},"daily_invalid_lines":${daily_invalid_lines:-0},"daily_unique_dates":${daily_unique_dates:-0},"daily_unique_devices":${daily_unique_devices:-0},"last_daily_date":"$last_daily_date","last_marker":"$last_marker"}
+{"ok":true,"status":"$status","enabled":$enabled,"reason":"$reason","env_state":"$env_state","flag_enabled":$flag_enabled,"control_helper_present":$control_helper_present,"control_helper":"$BIN/stats_shadow_control.sh","flag_file":"$FLAG","sample_helper":"$BIN/stats_shadow_sample.sh","rollup_helper":"$BIN/stats_shadow_rollup.sh","raw_file":"$RAW","raw_exists":$raw_exists,"raw_lines":${raw_lines:-0},"raw_size_bytes":${raw_size:-0},"invalid_lines":${invalid_lines:-0},"legacy_no_date_lines":${legacy_no_date_lines:-0},"unique_devices":${unique_devices:-0},"unique_dates":${unique_dates:-0},"last_ts":${last_ts:-0},"stale_seconds":${stale_seconds:-0},"daily_file":"$DAILY","daily_exists":$daily_exists,"daily_lines":${daily_lines:-0},"daily_size_bytes":${daily_size:-0},"daily_invalid_lines":${daily_invalid_lines:-0},"daily_unique_dates":${daily_unique_dates:-0},"daily_unique_devices":${daily_unique_devices:-0},"last_daily_date":"$last_daily_date","last_marker":"$last_marker"}
 EOF2
 exit 0
