@@ -96,9 +96,14 @@ if [ -x "$BIN/stats_retention_diag.sh" ]; then
   run_cmd stats_retention_diag_json sh "$BIN/stats_retention_diag.sh" json
   run_cmd stats_retention_diag_text sh "$BIN/stats_retention_diag.sh" text
 fi
+if [ -x "$BIN/stats_shadow_diag.sh" ]; then
+  run_cmd stats_shadow_diag_json sh "$BIN/stats_shadow_diag.sh" json
+  run_cmd stats_shadow_diag_text sh "$BIN/stats_shadow_diag.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
+[ -f "$DATA/stats_shadow_raw.jsonl" ] && tail -200 "$DATA/stats_shadow_raw.jsonl" > "$OUT/stats_tail/stats_shadow_raw.tail.jsonl" 2>/dev/null
 copy_if_exists "$RUN/stats_last_date" "$OUT/run/stats_last_date"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
@@ -156,7 +161,9 @@ done
   echo "  \"has_hnc_json\": $([ -x "$BIN/hnc_json" ] && echo true || echo false),"
   echo "  \"has_hnc_json_c_status\": $([ -x "$BIN/hnc_json_c_status.sh" ] && echo true || echo false),"
   echo "  \"has_stats_diag\": $([ -x "$BIN/stats_diag.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_identity_diag\": $([ -x "$BIN/stats_identity_diag.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_identity_diag\": $([ -x "$BIN/stats_identity_diag.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_retention_diag\": $([ -x "$BIN/stats_retention_diag.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_shadow_diag\": $([ -x "$BIN/stats_shadow_diag.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

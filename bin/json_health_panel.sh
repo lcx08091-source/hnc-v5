@@ -95,6 +95,12 @@ if [ -x "$BIN/stats_retention_diag.sh" ]; then
   STATS_RETENTION_PRESENT=true
   STATS_RETENTION_RAW="$(sh "$BIN/stats_retention_diag.sh" json 2>/dev/null)"
 fi
+STATS_SHADOW_RAW=""
+STATS_SHADOW_PRESENT=false
+if [ -x "$BIN/stats_shadow_diag.sh" ]; then
+  STATS_SHADOW_PRESENT=true
+  STATS_SHADOW_RAW="$(sh "$BIN/stats_shadow_diag.sh" json 2>/dev/null)"
+fi
 
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
@@ -135,7 +141,9 @@ cat <<JSON
     "has_identity_diag_helper": $STATS_IDENTITY_PRESENT,
     "identity_raw": "$(json_escape "$STATS_IDENTITY_RAW")",
     "has_retention_diag_helper": $STATS_RETENTION_PRESENT,
-    "retention_raw": "$(json_escape "$STATS_RETENTION_RAW")"
+    "retention_raw": "$(json_escape "$STATS_RETENTION_RAW")",
+    "has_shadow_diag_helper": $STATS_SHADOW_PRESENT,
+    "shadow_raw": "$(json_escape "$STATS_SHADOW_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
