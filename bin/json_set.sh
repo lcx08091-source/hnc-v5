@@ -612,6 +612,45 @@ json_update_top_hnc_json() {
     "$HNC_JSON" set-top "$RULES" "$field" "$value" "$typ"
 }
 
+# hotfix19.2: bridge top-level reads to hnc_json when available.
+# hnc_json get-top returns JSON literals. json_set.sh top_get historically
+# returns unquoted strings, so decode simple JSON string escapes before output.
+hnc_json_decode_string_literal() {
+    awk 'BEGIN{
+        s=ARGV[1]; ARGV[1]="";
+        if (substr(s,1,1)!="\"" || substr(s,length(s),1)!="\"") { print s; exit }
+        out=""; esc=0;
+        for (i=2; i<length(s); i++) {
+            c=substr(s,i,1);
+            if (esc) {
+                if (c=="n") out=out "\n";
+                else if (c=="r") out=out "\r";
+                else if (c=="t") out=out "\t";
+                else if (c=="b") out=out sprintf("%c",8);
+                else if (c=="f") out=out sprintf("%c",12);
+                else out=out c;
+                esc=0; continue;
+            }
+            if (c=="\\") { esc=1; continue }
+            out=out c;
+        }
+        print out;
+    }' "$1"
+}
+
+json_top_get_hnc_json() {
+    local key="$1" raw rc
+    [ -x "$HNC_JSON" ] || return 127
+    raw=$("$HNC_JSON" get-top "$RULES" "$key" 2>/dev/null)
+    rc=$?
+    [ $rc -eq 0 ] || return $rc
+    case "$raw" in
+        \"*) hnc_json_decode_string_literal "$raw" ;;
+        *) printf '%s\n' "$raw" ;;
+    esac
+    return 0
+}
+
 case "$CMD" in
 
 # ── 更新顶层字段（hotspot_auto / whitelist_mode 等）────────
@@ -736,15 +775,21 @@ cfg_get)
 # ── 读取 rules.json 顶层字段（v3.3.0 新增）──────────────────
 top_get)
     KEY=$2
-    # 先尝试字符串字段（带引号），取引号内的完整内容
-    result=$(grep -o "\"$KEY\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$RULES" 2>/dev/null \
-        | head -1 | sed 's/^[^:]*:[[:space:]]*"//; s/"$//')
-    if [ -n "$result" ]; then
-        echo "$result"
-    else
-        # 数字/布尔字段
-        grep -o "\"$KEY\"[[:space:]]*:[[:space:]]*[^,}[:space:]]*" "$RULES" 2>/dev/null \
-            | head -1 | sed 's/^[^:]*:[[:space:]]*//'
+    # hotfix19.2: prefer hnc_json get-top for top-level reads. This avoids
+    # grep-based reads that break on escaped quotes and keeps read/write paths
+    # moving toward one JSON abstraction. Fallback preserves legacy behavior.
+    if ! json_top_get_hnc_json "$KEY"; then
+        echo "json_set: hnc_json top_get unavailable/failed, using legacy fallback" >&2
+        # 先尝试字符串字段（带引号），取引号内的完整内容
+        result=$(grep -o "\"$KEY\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$RULES" 2>/dev/null \
+            | head -1 | sed 's/^[^:]*:[[:space:]]*"//; s/"$//')
+        if [ -n "$result" ]; then
+            echo "$result"
+        else
+            # 数字/布尔字段
+            grep -o "\"$KEY\"[[:space:]]*:[[:space:]]*[^,}[:space:]]*" "$RULES" 2>/dev/null \
+                | head -1 | sed 's/^[^:]*:[[:space:]]*//'
+        fi
     fi
     ;;
 
