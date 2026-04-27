@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix20.0
+
+- hnc_json: added guarded token revoke helpers on top of a generic `set-map-field` primitive.
+- json_set.sh: routed `token_revoke` / `token_revoke_all` remote token revocation writes through hnc_json, with legacy fallback retained.
+- Scope guard: Go TokensStore remains owner of token issue, last_seen, merge, flush, and prune semantics.
+- Tests: added remote token bridge regression coverage for single revoke, revoke-all, nonexistent token idempotency, special string fields, and JSON guard validation.
+
 ## v5.1.0-rc1-hotfix19.9
 
 - hnc_json: added guarded top-level string array primitives `add-array-unique` and `del-array-value`.

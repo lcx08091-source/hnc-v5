@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix19.9 - unified JSON helper frontend
+# HNC hotfix20.0 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -36,11 +36,15 @@ Usage:
   hnc_json del-object-key <file> <key>
   hnc_json add-array-unique <file> <key> <value>
   hnc_json del-array-value <file> <key> <value>
+  hnc_json set-map-field <file> <top_key> <entry_key> <field> <value> [str|num|bool|null|json]
+  hnc_json token-revoke <file> <token_id>
+  hnc_json token-revoke-all <file>
   hnc_json version
 USAGE
 }
 
 acquire_lock() {
+  mkdir -p "$HNC_BASE/run" 2>/dev/null || true
   i=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
@@ -775,6 +779,198 @@ set_device_batch() {
   }
 }
 
+
+
+set_map_field_inner() {
+  f="$1"; topkey="$2"; entrykey="$3"; field="$4"; lit="$5"
+  awk -v topkey="$topkey" -v entrykey="$entrykey" -v field="$field" -v lit="$lit" '
+  function ch(i){ return substr(s,i,1) }
+  function skip_ws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+  function parse_string(i,   j,c,out,esc){
+    out=""; esc=0
+    if(ch(i)!="\"") return 0
+    for(j=i+1; j<=n; j++){
+      c=ch(j)
+      if(esc){ out=out c; esc=0; continue }
+      if(c=="\\"){ esc=1; continue }
+      if(c=="\""){ str_val=out; return j+1 }
+      out=out c
+    }
+    return 0
+  }
+  function value_end(i,   j,c,depth,ins,esc,ni){
+    i=skip_ws(i); c=ch(i)
+    if(c=="\""){ ni=parse_string(i); return ni ? ni : n+1 }
+    if(c=="{" || c=="["){
+      depth=0; ins=0; esc=0
+      for(j=i; j<=n; j++){
+        c=ch(j)
+        if(ins){
+          if(esc){esc=0; continue}
+          if(c=="\\"){esc=1; continue}
+          if(c=="\""){ins=0; continue}
+          continue
+        }
+        if(c=="\""){ins=1; continue}
+        if(c=="{" || c=="[") depth++
+        else if(c=="}" || c=="]"){
+          depth--
+          if(depth==0) return j+1
+          if(depth<0) return j
+        }
+      }
+      return n+1
+    }
+    for(j=i; j<=n; j++){
+      c=ch(j)
+      if(c=="," || c=="}" || c=="]" || c ~ /[ \t\r\n]/) return j
+    }
+    return n+1
+  }
+  function find_key(os, oe, target,   i,ni,k,colon,vs,ve,c){
+    fk=fs=fe=0
+    i=skip_ws(os+1)
+    while(i<oe){
+      i=skip_ws(i); c=ch(i)
+      if(c==","){ i++; continue }
+      if(c=="}") return 0
+      if(c!="\"") return 0
+      ni=parse_string(i); if(!ni) return 0
+      k=str_val
+      colon=skip_ws(ni)
+      if(ch(colon) != ":") return 0
+      vs=skip_ws(colon+1); ve=value_end(vs)
+      if(k==target){ fk=i; fs=vs; fe=ve; return 1 }
+      i=ve
+    }
+    return 0
+  }
+  function esc_key(x,   i,c,out){
+    out=""
+    for(i=1;i<=length(x);i++){
+      c=substr(x,i,1)
+      if(c=="\\") out=out "\\\\"
+      else if(c=="\"") out=out "\\\""
+      else out=out c
+    }
+    return out
+  }
+  function object_insert(obj_start, obj_end_excl, k, val,   closepos,inner,tmp,sep){
+    closepos=obj_end_excl-1
+    inner=substr(s,obj_start+1,closepos-obj_start-1)
+    tmp=inner; gsub(/[ \t\r\n]/,"",tmp)
+    sep=(tmp=="" ? "\n  " : ",\n  ")
+    return substr(s,1,closepos-1) sep "\"" esc_key(k) "\": " val substr(s,closepos)
+  }
+  BEGIN{ s="" }
+  { s=s $0 "\n" }
+  END{
+    sub(/\n$/, "", s); n=length(s)
+    root=skip_ws(1)
+    if(n==0 || ch(root)!="{") exit 2
+    root_end=value_end(root)
+    if(!find_key(root, root_end, topkey)) exit 3
+    map_start=skip_ws(fs); map_end=fe
+    if(ch(map_start)!="{") exit 3
+    if(!find_key(map_start, map_end, entrykey)) exit 3
+    entry_start=skip_ws(fs); entry_end=fe
+    if(ch(entry_start)!="{") exit 3
+    if(find_key(entry_start, entry_end, field)){
+      print substr(s,1,fs-1) lit substr(s,fe)
+      exit 0
+    }
+    print object_insert(entry_start, entry_end, field, lit)
+    exit 0
+  }' "$f"
+}
+
+set_map_field() {
+  target="$1"; topkey="$2"; entrykey="$3"; field="$4"; value="$5"; typ="${6:-str}"
+  [ -n "$topkey" ] || { echo "hnc_json: empty top map key" >&2; return 2; }
+  [ -n "$entrykey" ] || { echo "hnc_json: empty map entry key" >&2; return 2; }
+  [ -n "$field" ] || { echo "hnc_json: empty map field" >&2; return 2; }
+  lit="$(json_literal "$value" "$typ")" || return $?
+  target_dir="$(dirname "$target")"
+  target_base="$(basename "$target")"
+  mkdir -p "$target_dir" "$BACKUP_DIR" 2>/dev/null || true
+  [ -f "$target" ] || printf '{"version":1,"%s":{}}\n' "$topkey" > "$target"
+  validate_file "$target" || { echo "hnc_json: refusing to write invalid input file: $target" >&2; return 1; }
+  acquire_lock || return 1
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  bak="$BACKUP_DIR/$target_base.$ts.bak"
+  tmp="$target_dir/.$target_base.hnc_json_map.$$"
+  cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
+  case "$typ" in
+    json|raw) awk_lit="$lit" ;;
+    *) awk_lit="$(printf '%s' "$lit" | sed 's/\\/\\\\/g')" ;;
+  esac
+  set +e
+  set_map_field_inner "$target" "$topkey" "$entrykey" "$field" "$awk_lit" > "$tmp"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    [ "$rc" -eq 3 ] && return 3
+    echo "hnc_json: set-map-field parser failed for $target" >&2
+    return 1
+  fi
+  validate_file "$tmp" || { rm -f "$tmp"; echo "hnc_json: candidate JSON failed validation" >&2; return 1; }
+  mv "$tmp" "$target"
+  chmod 600 "$target" 2>/dev/null || true
+  validate_file "$target" || {
+    echo "hnc_json: live JSON failed validation after map write, rolling back" >&2
+    [ -f "$bak" ] && cp -p "$bak" "$target" 2>/dev/null || true
+    return 1
+  }
+}
+
+token_revoke() {
+  target="$1"; token_id="$2"
+  case "$token_id" in
+    *[!A-Za-z0-9_-]*|"") echo "hnc_json: invalid token id" >&2; return 2 ;;
+  esac
+  [ -f "$target" ] || printf '{"version":1,"tokens":{}}\n' > "$target"
+  token_key="$(json_literal "$token_id" str)" || return $?
+  tokens_obj="$(get_top "$target" "tokens" 2>/dev/null || printf '{}')"
+  if ! printf '%s
+' "$tokens_obj" | grep -F "$token_key" >/dev/null 2>&1; then
+    return 0
+  fi
+  set_map_field "$target" "tokens" "$token_id" "revoked" "true" bool
+  rc=$?
+  chmod 600 "$target" 2>/dev/null || true
+  return "$rc"
+}
+
+token_revoke_all() {
+  target="$1"
+  target_dir="$(dirname "$target")"
+  target_base="$(basename "$target")"
+  mkdir -p "$target_dir" "$BACKUP_DIR" 2>/dev/null || true
+  [ -f "$target" ] || printf '{"version":1,"tokens":{}}\n' > "$target"
+  validate_file "$target" || { echo "hnc_json: refusing to write invalid input file: $target" >&2; return 1; }
+  acquire_lock || return 1
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  bak="$BACKUP_DIR/$target_base.$ts.bak"
+  tmp="$target_dir/.$target_base.hnc_json_token_all.$$"
+  cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
+  awk '
+  BEGIN{ins=0;esc=0;buf=""}
+  {
+    line=$0
+    if(!ins){ gsub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true", line) }
+    print line
+  }' "$target" > "$tmp" || { rm -f "$tmp"; return 1; }
+  validate_file "$tmp" || { rm -f "$tmp"; echo "hnc_json: token-revoke-all candidate failed validation" >&2; return 1; }
+  mv "$tmp" "$target"
+  chmod 600 "$target" 2>/dev/null || true
+  validate_file "$target" || {
+    echo "hnc_json: live JSON failed validation after token revoke all, rolling back" >&2
+    [ -f "$bak" ] && cp -p "$bak" "$target" 2>/dev/null || true
+    return 1
+  }
+}
+
 cmd="${1:-}"
 case "$cmd" in
   validate)
@@ -821,8 +1017,20 @@ case "$cmd" in
     [ $# -eq 4 ] || { usage >&2; exit 2; }
     array_del_value "$2" "$3" "$4"
     ;;
+  set-map-field|map-set-field)
+    [ $# -ge 6 ] && [ $# -le 7 ] || { usage >&2; exit 2; }
+    set_map_field "$2" "$3" "$4" "$5" "$6" "${7:-str}"
+    ;;
+  token-revoke)
+    [ $# -eq 3 ] || { usage >&2; exit 2; }
+    token_revoke "$2" "$3"
+    ;;
+  token-revoke-all)
+    [ $# -eq 2 ] || { usage >&2; exit 2; }
+    token_revoke_all "$2"
+    ;;
   version)
-    echo "hnc_json hotfix19.9 array-json"
+    echo "hnc_json hotfix20.0 token-json"
     ;;
   -h|--help|help|"")
     usage

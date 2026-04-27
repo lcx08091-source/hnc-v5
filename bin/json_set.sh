@@ -364,6 +364,22 @@ json_blacklist_del_hnc_json() {
     [ -x "$HNC_JSON" ] || return 127
     "$HNC_JSON" del-array-value "$RULES" "blacklist" "$mac"
 }
+
+
+# hotfix20.0: bridge remote_tokens.json revoke writes to hnc_json.
+# Token issuing/last_seen stays owned by Go TokensStore; shell only routes
+# revoke/revoke_all through the same guarded JSON helper and keeps legacy fallback.
+json_token_revoke_hnc_json() {
+    local file="$1" tid="$2"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" token-revoke "$file" "$tid"
+}
+
+json_token_revoke_all_hnc_json() {
+    local file="$1"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" token-revoke-all "$file"
+}
 case "$CMD" in
     top|device|device_remove|bl_add|bl_del|reset|cfg_set|name_set|name_del|tpl_set|tpl_del|token_revoke|token_revoke_all|token_prune)
         acquire_lock || { echo "json_set: lock timeout (5s)" >&2; exit 2; }
@@ -1072,54 +1088,60 @@ token_revoke)
     TOKENS_TMP=$HNC/data/remote_tokens.tmp
     [ -f "$TOKENS_FILE" ] || echo '{"version":1,"tokens":{}}' > "$TOKENS_FILE"
 
-    # 策略: 用 awk 状态机进入 "TokenID":{ 对象后改 revoked:false -> true
-    # POSIX awk(busybox/toybox 通用), 不用 gawk match(,,arr)
-    awk -v tid="$TID" '
-    BEGIN { in_target = 0; depth = 0 }
-    {
-        line = $0
-        if (in_target) {
-            # 统计本行大括号深度变化
-            brace_delta = 0
-            for (i = 1; i <= length(line); i++) {
-                c = substr(line, i, 1)
-                if (c == "{") brace_delta++
-                else if (c == "}") brace_delta--
-            }
-            sub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true", line)
-            depth += brace_delta
-            if (depth <= 0) in_target = 0
-        } else {
-            pat = "\"" tid "\"[ \t]*:[ \t]*\\{"
-            if (match(line, pat)) {
-                in_target = 1
-                depth = 0
+    # hotfix20.0: prefer hnc_json for token revoke. This keeps Go TokensStore
+    # as the owner of token issue/last_seen while replacing the fragile shell
+    # mutation path with guarded validate/backup/commit. Legacy fallback remains.
+    if ! json_token_revoke_hnc_json "$TOKENS_FILE" "$TID"; then
+        echo "json_set: hnc_json token_revoke unavailable/failed, using legacy fallback" >&2
+        # 策略: 用 awk 状态机进入 "TokenID":{ 对象后改 revoked:false -> true
+        # POSIX awk(busybox/toybox 通用), 不用 gawk match(,,arr)
+        awk -v tid="$TID" '
+        BEGIN { in_target = 0; depth = 0 }
+        {
+            line = $0
+            if (in_target) {
+                brace_delta = 0
                 for (i = 1; i <= length(line); i++) {
                     c = substr(line, i, 1)
-                    if (c == "{") depth++
-                    else if (c == "}") depth--
+                    if (c == "{") brace_delta++
+                    else if (c == "}") brace_delta--
                 }
-                if (depth <= 0) in_target = 0
                 sub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true", line)
+                depth += brace_delta
+                if (depth <= 0) in_target = 0
+            } else {
+                pat = "\"" tid "\"[ \t]*:[ \t]*\\{"
+                if (match(line, pat)) {
+                    in_target = 1
+                    depth = 0
+                    for (i = 1; i <= length(line); i++) {
+                        c = substr(line, i, 1)
+                        if (c == "{") depth++
+                        else if (c == "}") depth--
+                    }
+                    if (depth <= 0) in_target = 0
+                    sub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true", line)
+                }
             }
+            print line
         }
-        print line
-    }
-    ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
+        ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
+    fi
     chmod 600 "$TOKENS_FILE" 2>/dev/null
     ;;
-
 token_revoke_all)
     # 所有 tokens[*].revoked 从 false 改 true
     TOKENS_FILE=$HNC/data/remote_tokens.json
     TOKENS_TMP=$HNC/data/remote_tokens.tmp
     [ -f "$TOKENS_FILE" ] || echo '{"version":1,"tokens":{}}' > "$TOKENS_FILE"
-    awk '
-    { sub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true"); print }
-    ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
+    if ! json_token_revoke_all_hnc_json "$TOKENS_FILE"; then
+        echo "json_set: hnc_json token_revoke_all unavailable/failed, using legacy fallback" >&2
+        awk '
+        { gsub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true"); print }
+        ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
+    fi
     chmod 600 "$TOKENS_FILE" 2>/dev/null
     ;;
-
 token_prune)
     # 维护命令:移除 last_seen > 90 天 + revoked=true 且 last_seen > 30 天 的条目
     # json_set.sh 的 shell awk 实现 token_prune 过于脆弱(多行 JSON + busybox/toybox
