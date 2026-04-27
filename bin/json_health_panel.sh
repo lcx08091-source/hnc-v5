@@ -58,6 +58,15 @@ HAS_TC_STATE=false
 HAS_CAP=false
 [ -f "$RUN/capabilities.json" ] && HAS_CAP=true
 
+LEGACY_FALLBACK_COUNT=0
+[ -f "$RUN/json_legacy_fallback.count" ] && LEGACY_FALLBACK_COUNT="$(cat "$RUN/json_legacy_fallback.count" 2>/dev/null)"
+case "$LEGACY_FALLBACK_COUNT" in *[!0-9]*|"") LEGACY_FALLBACK_COUNT=0 ;; esac
+LEGACY_FALLBACK_LAST=""
+[ -f "$RUN/json_legacy_fallback.log" ] && LEGACY_FALLBACK_LAST="$(tail -1 "$RUN/json_legacy_fallback.log" 2>/dev/null)"
+HAS_LEGACY_FALLBACK_STATUS=false
+[ -x "$BIN/json_legacy_fallback_status.sh" ] && HAS_LEGACY_FALLBACK_STATUS=true
+[ "$LEGACY_FALLBACK_COUNT" != 0 ] && [ "$OVERALL" = ok ] && OVERALL="warn"
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -80,6 +89,13 @@ cat <<JSON
   "last_bundle": "$(json_escape "$LAST_BUNDLE")",
   "has_tc_state": $HAS_TC_STATE,
   "has_capabilities": $HAS_CAP,
+  "legacy_fallback": {
+    "count": $LEGACY_FALLBACK_COUNT,
+    "last": "$(json_escape "$LEGACY_FALLBACK_LAST")",
+    "has_status_helper": $HAS_LEGACY_FALLBACK_STATUS,
+    "log": "$(json_escape "$RUN/json_legacy_fallback.log")",
+    "count_file": "$(json_escape "$RUN/json_legacy_fallback.count")"
+  },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
     "json_health_txt": "$(json_escape "$RUN/json_health.txt")",
