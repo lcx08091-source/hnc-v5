@@ -1,3 +1,10 @@
+## v5.1.0-rc1-hotfix20.2
+
+- Started the cautious C migration for hnc_json with an optional read-only `bin/hnc_json_c` helper.
+- `bin/hnc_json` can delegate only `validate`, `get-top`, and `version` to the C helper when present; all write paths remain shell-based.
+- Expanded `daemon/hotspotd/tools/hnc_json.c` and updated `build_hnc_json.sh` so CI/device builds can produce `bin/hnc_json_c`.
+- Added regression coverage for absent-helper fallback and optional C-helper parity.
+
 
 
 ## v5.1.0-rc1-hotfix20.1
