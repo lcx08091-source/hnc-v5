@@ -667,6 +667,34 @@ json_device_get_hnc_json() {
     return 0
 }
 
+# hotfix19.7: bridge device_names.json flat object writes/reads to hnc_json.
+# device_names.json is a simple MAC -> name map, so hnc_json object-key is the
+# unified safe path here. Legacy helpers remain as fallback.
+json_name_set_hnc_json() {
+    local mac="$1" name="$2"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" set-object-key "$NAMES_FILE" "$mac" "$name" str
+}
+
+json_name_get_hnc_json() {
+    local mac="$1" raw rc
+    [ -x "$HNC_JSON" ] || return 127
+    raw=$("$HNC_JSON" get-object-key "$NAMES_FILE" "$mac" 2>/dev/null)
+    rc=$?
+    [ $rc -eq 0 ] || return $rc
+    case "$raw" in
+        \"*) hnc_json_decode_string_literal "$raw" ;;
+        *) printf '%s\n' "$raw" ;;
+    esac
+    return 0
+}
+
+json_name_del_hnc_json() {
+    local mac="$1"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" del-object-key "$NAMES_FILE" "$mac"
+}
+
 
 case "$CMD" in
 
@@ -872,8 +900,11 @@ name_set)
     [ -z "$NAME" ] && { echo "name_set: name required" >&2; exit 1; }
     ensure_names_file
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
-    JNAME=$(json_string_encode "$NAME")
-    json_object_set_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC" "$JNAME"
+    if ! json_name_set_hnc_json "$MAC" "$NAME"; then
+        echo "json_set: hnc_json name_set unavailable/failed, using legacy fallback" >&2
+        JNAME=$(json_string_encode "$NAME")
+        json_object_set_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC" "$JNAME"
+    fi
     ;;
 
 name_get)
@@ -881,10 +912,13 @@ name_get)
     [ -z "$MAC" ] && exit 0
     [ -f "$NAMES_FILE" ] || exit 0
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
-    # 提取 "mac":"name" 中的 name
-    grep -o "\"$MAC\":\"[^\"]*\"" "$NAMES_FILE" 2>/dev/null \
-        | head -1 \
-        | sed "s/^\"$MAC\":\"//; s/\"$//"
+    if ! json_name_get_hnc_json "$MAC"; then
+        echo "json_set: hnc_json name_get unavailable/failed, using legacy fallback" >&2
+        # 提取 "mac":"name" 中的 name
+        grep -o "\"$MAC\":\"[^\"]*\"" "$NAMES_FILE" 2>/dev/null \
+            | head -1 \
+            | sed "s/^\"$MAC\":\"//; s/\"$//"
+    fi
     ;;
 
 name_del)
@@ -892,7 +926,10 @@ name_del)
     [ -z "$MAC" ] && exit 0
     [ -f "$NAMES_FILE" ] || exit 0
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
-    json_object_del_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC"
+    if ! json_name_del_hnc_json "$MAC"; then
+        echo "json_set: hnc_json name_del unavailable/failed, using legacy fallback" >&2
+        json_object_del_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC"
+    fi
     ;;
 
 name_list)

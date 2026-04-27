@@ -18,8 +18,9 @@ set -eu
 SELF="$0"
 BINDIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd)"
 JSON_GUARD="$BINDIR/json_guard.sh"
-LOCKDIR="/data/local/hnc/run/hnc_json.lock"
-BACKUP_DIR="/data/local/hnc/data/.json_backups"
+HNC_BASE="${HNC:-/data/local/hnc}"
+LOCKDIR="$HNC_BASE/run/hnc_json.lock"
+BACKUP_DIR="${JSON_BACKUP_DIR:-$HNC_BASE/data/.json_backups}"
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +31,9 @@ Usage:
   hnc_json get-device <file> <mac> <key>
   hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null]
   hnc_json set-device-batch <file> <mac> <key> <value> <type> [<key> <value> <type> ...]
+  hnc_json get-object-key <file> <key>
+  hnc_json set-object-key <file> <key> <value> [str|num|bool|null]
+  hnc_json del-object-key <file> <key>
   hnc_json version
 USAGE
 }
@@ -510,6 +514,127 @@ set_device() {
 }
 
 
+del_object_key_inner() {
+  f="$1"; key="$2"
+  awk -v key="$key" '
+  function ch(i){ return substr(s,i,1) }
+  function skip_ws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+  function prev_non_ws(i){ while(i>=1 && ch(i) ~ /[ \t\r\n]/) i--; return i }
+  function parse_string(i,   j,c,out,esc){
+    out=""; esc=0
+    if(ch(i)!="\"") return 0
+    for(j=i+1; j<=n; j++){
+      c=ch(j)
+      if(esc){ out=out c; esc=0; continue }
+      if(c=="\\"){ esc=1; continue }
+      if(c=="\""){ str_val=out; return j+1 }
+      out=out c
+    }
+    return 0
+  }
+  function value_end(i,   j,c,depth,ins,esc,ni){
+    i=skip_ws(i); c=ch(i)
+    if(c=="\""){ ni=parse_string(i); return ni ? ni : n+1 }
+    if(c=="{" || c=="["){
+      depth=0; ins=0; esc=0
+      for(j=i; j<=n; j++){
+        c=ch(j)
+        if(ins){
+          if(esc){esc=0; continue}
+          if(c=="\\"){esc=1; continue}
+          if(c=="\""){ins=0; continue}
+          continue
+        }
+        if(c=="\""){ins=1; continue}
+        if(c=="{" || c=="[") depth++
+        else if(c=="}" || c=="]"){
+          depth--
+          if(depth==0) return j+1
+          if(depth<0) return j
+        }
+      }
+      return n+1
+    }
+    for(j=i; j<=n; j++){
+      c=ch(j)
+      if(c=="," || c=="}" || c=="]" || c ~ /[ \t\r\n]/) return j
+    }
+    return n+1
+  }
+  function find_key(os, oe, target,   i,ni,k,colon,vs,ve,c){
+    fk=fs=fe=0
+    i=skip_ws(os+1)
+    while(i<oe){
+      i=skip_ws(i); c=ch(i)
+      if(c==","){ i++; continue }
+      if(c=="}") return 0
+      if(c!="\"") return 0
+      ni=parse_string(i); if(!ni) return 0
+      k=str_val
+      colon=skip_ws(ni)
+      if(ch(colon) != ":") return 0
+      vs=skip_ws(colon+1); ve=value_end(vs)
+      if(k==target){ fk=i; fs=vs; fe=ve; return 1 }
+      i=ve
+    }
+    return 0
+  }
+  BEGIN{ s="" }
+  { s=s $0 "\n" }
+  END{
+    sub(/\n$/, "", s); n=length(s)
+    root=skip_ws(1)
+    if(n==0 || root>n){ print "{}"; exit 0 }
+    if(ch(root)!="{") exit 2
+    root_end=value_end(root)
+    if(!find_key(root, root_end, key)){ print s; exit 0 }
+    after=skip_ws(fe); before=prev_non_ws(fk-1)
+    if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
+    else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,fe)
+    else print substr(s,1,fk-1) substr(s,fe)
+  }' "$f"
+}
+
+set_object_key() {
+  target="$1"; key="$2"; value="$3"; typ="${4:-str}"
+  [ -n "$key" ] || { echo "hnc_json: empty object key" >&2; return 2; }
+  set_top "$target" "$key" "$value" "$typ"
+}
+
+get_object_key() {
+  target="$1"; key="$2"
+  [ -n "$key" ] || { echo "hnc_json: empty object key" >&2; return 2; }
+  get_top "$target" "$key"
+}
+
+del_object_key() {
+  target="$1"; key="$2"
+  [ -n "$key" ] || { echo "hnc_json: empty object key" >&2; return 2; }
+  target_dir="$(dirname "$target")"
+  target_base="$(basename "$target")"
+  mkdir -p "$target_dir" "$BACKUP_DIR" 2>/dev/null || true
+  [ -f "$target" ] || printf '{}\n' > "$target"
+  validate_file "$target" || { echo "hnc_json: refusing to write invalid input file: $target" >&2; return 1; }
+  acquire_lock || return 1
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  bak="$BACKUP_DIR/$target_base.$ts.bak"
+  tmp="$target_dir/.$target_base.hnc_json_del.$$"
+  cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
+  if ! del_object_key_inner "$target" "$key" > "$tmp"; then
+    rm -f "$tmp"
+    echo "hnc_json: del-object-key parser failed for $target" >&2
+    return 1
+  fi
+  validate_file "$tmp" || { rm -f "$tmp"; echo "hnc_json: candidate JSON failed validation" >&2; return 1; }
+  mv "$tmp" "$target"
+  validate_file "$target" || {
+    echo "hnc_json: live JSON failed validation after delete, rolling back" >&2
+    [ -f "$bak" ] && cp -p "$bak" "$target" 2>/dev/null || true
+    return 1
+  }
+}
+
+
 set_device_batch() {
   target="$1"; mac="$2"; shift 2
   [ -n "$mac" ] || { echo "hnc_json: empty mac" >&2; return 2; }
@@ -583,8 +708,20 @@ case "$cmd" in
     [ $# -ge 6 ] || { usage >&2; exit 2; }
     target="$2"; mac="$3"; shift 3; set_device_batch "$target" "$mac" "$@"
     ;;
+  get-object-key|object-get)
+    [ $# -eq 3 ] || { usage >&2; exit 2; }
+    get_object_key "$2" "$3"
+    ;;
+  set-object-key|object-set)
+    [ $# -ge 4 ] && [ $# -le 5 ] || { usage >&2; exit 2; }
+    set_object_key "$2" "$3" "$4" "${5:-str}"
+    ;;
+  del-object-key|object-del)
+    [ $# -eq 3 ] || { usage >&2; exit 2; }
+    del_object_key "$2" "$3"
+    ;;
   version)
-    echo "hnc_json hotfix19.6 set-device-batch"
+    echo "hnc_json hotfix19.7 object-key"
     ;;
   -h|--help|help|"")
     usage

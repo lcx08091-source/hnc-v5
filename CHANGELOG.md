@@ -1,3 +1,9 @@
+## v5.1.0-rc1-hotfix19.7
+
+- `hnc_json` 新增 flat object key 读写/删除能力：`get-object-key`、`set-object-key`、`del-object-key`。
+- `json_set.sh name_set/name_get/name_del` 优先接入 `hnc_json`，保留 legacy fallback。
+- 新增 device_names JSON 回归测试，覆盖逗号、右花括号、引号、反斜杠、中文和删除不存在键。
+
 ## v5.1.0-rc1-hotfix18.5
 
 - 新增 `bin/json_diag_bundle.sh`，一键导出 JSON 健康、备份列表、live JSON、json_guard 校验、TC 状态快照和日志 tail。
