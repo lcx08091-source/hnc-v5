@@ -2283,6 +2283,17 @@ body.kb-open .container {
       </div>
     </div>
 
+    <div class="glass" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;margin:0 0 14px;border-radius:20px">
+      <div>
+        <div style="font-weight:700;font-size:13px">统计来源</div>
+        <div id="stats-source-hint" style="font-size:12px;color:var(--text-3);margin-top:3px">旧统计为默认；新统计仅用于 shadow 对比</div>
+      </div>
+      <select id="stats-source-select" onchange="onStatsSourceChange(this.value)" style="max-width:150px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:rgba(255,255,255,.08);color:var(--text-1);padding:8px 10px;font-weight:700;outline:0">
+        <option value="legacy">旧统计</option>
+        <option value="shadow">新统计 Shadow</option>
+      </select>
+    </div>
+
     <div class="stats-grid">
       <div class="stat-card glass">
         <div class="stat-card-label">今日下行</div>
@@ -4201,6 +4212,34 @@ body.kb-open .container {
     set('#cnt-blk', blocked);
   }
 
+  const STATS_SOURCE_KEY = 'hnc_stats_source_v1';
+  function getStatsSource() {
+    try {
+      const v = localStorage.getItem(STATS_SOURCE_KEY) || 'legacy';
+      return v === 'shadow' ? 'shadow' : 'legacy';
+    } catch (_) { return 'legacy'; }
+  }
+  function statsApiParams(extra) {
+    return Object.assign({ source: getStatsSource() }, extra || {});
+  }
+  function initStatsSourceSelect() {
+    const sel = $('#stats-source-select');
+    if (!sel) return;
+    sel.value = getStatsSource();
+    const hint = $('#stats-source-hint');
+    if (hint) hint.textContent = sel.value === 'shadow'
+      ? '正在读取 shadow 新统计；旧统计仍是主系统，异常时可切回'
+      : '旧统计为默认；新统计仅用于 shadow 对比';
+  }
+  function onStatsSourceChange(v) {
+    const source = v === 'shadow' ? 'shadow' : 'legacy';
+    try { localStorage.setItem(STATS_SOURCE_KEY, source); } catch (_) {}
+    initStatsSourceSelect();
+    renderBars();
+    fetchStatsDay();
+    toast(source === 'shadow' ? '已切到 shadow 新统计读取' : '已切回旧统计读取', 'ok');
+  }
+
   /* ═══════════════════════════════════════════════════════════════
      柱状图 · 读 /data/local/hnc/data/stats_24h.json
      失败则显示"暂无数据"占位而不是空白
@@ -4213,7 +4252,7 @@ body.kb-open .container {
     if (!bars || !axis) return;
     let buckets = null;
     try {
-      const data = await apiGet('/api/stats', { range: 'today' });
+      const data = await apiGet('/api/stats', statsApiParams({ range: 'today' }));
       if (data && Array.isArray(data.buckets)) buckets = data.buckets;
     } catch (e) { dbg('renderBars err: ' + e.message); }
 
@@ -4250,8 +4289,8 @@ body.kb-open .container {
   async function fetchStatsDay() {
     try {
       const [today, week] = await Promise.all([
-        apiGet('/api/stats', { range: 'today' }).catch(() => ({})),
-        apiGet('/api/stats', { range: 'week' }).catch(() => ({})),
+        apiGet('/api/stats', statsApiParams({ range: 'today' })).catch(() => ({})),
+        apiGet('/api/stats', statsApiParams({ range: 'week' })).catch(() => ({})),
       ]);
       const sum = arr => {
         if (!Array.isArray(arr)) return { rx: 0, tx: 0 };
@@ -5817,6 +5856,7 @@ body.kb-open .container {
     __t.health = performance.now();
 
     // 1. 加载模板 + 初次渲染
+    initStatsSourceSelect();
     loadTemplatesFromStorage();
     renderDeviceList();   // 先空列表(带空态), 避免白屏
     renderBars();

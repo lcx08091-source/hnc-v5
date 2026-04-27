@@ -482,6 +482,10 @@ func (s *server) apiStats(w http.ResponseWriter, r *http.Request) {
 		rangeParam = "today"
 	}
 	macFilter := strings.ToLower(r.URL.Query().Get("mac"))
+	sourceParam := strings.ToLower(r.URL.Query().Get("source"))
+	if sourceParam == "" {
+		sourceParam = "legacy"
+	}
 
 	if !validRange(rangeParam) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid range"})
@@ -491,9 +495,19 @@ func (s *server) apiStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid mac"})
 		return
 	}
+	if !validStatsSource(sourceParam) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid stats source"})
+		return
+	}
 
-	rawPath := filepath.Join(s.hncDir, "data", "stats_raw.jsonl")
-	dailyPath := filepath.Join(s.hncDir, "data", "stats_daily.jsonl")
+	rawName := "stats_raw.jsonl"
+	dailyName := "stats_daily.jsonl"
+	if sourceParam == "shadow" {
+		rawName = "stats_shadow_raw.jsonl"
+		dailyName = "stats_shadow_daily.jsonl"
+	}
+	rawPath := filepath.Join(s.hncDir, "data", rawName)
+	dailyPath := filepath.Join(s.hncDir, "data", dailyName)
 
 	raw := readJSONL(rawPath)
 	daily := readJSONL(dailyPath)
@@ -509,6 +523,7 @@ func (s *server) apiStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"range":   rangeParam,
 		"mac":     macFilter,
+		"source":  sourceParam,
 		"buckets": buckets,
 	})
 }
@@ -611,6 +626,14 @@ func toInt64(v interface{}) (int64, bool) {
 func validRange(r string) bool {
 	switch r {
 	case "today", "week", "month", "all":
+		return true
+	}
+	return false
+}
+
+func validStatsSource(source string) bool {
+	switch source {
+	case "legacy", "shadow":
 		return true
 	}
 	return false
