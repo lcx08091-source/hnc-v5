@@ -13,17 +13,23 @@ VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop)"
 VC="$(awk -F= '$1=="versionCode"{print $2; exit}' module.prop)"
 say "module.prop: $VER / $VC"
 
-case "$VER" in *hotfix18.8*) ok "module version hotfix18.8";; *) warn "module version is not hotfix18.8";; esac
-[ "$VC" = "509188" ] && ok "versionCode 509188" || warn "versionCode not 509188"
+if echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+-hotfix[0-9]+(\.[0-9]+)?$'; then
+  ok "module version format looks valid"
+else
+  warn "module version format is unexpected"
+fi
+if echo "$VC" | grep -Eq '^[0-9]+$'; then
+  ok "versionCode is numeric"
+else
+  fail "versionCode is not numeric"
+fi
 
-# Runtime Go daemon should not still advertise very old versions.
 if grep -R "hnc_httpd v5\.1\.0-rc1-hotfix4\|hotfix4 starting" -n daemon/hnc_httpd 2>/dev/null | head -20; then
   fail "old hnc_httpd hotfix4 runtime string found"
 else
   ok "no hotfix4 runtime string found"
 fi
 
-# WebUI should not hard-code old module versions outside changelog files.
 OLD_WEB="$(grep -R "v5\.1\.0-rc1-hotfix1[0-7]" -n webroot 2>/dev/null | grep -v 'changelog' | head -20)"
 if [ -n "$OLD_WEB" ]; then
   warn "old WebUI version strings outside changelog:"

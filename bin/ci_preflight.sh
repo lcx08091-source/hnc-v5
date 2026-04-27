@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix18.8 preflight checker
+# HNC hotfix20.3 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -22,9 +22,9 @@ while [ $# -gt 0 ]; do
     --artifact=*) ARTIFACT="${1#--artifact=}" ;;
   esac
   shift
- done
+done
 
-say "HNC preflight hotfix18.8"
+say "HNC preflight hotfix20.3"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -52,14 +52,16 @@ else
   VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop)"
   VC="$(awk -F= '$1=="versionCode"{print $2; exit}' module.prop)"
   say "module.prop version=$VER versionCode=$VC"
-  case "$VER" in
-    *hotfix18.8*) ok "module.prop version is hotfix18.8" ;;
-    *) warn "module.prop is not hotfix18.8 yet; bump before final package" ;;
-  esac
-  case "$VC" in
-    509188) ok "module.prop versionCode=509188" ;;
-    *) warn "module.prop versionCode is not 509188 yet" ;;
-  esac
+  if echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+-hotfix[0-9]+(\.[0-9]+)?$'; then
+    ok "module.prop version format looks valid"
+  else
+    warn "module.prop version format is unexpected"
+  fi
+  if echo "$VC" | grep -Eq '^[0-9]+$'; then
+    ok "module.prop versionCode is numeric"
+  else
+    fail "module.prop versionCode is not numeric"
+  fi
 fi
 
 # 4. Required files
@@ -107,8 +109,11 @@ if [ -n "$ARTIFACT" ]; then
     warn "unzip not available; artifact checks skipped"
   else
     say "checking artifact=$ARTIFACT"
-    unzip -t "$ARTIFACT" >/tmp/hnc_zip_test.$$ 2>&1
-    if [ $? -eq 0 ]; then ok "artifact zip integrity OK"; else fail "artifact zip integrity failed"; cat /tmp/hnc_zip_test.$$; fi
+    TMPBASE="${TMPDIR:-$ROOT/.tmp}"
+    mkdir -p "$TMPBASE" 2>/dev/null || TMPBASE="$ROOT"
+    ZIPTMP="$TMPBASE/hnc_zip_test.$$"
+    unzip -t "$ARTIFACT" >"$ZIPTMP" 2>&1
+    if [ $? -eq 0 ]; then ok "artifact zip integrity OK"; else fail "artifact zip integrity failed"; cat "$ZIPTMP"; fi
     LIST="$(unzip -l "$ARTIFACT" 2>/dev/null)"
     echo "$LIST" | grep -E '\.rej|\.orig' >/dev/null && fail "artifact contains .rej/.orig" || ok "artifact has no .rej/.orig"
     echo "$LIST" | grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)' >/dev/null && fail "artifact may contain secrets" || ok "artifact has no obvious secrets"
@@ -116,7 +121,7 @@ if [ -n "$ARTIFACT" ]; then
     echo "$LIST" | grep -E 'webroot/index.html$' >/dev/null && ok "artifact contains webroot/index.html" || fail "artifact missing webroot/index.html"
     echo "$LIST" | grep -E 'webroot/json-health.html$' >/dev/null && ok "artifact contains json-health.html" || warn "artifact missing json-health.html"
     echo "$LIST" | awk '{print $4}' | grep -E '\.zip$' >/dev/null && warn "artifact contains nested zip; verify this is not an Actions outer wrapper" || ok "artifact has no nested zip"
-    rm -f /tmp/hnc_zip_test.$$
+    rm -f "$ZIPTMP"
   fi
 fi
 
