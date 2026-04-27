@@ -281,3 +281,46 @@ content=$(cat "$HNC_TEST_DIR/data/rules.json")
 assert_contains "$content" '"note":"Bob\"s,new"' && \
     assert_contains "$content" '"down_mbps":8' && \
     assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+# ═══ hotfix18.1 remaining JSON writer regression tests ══════════
+test_start "bl_add/bl_del keep blacklist valid when other arrays contain brackets"
+seed_rules '{"version":1,"devices":{},"blacklist":["aa:bb:cc:dd:ee:01"],"whitelist":["not]blacklist"]}'
+js bl_add aa:bb:cc:dd:ee:02
+js bl_del aa:bb:cc:dd:ee:01
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_not_contains "$content" 'ee:01' && \
+    assert_contains "$content" 'ee:02' && \
+    assert_contains "$content" 'not]blacklist' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "device_remove handles braces and commas inside device string values"
+seed_rules '{"version":1,"devices":{"aa:bb:cc:dd:ee:01":{"note":"a,b}c","down_mbps":8},"aa:bb:cc:dd:ee:02":{"down_mbps":2}},"blacklist":[]}'
+js device_remove aa:bb:cc:dd:ee:01
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_not_contains "$content" 'ee:01' && \
+    assert_contains "$content" 'ee:02' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "device_patch preserves comma and brace in value"
+seed_rules '{"version":1,"devices":{},"blacklist":[]}'
+js device_patch aa:bb:cc:dd:ee:ff note 'a,b}c' ip 192.168.43.5
+content=$(cat "$HNC_TEST_DIR/data/rules.json")
+assert_contains "$content" '"note": "a,b}c"' && \
+    assert_contains "$content" '"ip": "192.168.43.5"' && \
+    assert_json_valid "$HNC_TEST_DIR/data/rules.json" && test_pass
+
+test_start "name_set/name_del handle comma brace quote and backslash"
+js name_set aa:bb:cc:dd:ee:ff '客厅,电视}Bob"s\\TV'
+assert_json_valid "$HNC_TEST_DIR/data/device_names.json" || test_fail "device_names invalid after name_set"
+js name_del aa:bb:cc:dd:ee:ff
+content=$(cat "$HNC_TEST_DIR/data/device_names.json")
+assert_not_contains "$content" 'aa:bb:cc:dd:ee:ff' && \
+    assert_json_valid "$HNC_TEST_DIR/data/device_names.json" && test_pass
+
+test_start "tpl_set/tpl_del handle special template names"
+js tpl_set '游戏,严格}Bob"s\\profile' 1 2 3 4 5
+assert_json_valid "$HNC_TEST_DIR/data/templates.json" || test_fail "templates invalid after tpl_set"
+js tpl_del '游戏,严格}Bob"s\\profile'
+content=$(cat "$HNC_TEST_DIR/data/templates.json")
+assert_not_contains "$content" 'down_mbps' && \
+    assert_json_valid "$HNC_TEST_DIR/data/templates.json" && test_pass

@@ -126,6 +126,19 @@ json_encode() {
     esac
 }
 
+
+# hotfix18.1: always-string JSON encoder for names/template keys.
+# json_encode intentionally preserves true/false/null/numbers for rules values;
+# these helpers are for fields that must always be JSON strings.
+json_escape_string_inner() {
+    printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+json_string_encode() {
+    local esc
+    esc=$(json_escape_string_inner "$1")
+    echo "\"$esc\""
+}
+
 # 确保目录和文件存在
 mkdir -p $HNC/data
 [ -f $RULES ] || cat > $RULES << 'EOF'
@@ -143,6 +156,143 @@ CMD=$1
 # v3.4.11 P0-2: 写命令统一加锁,读命令不加锁(避免阻塞 cfg_get / name_get)
 # 注意:device_patch 不在此列表 — 它内部递归调 `sh "$0" device`,
 # device 命令本身会 acquire_lock,加在外层会自己跟自己抢锁导致 5 秒超时回归
+
+# ═══════════════════════════════════════════════════════════════
+# hotfix18.1: generic safe JSON object/array helpers
+#
+# Covers remaining high-risk write paths:
+#   - device_remove
+#   - bl_add / bl_del
+#   - name_set / name_del
+#   - tpl_set / tpl_del
+#
+# These helpers avoid regex fragments like [^}]* and [^\"]* that break when
+# JSON strings contain commas, braces, escaped quotes, or backslashes.
+# They are still small POSIX-awk state machines, not a full JSON library.
+# hotfix18.x will later replace this whole wrapper with hnc_json.
+# ═══════════════════════════════════════════════════════════════
+
+json_object_set_safe_file() {
+    local file="$1" tmpfile="$2" key="$3" jval="$4"
+    [ -f "$file" ] || echo '{}' > "$file"
+    local keytmp="${tmpfile}.key.$$" valtmp="${tmpfile}.val.$$"
+    printf '%s' "$key" > "$keytmp"
+    printf '%s' "$jval" > "$valtmp"
+    awk -v keyfile="$keytmp" -v valfile="$valtmp" '
+    BEGIN { getline key < keyfile; close(keyfile); getline val < valfile; close(valfile) }
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(n==0){ s="{}"; n=2 }
+        if(findkey(key,1,1,n)) { print substr(s,1,fs-1) val substr(s,fe); exit }
+        p=index(s,"{"); if(!p){ print s; exit 1 }
+        q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
+        print substr(s,1,p) "\"" key "\": " val comma substr(s,p+1)
+    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    local rc=$?
+    rm -f "$keytmp" "$valtmp"
+    return $rc
+}
+
+json_object_del_safe_file() {
+    local file="$1" tmpfile="$2" key="$3"
+    [ -f "$file" ] || return 0
+    local keytmp="${tmpfile}.key.$$"
+    printf '%s' "$key" > "$keytmp"
+    awk -v keyfile="$keytmp" '
+    BEGIN { getline key < keyfile; close(keyfile) }
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function prevnw(i){ while(i>=1 && ch(i) ~ /[ \t\r\n]/) i--; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(key,1,1,n)){ print s; exit }
+        end=fe-1; after=skipws(fe); before=prevnw(fk-1)
+        if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
+        else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
+        else print substr(s,1,fk-1) substr(s,end+1)
+    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    local rc=$?
+    rm -f "$keytmp"
+    return $rc
+}
+
+json_array_add_string_top_safe() {
+    local field="$1" item="$2" jval
+    jval=$(json_string_encode "$item")
+    awk -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(field,1,1,n) || ch(skipws(fs))!="[") {
+            p=index(s,"{"); if(!p){ print s; exit 1 }
+            q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
+            print substr(s,1,p) "\"" field "\": [" val "]" comma substr(s,p+1); exit
+        }
+        a=skipws(fs); b=fe-1; exists=0
+        for(i=skipws(a+1); i<b; ) { ve=valend(i); tok=substr(s,i,ve-i); if(tok==val) exists=1; i=skipws(ve); if(ch(i)==",") i=skipws(i+1) }
+        if(exists){ print s; exit }
+        q=skipws(a+1)
+        if(ch(q)=="]") print substr(s,1,a) val substr(s,b)
+        else print substr(s,1,b-1) "," val substr(s,b)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
+json_array_del_string_top_safe() {
+    local field="$1" item="$2" jval
+    jval=$(json_string_encode "$item")
+    awk -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(field,1,1,n) || ch(skipws(fs))!="["){ print s; exit }
+        a=skipws(fs); b=fe-1; out=""
+        for(i=skipws(a+1); i<b; ) { ve=valend(i); tok=substr(s,i,ve-i); if(tok!=val){ if(out!="") out=out ","; out=out tok } i=skipws(ve); if(ch(i)==",") i=skipws(i+1) }
+        print substr(s,1,a) out substr(s,b)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
+json_remove_device_safe() {
+    local mac="$1"
+    awk -v mac="$mac" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function prevnw(i){ while(i>=1 && ch(i) ~ /[ \t\r\n]/) i--; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey("devices",1,1,n) || ch(skipws(fs))!="{"){ print s; exit }
+        ds=skipws(fs); de=fe-1
+        if(!findkey(mac,2,ds,de)){ print s; exit }
+        end=fe-1; after=skipws(fe); before=prevnw(fk-1)
+        if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
+        else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
+        else print substr(s,1,fk-1) substr(s,end+1)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
 case "$CMD" in
     top|device|device_remove|bl_add|bl_del|reset|cfg_set|name_set|name_del|tpl_set|tpl_del|token_revoke|token_revoke_all|token_prune)
         acquire_lock || { echo "json_set: lock timeout (5s)" >&2; exit 2; }
@@ -168,7 +318,10 @@ atomic_write() {
 json_update_top_safe() {
     local field="$1"
     local jval="$2"
-    awk -v field="$field" -v val="$jval" '
+    local valtmp="${TMP}.topval.$$"
+    printf '%s' "$jval" > "$valtmp"
+    awk -v field="$field" -v valfile="$valtmp" '
+    BEGIN { getline val < valfile; close(valfile) }
     function ch(i){ return substr(s,i,1) }
     function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
     function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
@@ -187,13 +340,19 @@ json_update_top_safe() {
         comma=(ch(q)=="}" ? "" : ",")
         print substr(s,1,p) "\"" field "\": " val comma substr(s,p+1)
     }' "$RULES" > "$TMP" && atomic_write
+    local rc=$?
+    rm -f "$valtmp"
+    return $rc
 }
 
 json_update_device_safe() {
     local mac="$1"
     local field="$2"
     local jval="$3"
-    awk -v mac="$mac" -v field="$field" -v val="$jval" '
+    local valtmp="${TMP}.devval.$$"
+    printf '%s' "$jval" > "$valtmp"
+    awk -v mac="$mac" -v field="$field" -v valfile="$valtmp" '
+    BEGIN { getline val < valfile; close(valfile) }
     function ch(i){ return substr(s,i,1) }
     function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
     function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
@@ -230,6 +389,146 @@ json_update_device_safe() {
         q=skipws(mac_start+1); comma=(ch(q)=="}" ? "" : ",")
         print substr(s,1,mac_start) entry comma substr(s,mac_start+1)
     }' "$RULES" > "$TMP" && atomic_write
+    local rc=$?
+    rm -f "$valtmp"
+    return $rc
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# hotfix18.1: generic safe JSON object/array helpers
+#
+# Covers remaining high-risk write paths:
+#   - device_remove
+#   - bl_add / bl_del
+#   - name_set / name_del
+#   - tpl_set / tpl_del
+#
+# These helpers avoid regex fragments like [^}]* and [^\"]* that break when
+# JSON strings contain commas, braces, escaped quotes, or backslashes.
+# They are still small POSIX-awk state machines, not a full JSON library.
+# hotfix18.x will later replace this whole wrapper with hnc_json.
+# ═══════════════════════════════════════════════════════════════
+
+json_object_set_safe_file() {
+    local file="$1" tmpfile="$2" key="$3" jval="$4"
+    [ -f "$file" ] || echo '{}' > "$file"
+    local keytmp="${tmpfile}.key.$$" valtmp="${tmpfile}.val.$$"
+    printf '%s' "$key" > "$keytmp"
+    printf '%s' "$jval" > "$valtmp"
+    awk -v keyfile="$keytmp" -v valfile="$valtmp" '
+    BEGIN { getline key < keyfile; close(keyfile); getline val < valfile; close(valfile) }
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(n==0){ s="{}"; n=2 }
+        if(findkey(key,1,1,n)) { print substr(s,1,fs-1) val substr(s,fe); exit }
+        p=index(s,"{"); if(!p){ print s; exit 1 }
+        q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
+        print substr(s,1,p) "\"" key "\": " val comma substr(s,p+1)
+    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    local rc=$?
+    rm -f "$keytmp" "$valtmp"
+    return $rc
+}
+
+json_object_del_safe_file() {
+    local file="$1" tmpfile="$2" key="$3"
+    [ -f "$file" ] || return 0
+    local keytmp="${tmpfile}.key.$$"
+    printf '%s' "$key" > "$keytmp"
+    awk -v keyfile="$keytmp" '
+    BEGIN { getline key < keyfile; close(keyfile) }
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function prevnw(i){ while(i>=1 && ch(i) ~ /[ \t\r\n]/) i--; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(key,1,1,n)){ print s; exit }
+        end=fe-1; after=skipws(fe); before=prevnw(fk-1)
+        if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
+        else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
+        else print substr(s,1,fk-1) substr(s,end+1)
+    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    local rc=$?
+    rm -f "$keytmp"
+    return $rc
+}
+
+json_array_add_string_top_safe() {
+    local field="$1" item="$2" jval
+    jval=$(json_string_encode "$item")
+    awk -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(field,1,1,n) || ch(skipws(fs))!="[") {
+            p=index(s,"{"); if(!p){ print s; exit 1 }
+            q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
+            print substr(s,1,p) "\"" field "\": [" val "]" comma substr(s,p+1); exit
+        }
+        a=skipws(fs); b=fe-1; exists=0
+        for(i=skipws(a+1); i<b; ) { ve=valend(i); tok=substr(s,i,ve-i); if(tok==val) exists=1; i=skipws(ve); if(ch(i)==",") i=skipws(i+1) }
+        if(exists){ print s; exit }
+        q=skipws(a+1)
+        if(ch(q)=="]") print substr(s,1,a) val substr(s,b)
+        else print substr(s,1,b-1) "," val substr(s,b)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
+json_array_del_string_top_safe() {
+    local field="$1" item="$2" jval
+    jval=$(json_string_encode "$item")
+    awk -v field="$field" -v val="$jval" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey(field,1,1,n) || ch(skipws(fs))!="["){ print s; exit }
+        a=skipws(fs); b=fe-1; out=""
+        for(i=skipws(a+1); i<b; ) { ve=valend(i); tok=substr(s,i,ve-i); if(tok!=val){ if(out!="") out=out ","; out=out tok } i=skipws(ve); if(ch(i)==",") i=skipws(i+1) }
+        print substr(s,1,a) out substr(s,b)
+    }' "$RULES" > "$TMP" && atomic_write
+}
+
+json_remove_device_safe() {
+    local mac="$1"
+    awk -v mac="$mac" '
+    function ch(i){ return substr(s,i,1) }
+    function skipws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+    function prevnw(i){ while(i>=1 && ch(i) ~ /[ \t\r\n]/) i--; return i }
+    function strend(i,   j,c,esc){ esc=0; for(j=i+1;j<=n;j++){ c=ch(j); if(esc){esc=0; continue} if(c=="\\"){esc=1; continue} if(c=="\"") return j } return 0 }
+    function valend(i,   j,c,se,depth,opn,clos){ i=skipws(i); c=ch(i); if(c=="\""){ se=strend(i); return se ? se+1 : n+1 } if(c=="{" || c=="["){ opn=c; clos=(c=="{" ? "}" : "]"); depth=0; for(j=i;j<=n;j++){ c=ch(j); if(c=="\""){ se=strend(j); if(!se) return n+1; j=se; continue } if(c==opn) depth++; else if(c==clos){ depth--; if(depth==0) return j+1 } } return n+1 } for(j=i;j<=n;j++){ c=ch(j); if(c=="," || c=="}" || c=="]") return j } return n+1 }
+    function findkey(target,depth_target,start,stop,   i,c,se,after,k,depth){ fk=fs=fe=0; depth=0; for(i=1;i<=n;i++){ c=ch(i); if(c=="\""){ se=strend(i); if(!se) return 0; if(i>=start && i<=stop && depth==depth_target){ after=skipws(se+1); if(ch(after)==":"){ k=substr(s,i+1,se-i-1); if(k==target){ fk=i; fs=skipws(after+1); fe=valend(fs); return 1 } } } i=se; continue } if(c=="{" || c=="[") depth++; else if(c=="}" || c=="]") depth-- } return 0 }
+    { s=s $0 "\n" }
+    END {
+        sub(/\n$/, "", s); n=length(s)
+        if(!findkey("devices",1,1,n) || ch(skipws(fs))!="{"){ print s; exit }
+        ds=skipws(fs); de=fe-1
+        if(!findkey(mac,2,ds,de)){ print s; exit }
+        end=fe-1; after=skipws(fe); before=prevnw(fk-1)
+        if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
+        else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
+        else print substr(s,1,fk-1) substr(s,end+1)
+    }' "$RULES" > "$TMP" && atomic_write
 }
 
 case "$CMD" in
@@ -261,42 +560,20 @@ device)
 device_remove)
     MAC=$2
     [ -z "$MAC" ] && { echo "device_remove: mac required" >&2; exit 1; }
-    awk -v mac="$MAC" '
-    {
-        line=$0
-        pat="\"" mac "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}"
-        while (match(line, pat)) {
-            pre = substr(line, 1, RSTART-1)
-            post = substr(line, RSTART+RLENGTH)
-            if (substr(post, 1, 1) == ",") {
-                post = substr(post, 2)
-            } else if (substr(pre, length(pre), 1) == ",") {
-                pre = substr(pre, 1, length(pre)-1)
-            }
-            line = pre post
-        }
-        print line
-    }' "$RULES" > "$TMP" && atomic_write
+    json_remove_device_safe "$MAC"
     ;;
 
 # ── 批量更新设备多个字段（从 stdin 读 JSON patch）─────────
 device_patch)
     MAC=$2
-    # 从第3个参数起读取 key=value 对
+    [ -z "$MAC" ] && { echo "device_patch: mac required" >&2; exit 1; }
+    # hotfix18.1: do not build a pseudo JSON string and split on comma.
+    # Values may legally contain comma/right-brace/quotes. The device command
+    # already does safe per-field JSON replacement and takes the lock itself.
     shift 2
-    TMPJSON="{}"
     while [ $# -ge 2 ]; do
         K=$1; V=$2; shift 2
-        JVAL=$(json_encode "$V")
-        TMPJSON=$(echo "$TMPJSON" | sed "s/}$/,\"$K\":$JVAL}/")
-        # 修复开头的 {, → {
-        TMPJSON=$(echo "$TMPJSON" | sed 's/^{,/{/')
-    done
-    # 逐字段调用 device 更新
-    echo "$TMPJSON" | tr ',' '\n' | grep ':' | while IFS=: read -r k v; do
-        k=$(echo $k | tr -d '" {}')
-        v=$(echo $v | tr -d ' {}')
-        sh "$0" device "$MAC" "$k" "$v"
+        sh "$0" device "$MAC" "$K" "$V" || exit $?
     done
     ;;
 
@@ -307,50 +584,16 @@ device_patch)
 #   定位 "blacklist":[...] 范围。
 bl_add)
     MAC=$2
-    # 已在黑名单则不重复添加
-    grep -oE "\"blacklist\"[[:space:]]*:[[:space:]]*\[[^]]*\"$MAC\"" "$RULES" >/dev/null 2>&1 && exit 0
-
-    awk -v mac="$MAC" '
-    {
-        line=$0
-        pat="\"blacklist\"[[:space:]]*:[[:space:]]*\\[[^]]*\\]"
-        if (match(line, pat)) {
-            block=substr(line, RSTART, RLENGTH)
-            pre  =substr(line, 1, RSTART-1)
-            rest =substr(line, RSTART+RLENGTH)
-            # 空数组：[]  → ["mac"]
-            if (block ~ /\[[[:space:]]*\]$/) {
-                sub(/\[[[:space:]]*\]$/, "[\"" mac "\"]", block)
-            } else {
-                # 非空：在末尾 ] 前追加 ,"mac"
-                sub(/\]$/, ",\"" mac "\"]", block)
-            }
-            line = pre block rest
-        }
-        print line
-    }' "$RULES" > "$TMP" && atomic_write
+    [ -z "$MAC" ] && { echo "bl_add: mac required" >&2; exit 1; }
+    json_array_add_string_top_safe "blacklist" "$MAC"
     ;;
 
 # ── 从黑名单删除 ──────────────────────────────────────────
 # v3.3.0 修复：原 gsub 不加范围限制，会把 devices 块里同 MAC 的键也删掉
 bl_del)
     MAC=$2
-    awk -v mac="$MAC" '
-    {
-        line=$0
-        pat="\"blacklist\"[[:space:]]*:[[:space:]]*\\[[^]]*\\]"
-        if (match(line, pat)) {
-            block=substr(line, RSTART, RLENGTH)
-            pre  =substr(line, 1, RSTART-1)
-            rest =substr(line, RSTART+RLENGTH)
-            # 删除 "mac", 或 ,"mac" 或独立 "mac"
-            gsub("\"" mac "\",", "", block)
-            gsub(",\"" mac "\"", "", block)
-            gsub("\"" mac "\"", "", block)
-            line = pre block rest
-        }
-        print line
-    }' "$RULES" > "$TMP" && atomic_write
+    [ -z "$MAC" ] && exit 0
+    json_array_del_string_top_safe "blacklist" "$MAC"
     ;;
 
 # ── 清空所有规则 ──────────────────────────────────────────
@@ -478,62 +721,9 @@ name_set)
     [ -z "$MAC" ] && { echo "name_set: mac required" >&2; exit 1; }
     [ -z "$NAME" ] && { echo "name_set: name required" >&2; exit 1; }
     ensure_names_file
-
-    # 转小写 mac
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
-
-    # JSON 编码 name(转义反斜杠和双引号 + 去控制字符)
-    # v3.4.11 P0-5/P0-6 修复:
-    #   1) tr -d 去掉控制字符,跟 device_detect.sh 一致
-    #   2) 不用 awk -v(避免 awk 二次解析反斜杠把 JSON escape 撤销)
-    # v3.5.0 alpha-2 修复:
-    #   原 v3.4.11 用 `getline pair < "/dev/stdin"; close("/dev/stdin")`,
-    #   在某些 awk 实现(mawk / 老 gawk / busybox awk)上 close("/dev/stdin")
-    #   会段错误。改用临时文件传 NEW_PAIR,awk 用 getline 从文件读,
-    #   兼容所有 awk 实现。
-    NAME_ESC=$(printf '%s' "$NAME" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
-    NEW_PAIR="\"$MAC\":\"$NAME_ESC\""
-    PAIR_TMP="${NAMES_FILE}.pair.$$"
-    printf '%s' "$NEW_PAIR" > "$PAIR_TMP"
-
-    # 用 awk 替换或插入,通过文件传 NEW_PAIR(awk 不会二次解析文件内容)
-    # rc3.1.34 修 #33: 之前 match() 只替换 first hit 的 entry. 如果 device_names.json
-    # 因为外部手动编辑 / 旧版 bug 留下了同 mac 多个 entry, 替换后仍有残留 →
-    # hnc_lookup_manual_name (C 端) 取 first hit 不一定是新版 → 显示混乱.
-    # 修法: while + match 循环把所有同 mac entry 全删, 然后插入新 pair (相当于
-    # "去重 + 写入" 两步合并). 注意: pat 不能是 pair 字符串本身, 否则 pair 里
-    # 的 mac 字面会被匹掉 — 用 mac key 模式 (跟原来一致).
-    awk -v mac="$MAC" -v pairfile="$PAIR_TMP" '
-    BEGIN { getline pair < pairfile }
-    {
-        # 1. 删掉所有同 mac 的旧 entry (包括前置 `,`)
-        pat = "\"" mac "\":\"[^\"]*\""
-        while (match($0, pat)) {
-            # 计算包括前置/后置逗号的删除范围, 避免留 `,,` 或 `{,xxx`
-            lhs = substr($0, 1, RSTART-1)
-            rhs = substr($0, RSTART + RLENGTH)
-            # 末尾 `,` 优先 (后续还有 entry 时), 否则前置 `,` (它是末位 entry)
-            if (substr(rhs, 1, 1) == ",") {
-                rhs = substr(rhs, 2)
-            } else if (substr(lhs, length(lhs), 1) == ",") {
-                lhs = substr(lhs, 1, length(lhs)-1)
-            }
-            $0 = lhs rhs
-        }
-        # 2. 插入新 entry
-        if ($0 ~ /^\{\}[[:space:]]*$/) {
-            $0 = "{" pair "}"
-        } else if ($0 ~ /^\{[[:space:]]*\}[[:space:]]*$/) {
-            # 容错: `{ }` (含空白)
-            $0 = "{" pair "}"
-        } else {
-            # 非空对象 -> 在末尾 } 前插入 ,"mac":"name"
-            sub(/\}[[:space:]]*$/, "," pair "}", $0)
-        }
-        print
-    }
-    ' "$NAMES_FILE" > "${NAMES_FILE}.tmp" && mv "${NAMES_FILE}.tmp" "$NAMES_FILE"
-    rm -f "$PAIR_TMP"
+    JNAME=$(json_string_encode "$NAME")
+    json_object_set_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC" "$JNAME"
     ;;
 
 name_get)
@@ -552,22 +742,7 @@ name_del)
     [ -z "$MAC" ] && exit 0
     [ -f "$NAMES_FILE" ] || exit 0
     MAC=$(echo "$MAC" | tr 'A-Z' 'a-z')
-
-    awk -v mac="$MAC" '
-    {
-        pat = "\"" mac "\":\"[^\"]*\""
-        # 删除条目以及前后的逗号(如果有)
-        # 三种位置:中间 (前后都有逗号)、开头 (后跟逗号)、末尾 (前面有逗号)
-        gsub(",?" pat ",?", ",", $0)
-        # 清理可能产生的 ,, -> ,
-        gsub(/,,/, ",", $0)
-        # 清理可能产生的 {, -> {
-        gsub(/\{,/, "{", $0)
-        # 清理可能产生的 ,} -> }
-        gsub(/,\}/, "}", $0)
-        print
-    }
-    ' "$NAMES_FILE" > "${NAMES_FILE}.tmp" && mv "${NAMES_FILE}.tmp" "$NAMES_FILE"
+    json_object_del_safe_file "$NAMES_FILE" "${NAMES_FILE}.tmp" "$MAC"
     ;;
 
 name_list)
@@ -602,7 +777,6 @@ tpl_set)
     [ -z "$NAME" ] && { echo "tpl_set: name required" >&2; exit 1; }
 
     # 数字参数白名单:非负整数或浮点
-    # 挡住 NaN / Infinity / 字母 / shell 特殊字符等奇怪输入被拼进 JSON
     for _val in "$DOWN" "$UP" "$DELAY" "$JITTER" "$LOSS"; do
         case "$_val" in
             ''|*[!0-9.]*|.*|*..*)
@@ -614,37 +788,12 @@ tpl_set)
     TPL_FILE=$HNC/data/templates.json
     [ -f "$TPL_FILE" ] || echo '{}' > "$TPL_FILE"
 
-    # 转义 name: 去控制字符 + 转义 \ 和 "
-    # (允许中文/空格/emoji,UTF-8 字节原样通过)
-    NAME_ESC=$(printf '%s' "$NAME" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
-    ENTRY="\"$NAME_ESC\":{\"down_mbps\":$DOWN,\"up_mbps\":$UP,\"delay_ms\":$DELAY,\"jitter_ms\":$JITTER,\"loss_pct\":$LOSS}"
-
-    # 通过文件传 ENTRY 给 awk,避免 awk -v 二次解析反斜杠撤销 JSON 转义
-    # (同 name_set v3.5.0 修复的模式)
-    PAIR_TMP="${TPL_FILE}.pair.$$"
-    printf '%s' "$ENTRY" > "$PAIR_TMP"
-
-    awk -v name="$NAME_ESC" -v pairfile="$PAIR_TMP" '
-    BEGIN { getline pair < pairfile }
-    {
-        # "name":{...} 条目级匹配。[^}]* 保证不跨条目,
-        # 因为每个模板对象内部只含 primitive 字段,不再嵌套 {}。
-        pat = "\"" name "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}"
-        if (match($0, pat)) {
-            # 模板已存在,整体替换
-            $0 = substr($0, 1, RSTART-1) pair substr($0, RSTART+RLENGTH)
-        } else {
-            # 插入新条目
-            if ($0 ~ /^\{[[:space:]]*\}[[:space:]]*$/) {
-                $0 = "{" pair "}"
-            } else {
-                sub(/\}[[:space:]]*$/, "," pair "}", $0)
-            }
-        }
-        print
-    }
-    ' "$TPL_FILE" > "${TPL_FILE}.tmp" && mv "${TPL_FILE}.tmp" "$TPL_FILE"
-    rm -f "$PAIR_TMP"
+    # hotfix18.1: template names are JSON object keys. Escape the key once
+    # and use the generic object writer, so comma/brace/quote/backslash in
+    # template names cannot corrupt templates.json.
+    NAME_KEY=$(json_escape_string_inner "$NAME")
+    ENTRY_OBJ="{\"down_mbps\":$DOWN,\"up_mbps\":$UP,\"delay_ms\":$DELAY,\"jitter_ms\":$JITTER,\"loss_pct\":$LOSS}"
+    json_object_set_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY" "$ENTRY_OBJ"
     ;;
 
 tpl_del)
@@ -652,19 +801,8 @@ tpl_del)
     [ -z "$NAME" ] && exit 0
     TPL_FILE=$HNC/data/templates.json
     [ -f "$TPL_FILE" ] || exit 0
-
-    NAME_ESC=$(printf '%s' "$NAME" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
-
-    awk -v name="$NAME_ESC" '
-    {
-        pat = "\"" name "\"[[:space:]]*:[[:space:]]*\\{[^}]*\\}"
-        gsub(",?" pat ",?", ",", $0)
-        gsub(/,,/, ",", $0)
-        gsub(/\{,/, "{", $0)
-        gsub(/,\}/, "}", $0)
-        print
-    }
-    ' "$TPL_FILE" > "${TPL_FILE}.tmp" && mv "${TPL_FILE}.tmp" "$TPL_FILE"
+    NAME_KEY=$(json_escape_string_inner "$NAME")
+    json_object_del_safe_file "$TPL_FILE" "${TPL_FILE}.tmp" "$NAME_KEY"
     ;;
 
 tpl_list)

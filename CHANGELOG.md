@@ -1,3 +1,16 @@
+# v5.1.0-rc1-hotfix18.1
+
+## JSON writer hardening phase 2
+
+- Hardened remaining high-risk JSON writers in `bin/json_set.sh`:
+  - `device_remove` now removes a device object with a brace/string-aware scanner instead of `\{[^}]*\}`.
+  - `bl_add` / `bl_del` now update the top-level blacklist array with an array-aware scanner.
+  - `name_set` / `name_del` now update `device_names.json` with object-aware helpers, so names containing comma, right brace, escaped quote, or backslash no longer corrupt the file.
+  - `tpl_set` / `tpl_del` now update `templates.json` with object-aware helpers, so template names containing special characters are safe.
+  - `device_patch` no longer constructs a pseudo JSON string and splits on comma; it delegates directly to the safe per-field device writer.
+- Kept Android-shell-only compatibility; no Python/jq runtime dependency.
+- Added regression coverage for blacklist, device_remove, manual names, templates, and device_patch values containing comma/brace/quote/backslash.
+
 # v5.1.0-rc1-hotfix18.0
 
 ## JSON writer hardening

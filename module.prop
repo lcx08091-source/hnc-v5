@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix18.0
-versionCode=509180
+version=v5.1.0-rc1-hotfix18.1
+versionCode=509181
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix18.0 · 累积状态一致性与安全小修 · TC 串行化/快照 · watchdog 熔断 · 日志远程强制鉴权 · fail-closed · PID 校验 · mDNS 快速退出 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix18.1 · JSON 写入安全加固 · top/device/blacklist/name/template 安全写入 · device_patch 不再按逗号拆分 · KernelSU/SukiSU/Magisk · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
