@@ -1,30 +1,31 @@
 #!/bin/sh
-# hotfix20.5/20.6 regression test: optional hnc_json_c write bridge.
+# hotfix20.5/20.6/20.7 regression test: optional hnc_json_c write bridge.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD="$ROOT/daemon/hotspotd/tools/build_hnc_json.sh"
-TMP="${TMPDIR:-$ROOT/.tmp}/hnc_json_c_write_bridge_$$"
-mkdir -p "$TMP"
+TMPBASE="${TMPDIR:-$ROOT/.tmp}"
+TMP="$TMPBASE/hnc_json_c_write_bridge_$$"
+BUILT="$TMP/hnc_json_c"
+mkdir -p "$TMPBASE" "$TMP"
 cleanup() { rm -rf "$TMP"; rm -f "$ROOT/bin/hnc_json_c"; }
 trap cleanup EXIT INT TERM
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 
 if command -v cc >/dev/null 2>&1; then
-  cc -Os -Wall -Wextra -Werror -o "/tmp/hnc_json_c_write_bridge_$$" "$ROOT/daemon/hotspotd/tools/hnc_json.c" || fail "C helper build failed"
-  cp "/tmp/hnc_json_c_write_bridge_$$" "$ROOT/bin/hnc_json_c" || fail "C helper copy failed"
-  rm -f "/tmp/hnc_json_c_write_bridge_$$"
+  cc -Os -Wall -Wextra -Werror -o "$BUILT" "$ROOT/daemon/hotspotd/tools/hnc_json.c" || fail "C helper build failed"
+  cp "$BUILT" "$ROOT/bin/hnc_json_c" || fail "C helper copy failed"
   chmod 755 "$ROOT/bin/hnc_json_c"
 elif command -v clang >/dev/null 2>&1; then
-  clang -Os -Wall -Wextra -Werror -o "/tmp/hnc_json_c_write_bridge_$$" "$ROOT/daemon/hotspotd/tools/hnc_json.c" || fail "C helper build failed"
-  cp "/tmp/hnc_json_c_write_bridge_$$" "$ROOT/bin/hnc_json_c" || fail "C helper copy failed"
-  rm -f "/tmp/hnc_json_c_write_bridge_$$"
+  clang -Os -Wall -Wextra -Werror -o "$BUILT" "$ROOT/daemon/hotspotd/tools/hnc_json.c" || fail "C helper build failed"
+  cp "$BUILT" "$ROOT/bin/hnc_json_c" || fail "C helper copy failed"
   chmod 755 "$ROOT/bin/hnc_json_c"
 else
   echo "[SKIP] no host C compiler"
   exit 0
 fi
 
+export HNC_JSON_C_ALLOW_HOST=1
 export HNC="$TMP/hnc"
 mkdir -p "$HNC/run" "$HNC/data"
 

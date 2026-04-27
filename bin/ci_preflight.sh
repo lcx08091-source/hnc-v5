@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.4 preflight checker
+# HNC hotfix20.7 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight hotfix20.4"
+say "HNC preflight hotfix20.7"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -80,6 +80,24 @@ if [ -f daemon/hnc_httpd/hnc_httpd ]; then
   if [ -x daemon/hnc_httpd/hnc_httpd ]; then ok "hnc_httpd binary exists and executable"; else fail "hnc_httpd binary exists but is not executable"; fi
 else
   warn "daemon/hnc_httpd/hnc_httpd not present in source tree; CI must build it before packaging"
+fi
+
+
+# 6b. Optional hnc_json_c helper architecture sanity.
+# The source tree must not accidentally ship a Linux/x86 helper binary; Android
+# packages should only contain an Android ARM/AArch64 build, or no helper at all.
+if [ -e bin/hnc_json_c ]; then
+  if command -v od >/dev/null 2>&1; then
+    HNC_JSON_C_MACHINE="$(od -An -tx1 -j18 -N2 bin/hnc_json_c 2>/dev/null | awk '{print $1 " " $2}')"
+    case "$HNC_JSON_C_MACHINE" in
+      "b7 00"|"28 00") ok "hnc_json_c looks like Android ARM ELF: $HNC_JSON_C_MACHINE" ;;
+      *) fail "bin/hnc_json_c is not Android ARM/AArch64 ELF: machine='$HNC_JSON_C_MACHINE'" ;;
+    esac
+  else
+    warn "od unavailable; cannot inspect bin/hnc_json_c architecture"
+  fi
+else
+  ok "optional hnc_json_c is absent from source tree; CI may build Android copy"
 fi
 
 # 7. Version drift warning: detect very old hotfix strings in live web/go files.

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.3 JSON writer regression smoke test.
+# HNC hotfix20.7 JSON writer regression smoke test.
 # It runs against a temporary HNC data dir and tries values that used to break
 # grep/awk JSON writers: comma, brace, quote, backslash, unicode.
 
@@ -45,6 +45,7 @@ cat > "$TMP/data/remote_tokens.json" <<'JSON'
 {}
 JSON
 
+export HNC="$TMP"
 export HNC_DIR="$TMP"
 export HNC_DATA_DIR="$TMP/data"
 export HNC_RUN_DIR="$TMP/run"

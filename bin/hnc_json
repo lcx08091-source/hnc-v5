@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix20.2 - unified JSON helper frontend with optional C helper
+# HNC hotfix20.7 - unified JSON helper frontend with guarded optional C helper
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -60,9 +60,30 @@ acquire_lock() {
   trap 'rm -rf "$LOCKDIR" 2>/dev/null || true' EXIT INT TERM
 }
 
+hnc_json_c_machine() {
+  # Read ELF e_machine from bytes 18..19.
+  # AArch64 = b7 00, ARM = 28 00, x86_64 host builds = 3e 00.
+  [ -f "$1" ] || return 1
+  od -An -tx1 -j18 -N2 "$1" 2>/dev/null | awk '{print $1 " " $2}'
+}
+
 hnc_json_c_available() {
   [ "${HNC_JSON_C_DISABLE:-0}" = "1" ] && return 1
   [ -x "$HNC_JSON_C" ] || return 1
+
+  mach="$(hnc_json_c_machine "$HNC_JSON_C" 2>/dev/null || true)"
+  case "$mach" in
+    "b7 00"|"28 00") : ;;
+    "")
+      # If od is unavailable, fall through to the executable self-test.
+      : ;;
+    *)
+      # Do not try host-built Linux/x86 helpers inside Android modules.
+      # Unit tests may opt in with HNC_JSON_C_ALLOW_HOST=1.
+      [ "${HNC_JSON_C_ALLOW_HOST:-0}" = "1" ] || return 1
+      ;;
+  esac
+
   "$HNC_JSON_C" version >/dev/null 2>&1 || return 1
   return 0
 }
@@ -1075,7 +1096,7 @@ case "$cmd" in
     token_revoke_all "$2"
     ;;
   version)
-    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.6 c-write-bridge+c-helper" || echo "hnc_json hotfix20.6 c-write-bridge"
+    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.7 guarded-c-bridge+c-helper" || echo "hnc_json hotfix20.7 guarded-c-bridge"
     ;;
   -h|--help|help|"")
     usage
