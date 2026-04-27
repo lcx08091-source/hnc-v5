@@ -1,5 +1,9 @@
 #!/system/bin/sh
-# stats_shadow_sample.sh — HNC hotfix21.3 shadow stats writer
+# stats_shadow_sample.sh — HNC hotfix21.4 shadow stats writer
+#
+# Optional v5.2 migration stream. Disabled by default from stats_sample.sh;
+# when enabled, it writes MAC/device_id based cumulative samples into
+# stats_shadow_raw.jsonl and triggers shadow rollup across date changes.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -29,6 +33,8 @@ stats_out=$(eval "$STATS_ALL_CMD" 2>/dev/null)
 
 ts=$(date +%s 2>/dev/null)
 case "$ts" in ''|*[!0-9]*) log "WARN: date +%s failed"; exit 1 ;; esac
+today=$(date +%Y-%m-%d 2>/dev/null)
+case "$today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) today="unknown" ;; esac
 
 MAP_TMP="$RUN/stats_shadow_map.$$"
 OUT_TMP="$RUN/stats_shadow_out.$$"
@@ -44,7 +50,7 @@ done
 
 [ -s "$MAP_TMP" ] || exit 0
 
-printf '%s\n' "$stats_out" | awk -v mapfile="$MAP_TMP" -v ts="$ts" '
+printf '%s\n' "$stats_out" | awk -v mapfile="$MAP_TMP" -v ts="$ts" -v today="$today" '
 BEGIN {
   while ((getline line < mapfile) > 0) {
     split(line, a, " ")
@@ -69,7 +75,7 @@ $1 != "" && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
 END {
   for (mac in rx) {
     device_id = "mac:" mac
-    printf "{\"schema\":1,\"ts\":%d,\"device_id\":\"%s\",\"mac\":\"%s\",\"rx\":%d,\"tx\":%d,\"ips\":\"%s\",\"ip_count\":%d,\"source\":\"iptables\"}\n", ts, device_id, mac, rx[mac], tx[mac], ips[mac], ip_count[mac]
+    printf "{\"schema\":1,\"ts\":%d,\"date\":\"%s\",\"device_id\":\"%s\",\"mac\":\"%s\",\"rx\":%d,\"tx\":%d,\"ips\":\"%s\",\"ip_count\":%d,\"source\":\"iptables\"}\n", ts, today, device_id, mac, rx[mac], tx[mac], ips[mac], ip_count[mac]
   }
 }' > "$OUT_TMP"
 
@@ -77,4 +83,19 @@ END {
 cat "$OUT_TMP" >> "$RAW_FILE"
 lines=$(wc -l < "$OUT_TMP" 2>/dev/null | tr -d ' ')
 log "shadow sampled ${lines:-0} device(s)"
+
+# hotfix21.4: shadow daily rollup trigger. This is separate from the legacy
+# stats_last_date marker and only affects stats_shadow_daily.jsonl.
+MARKER="$RUN/stats_shadow_last_date"
+last_date=$(cat "$MARKER" 2>/dev/null)
+if [ "$today" != "unknown" ] && [ -n "$last_date" ] && [ "$today" != "$last_date" ]; then
+  if [ -x "$HNC_DIR/bin/stats_shadow_rollup.sh" ]; then
+    log "shadow date changed: $last_date -> $today, rolling $last_date"
+    sh "$HNC_DIR/bin/stats_shadow_rollup.sh" "$last_date" >> "$LOG" 2>&1 || log "WARN: shadow rollup failed (rc=$?)"
+  else
+    log "WARN: stats_shadow_rollup.sh missing"
+  fi
+fi
+[ "$today" != "unknown" ] && echo "$today" > "$MARKER" 2>/dev/null
+
 exit 0
