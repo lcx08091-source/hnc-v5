@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix19.3 - unified JSON helper frontend
+# HNC hotfix19.6 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -10,6 +10,7 @@
 #   hnc_json get-top <file> <key>
 #   hnc_json set-top <file> <key> <value> [str|num|bool|null]
 #   hnc_json get-device <file> <mac> <key>
+#   hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null]
 #   hnc_json version
 
 set -eu
@@ -27,6 +28,8 @@ Usage:
   hnc_json get-top <file> <key>
   hnc_json set-top <file> <key> <value> [str|num|bool|null]
   hnc_json get-device <file> <mac> <key>
+  hnc_json set-device <file> <mac> <key> <value> [str|num|bool|null]
+  hnc_json set-device-batch <file> <mac> <key> <value> <type> [<key> <value> <type> ...]
   hnc_json version
 USAGE
 }
@@ -325,7 +328,7 @@ set_top_inner() {
     }
     before=substr(s,1,last_close-1)
     after=substr(s,last_close)
-    inner=substr(s,obj_start+1,last_close-obj_start-1)
+    inner=substr(s,obj_start+1,last_closepos-obj_start-1)
     tmp=inner; gsub(/[ \t\r\n]/,"",tmp)
     if(tmp=="") sep="\n  "
     else sep=",\n  "
@@ -367,6 +370,193 @@ set_top() {
   }
 }
 
+
+
+set_device_inner() {
+  f="$1"; mac="$2"; key="$3"; lit="$4"
+  awk -v mac="$mac" -v key="$key" -v lit="$lit" '
+  function ch(i){ return substr(s,i,1) }
+  function skip_ws(i){ while(i<=n && ch(i) ~ /[ \t\r\n]/) i++; return i }
+  function parse_string(i,   j,c,out,esc){
+    out=""; esc=0
+    if(ch(i)!="\"") return 0
+    for(j=i+1; j<=n; j++){
+      c=ch(j)
+      if(esc){ out=out c; esc=0; continue }
+      if(c=="\\"){ esc=1; continue }
+      if(c=="\""){ str_val=out; return j+1 }
+      out=out c
+    }
+    return 0
+  }
+  function value_end(i,   j,c,depth,ins,esc,ni){
+    i=skip_ws(i); c=ch(i)
+    if(c=="\""){ ni=parse_string(i); return ni ? ni : n+1 }
+    if(c=="{" || c=="["){
+      depth=0; ins=0; esc=0
+      for(j=i; j<=n; j++){
+        c=ch(j)
+        if(ins){
+          if(esc){esc=0; continue}
+          if(c=="\\"){esc=1; continue}
+          if(c=="\""){ins=0; continue}
+          continue
+        }
+        if(c=="\""){ins=1; continue}
+        if(c=="{" || c=="[") depth++
+        else if(c=="}" || c=="]"){
+          depth--
+          if(depth==0) return j+1
+          if(depth<0) return j
+        }
+      }
+      return n+1
+    }
+    for(j=i; j<=n; j++){
+      c=ch(j)
+      if(c=="," || c=="}" || c=="]" || c ~ /[ \t\r\n]/) return j
+    }
+    return n+1
+  }
+  function find_key(os, oe, target,   i,ni,k,colon,vs,ve,c){
+    fk=fs=fe=0
+    i=skip_ws(os+1)
+    while(i<oe){
+      i=skip_ws(i); c=ch(i)
+      if(c==","){ i++; continue }
+      if(c=="}") return 0
+      if(c!="\"") return 0
+      ni=parse_string(i); if(!ni) return 0
+      k=str_val
+      colon=skip_ws(ni)
+      if(ch(colon) != ":") return 0
+      vs=skip_ws(colon+1); ve=value_end(vs)
+      if(k==target){ fk=i; fs=vs; fe=ve; return 1 }
+      i=ve
+    }
+    return 0
+  }
+  function esc_key(x,   i,c,out){
+    out=""
+    for(i=1;i<=length(x);i++){
+      c=substr(x,i,1)
+      if(c=="\\") out=out "\\\\"
+      else if(c=="\"") out=out "\\\""
+      else out=out c
+    }
+    return out
+  }
+  function object_insert(obj_start, obj_end_excl, k, val,   closepos,inner,tmp,sep){
+    closepos=obj_end_excl-1
+    inner=substr(s,obj_start+1,closepos-obj_start-1)
+    tmp=inner; gsub(/[ \t\r\n]/,"",tmp)
+    sep=(tmp=="" ? "\n  " : ",\n  ")
+    return substr(s,1,closepos-1) sep "\"" esc_key(k) "\": " val substr(s,closepos)
+  }
+  BEGIN{ s="" }
+  { s=s $0 "\n" }
+  END{
+    sub(/\n$/, "", s); n=length(s)
+    root=skip_ws(1)
+    if(n==0 || ch(root)!="{") exit 2
+    root_end=value_end(root)
+    if(!find_key(root, root_end, "devices")) exit 3
+    devs_start=skip_ws(fs); devs_end=fe
+    if(ch(devs_start)!="{") exit 3
+    if(!find_key(devs_start, devs_end, mac)){
+      newdev="{\"" esc_key(key) "\": " lit "}"
+      print object_insert(devs_start, devs_end, mac, newdev)
+      exit 0
+    }
+    dev_start=skip_ws(fs); dev_end=fe
+    if(ch(dev_start)!="{") exit 3
+    if(find_key(dev_start, dev_end, key)){
+      print substr(s,1,fs-1) lit substr(s,fe)
+      exit 0
+    }
+    print object_insert(dev_start, dev_end, key, lit)
+    exit 0
+  }' "$f"
+}
+
+set_device() {
+  target="$1"; mac="$2"; key="$3"; value="$4"; typ="${5:-str}"
+  [ -n "$mac" ] || { echo "hnc_json: empty mac" >&2; return 2; }
+  [ -n "$key" ] || { echo "hnc_json: empty key" >&2; return 2; }
+  lit="$(json_literal "$value" "$typ")" || return $?
+  target_dir="$(dirname "$target")"
+  target_base="$(basename "$target")"
+  mkdir -p "$target_dir" "$BACKUP_DIR" 2>/dev/null || true
+  [ -f "$target" ] || printf '{"version":1,"whitelist_mode":false,"devices":{},"blacklist":[],"whitelist":[]}\n' > "$target"
+  validate_file "$target" || { echo "hnc_json: refusing to write invalid input file: $target" >&2; return 1; }
+  acquire_lock || return 1
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  bak="$BACKUP_DIR/$target_base.$ts.bak"
+  tmp="$target_dir/.$target_base.hnc_json_device.$$"
+  cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
+  awk_lit="$(printf '%s' "$lit" | sed 's/\\/\\\\/g')"
+  if ! set_device_inner "$target" "$mac" "$key" "$awk_lit" > "$tmp"; then
+    rm -f "$tmp"
+    echo "hnc_json: set-device parser failed for $target" >&2
+    return 1
+  fi
+  validate_file "$tmp" || { rm -f "$tmp"; echo "hnc_json: candidate JSON failed validation" >&2; return 1; }
+  mv "$tmp" "$target"
+  validate_file "$target" || {
+    echo "hnc_json: live JSON failed validation after write, rolling back" >&2
+    [ -f "$bak" ] && cp -p "$bak" "$target" 2>/dev/null || true
+    return 1
+  }
+}
+
+
+set_device_batch() {
+  target="$1"; mac="$2"; shift 2
+  [ -n "$mac" ] || { echo "hnc_json: empty mac" >&2; return 2; }
+  [ $# -ge 3 ] || { echo "hnc_json: set-device-batch needs key value type triples" >&2; return 2; }
+  [ $(( $# % 3 )) -eq 0 ] || { echo "hnc_json: set-device-batch arguments must be key value type triples" >&2; return 2; }
+
+  target_dir="$(dirname "$target")"
+  target_base="$(basename "$target")"
+  mkdir -p "$target_dir" "$BACKUP_DIR" 2>/dev/null || true
+  [ -f "$target" ] || printf '{"version":1,"whitelist_mode":false,"devices":{},"blacklist":[],"whitelist":[]}\n' > "$target"
+  validate_file "$target" || { echo "hnc_json: refusing to write invalid input file: $target" >&2; return 1; }
+
+  acquire_lock || return 1
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  bak="$BACKUP_DIR/$target_base.$ts.bak"
+  tmp="$target_dir/.$target_base.hnc_json_batch.$$"
+  tmp2="$target_dir/.$target_base.hnc_json_batch.$$.next"
+  cp -p "$target" "$bak" 2>/dev/null || cp "$target" "$bak" 2>/dev/null || true
+  cp -p "$target" "$tmp" 2>/dev/null || cp "$target" "$tmp" 2>/dev/null || { rm -f "$tmp" "$tmp2"; return 1; }
+
+  while [ $# -ge 3 ]; do
+    key="$1"; value="$2"; typ="$3"; shift 3
+    [ -n "$key" ] || { echo "hnc_json: empty key in batch" >&2; rm -f "$tmp" "$tmp2"; return 2; }
+    lit="$(json_literal "$value" "$typ")" || { rc=$?; rm -f "$tmp" "$tmp2"; return $rc; }
+    awk_lit="$(printf '%s' "$lit" | sed 's/\\/\\\\/g')"
+    if ! set_device_inner "$tmp" "$mac" "$key" "$awk_lit" > "$tmp2"; then
+      rm -f "$tmp" "$tmp2"
+      echo "hnc_json: set-device-batch parser failed field=$key" >&2
+      return 1
+    fi
+    validate_file "$tmp2" || {
+      rm -f "$tmp" "$tmp2"
+      echo "hnc_json: set-device-batch candidate failed validation field=$key" >&2
+      return 1
+    }
+    mv "$tmp2" "$tmp"
+  done
+
+  validate_file "$tmp" || { rm -f "$tmp" "$tmp2"; echo "hnc_json: final batch candidate failed validation" >&2; return 1; }
+  mv "$tmp" "$target"
+  validate_file "$target" || {
+    echo "hnc_json: live JSON failed validation after batch write, rolling back" >&2
+    [ -f "$bak" ] && cp -p "$bak" "$target" 2>/dev/null || true
+    return 1
+  }
+}
+
 cmd="${1:-}"
 case "$cmd" in
   validate)
@@ -385,8 +575,16 @@ case "$cmd" in
     [ $# -eq 4 ] || { usage >&2; exit 2; }
     get_device "$2" "$3" "$4"
     ;;
+  set-device|device-set)
+    [ $# -ge 5 ] && [ $# -le 6 ] || { usage >&2; exit 2; }
+    set_device "$2" "$3" "$4" "$5" "${6:-str}"
+    ;;
+  set-device-batch|device-set-batch)
+    [ $# -ge 6 ] || { usage >&2; exit 2; }
+    target="$2"; mac="$3"; shift 3; set_device_batch "$target" "$mac" "$@"
+    ;;
   version)
-    echo "hnc_json hotfix19.3 get-device bridge"
+    echo "hnc_json hotfix19.6 set-device-batch"
     ;;
   -h|--help|help|"")
     usage
