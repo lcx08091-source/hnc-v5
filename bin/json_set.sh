@@ -348,6 +348,22 @@ json_remove_device_safe() {
     }' "$RULES" > "$TMP" && atomic_write
 }
 
+
+# hotfix19.9: bridge blacklist array writes to hnc_json.
+# blacklist is a top-level array of MAC strings in rules.json. hnc_json now
+# provides array add/delete primitives so this high-risk legacy JSON mutation
+# path can move behind the unified guarded writer while fallback stays intact.
+json_blacklist_add_hnc_json() {
+    local mac="$1"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" add-array-unique "$RULES" "blacklist" "$mac"
+}
+
+json_blacklist_del_hnc_json() {
+    local mac="$1"
+    [ -x "$HNC_JSON" ] || return 127
+    "$HNC_JSON" del-array-value "$RULES" "blacklist" "$mac"
+}
 case "$CMD" in
     top|device|device_remove|bl_add|bl_del|reset|cfg_set|name_set|name_del|tpl_set|tpl_del|token_revoke|token_revoke_all|token_prune)
         acquire_lock || { echo "json_set: lock timeout (5s)" >&2; exit 2; }
@@ -772,7 +788,10 @@ device_patch)
 bl_add)
     MAC=$2
     [ -z "$MAC" ] && { echo "bl_add: mac required" >&2; exit 1; }
-    json_array_add_string_top_safe "blacklist" "$MAC"
+    if ! json_blacklist_add_hnc_json "$MAC"; then
+        echo "json_set: hnc_json bl_add unavailable/failed, using legacy fallback" >&2
+        json_array_add_string_top_safe "blacklist" "$MAC"
+    fi
     ;;
 
 # ── 从黑名单删除 ──────────────────────────────────────────
@@ -780,7 +799,10 @@ bl_add)
 bl_del)
     MAC=$2
     [ -z "$MAC" ] && exit 0
-    json_array_del_string_top_safe "blacklist" "$MAC"
+    if ! json_blacklist_del_hnc_json "$MAC"; then
+        echo "json_set: hnc_json bl_del unavailable/failed, using legacy fallback" >&2
+        json_array_del_string_top_safe "blacklist" "$MAC"
+    fi
     ;;
 
 # ── 清空所有规则 ──────────────────────────────────────────

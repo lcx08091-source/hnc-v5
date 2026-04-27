@@ -1,3 +1,9 @@
+## v5.1.0-rc1-hotfix19.9
+
+- hnc_json: added guarded top-level string array primitives `add-array-unique` and `del-array-value`.
+- json_set.sh: routed `bl_add` / `bl_del` blacklist writes through hnc_json, with legacy fallback retained.
+- Tests: added blacklist bridge regression coverage for duplicate add, delete, malformed-like MAC strings, and JSON guard validation.
+
 ## v5.1.0-rc1-hotfix19.8
 
 - `hnc_json set-object-key` 新增 `json/raw` 值类型，用于安全写入对象值。

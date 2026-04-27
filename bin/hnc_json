@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix19.8 - unified JSON helper frontend
+# HNC hotfix19.9 - unified JSON helper frontend
 #
 # This version makes set-top self-contained and safe. It no longer delegates
 # top-level writes back to json_set.sh, so json_set.sh can be migrated to call
@@ -34,6 +34,8 @@ Usage:
   hnc_json get-object-key <file> <key>
   hnc_json set-object-key <file> <key> <value> [str|num|bool|null|json]
   hnc_json del-object-key <file> <key>
+  hnc_json add-array-unique <file> <key> <value>
+  hnc_json del-array-value <file> <key> <value>
   hnc_json version
 USAGE
 }
@@ -647,6 +649,85 @@ del_object_key() {
 }
 
 
+
+array_add_unique() {
+  target="$1"; key="$2"; value="$3"
+  [ -n "$key" ] || { echo "hnc_json: empty array key" >&2; return 2; }
+  [ -n "$value" ] || { echo "hnc_json: empty array value" >&2; return 2; }
+  lit="$(json_literal "$value" str)" || return $?
+  current="$(get_top "$target" "$key" 2>/dev/null || true)"
+  case "$current" in
+    \[*\]) ;;
+    "") current="[]" ;;
+    *) echo "hnc_json: target key is not array: $key" >&2; return 2 ;;
+  esac
+  # blacklist/whitelist are string arrays of MAC-like values. This deliberately
+  # keeps the parser small and only consumes quoted JSON string entries.
+  exists=0
+  items=""
+  while IFS= read -r item; do
+    [ -z "$item" ] && continue
+    [ "$item" = "$value" ] && exists=1
+    q="$(json_literal "$item" str)" || return $?
+    if [ -z "$items" ]; then items="$q"; else items="$items,$q"; fi
+  done <<EOF_ITEMS
+$(printf '%s\n' "$current" | awk '
+  function emit(x){ if(x!="") print x }
+  BEGIN{ins=0;esc=0;out=""}
+  { s=s $0 }
+  END{
+    for(i=1;i<=length(s);i++){
+      c=substr(s,i,1)
+      if(ins){
+        if(esc){ out=out c; esc=0; continue }
+        if(c=="\\"){ esc=1; continue }
+        if(c=="\""){ emit(out); out=""; ins=0; continue }
+        out=out c; continue
+      }
+      if(c=="\""){ ins=1; out=""; continue }
+    }
+  }')
+EOF_ITEMS
+  [ "$exists" -eq 1 ] || { if [ -z "$items" ]; then items="$lit"; else items="$items,$lit"; fi; }
+  set_top "$target" "$key" "[$items]" json
+}
+
+array_del_value() {
+  target="$1"; key="$2"; value="$3"
+  [ -n "$key" ] || { echo "hnc_json: empty array key" >&2; return 2; }
+  [ -n "$value" ] || { echo "hnc_json: empty array value" >&2; return 2; }
+  current="$(get_top "$target" "$key" 2>/dev/null || true)"
+  case "$current" in
+    \[*\]) ;;
+    "") current="[]" ;;
+    *) echo "hnc_json: target key is not array: $key" >&2; return 2 ;;
+  esac
+  items=""
+  while IFS= read -r item; do
+    [ -z "$item" ] && continue
+    [ "$item" = "$value" ] && continue
+    q="$(json_literal "$item" str)" || return $?
+    if [ -z "$items" ]; then items="$q"; else items="$items,$q"; fi
+  done <<EOF_ITEMS
+$(printf '%s\n' "$current" | awk '
+  function emit(x){ if(x!="") print x }
+  BEGIN{ins=0;esc=0;out=""}
+  { s=s $0 }
+  END{
+    for(i=1;i<=length(s);i++){
+      c=substr(s,i,1)
+      if(ins){
+        if(esc){ out=out c; esc=0; continue }
+        if(c=="\\"){ esc=1; continue }
+        if(c=="\""){ emit(out); out=""; ins=0; continue }
+        out=out c; continue
+      }
+      if(c=="\""){ ins=1; out=""; continue }
+    }
+  }')
+EOF_ITEMS
+  set_top "$target" "$key" "[$items]" json
+}
 set_device_batch() {
   target="$1"; mac="$2"; shift 2
   [ -n "$mac" ] || { echo "hnc_json: empty mac" >&2; return 2; }
@@ -732,8 +813,16 @@ case "$cmd" in
     [ $# -eq 3 ] || { usage >&2; exit 2; }
     del_object_key "$2" "$3"
     ;;
+  add-array-unique|array-add-unique)
+    [ $# -eq 4 ] || { usage >&2; exit 2; }
+    array_add_unique "$2" "$3" "$4"
+    ;;
+  del-array-value|array-del-value)
+    [ $# -eq 4 ] || { usage >&2; exit 2; }
+    array_del_value "$2" "$3" "$4"
+    ;;
   version)
-    echo "hnc_json hotfix19.8 object-key-json"
+    echo "hnc_json hotfix19.9 array-json"
     ;;
   -h|--help|help|"")
     usage
