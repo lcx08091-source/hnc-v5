@@ -1,3 +1,9 @@
+# hotfix20.6
+
+- Added optional C helper write bridge coverage for device_names, blacklist, and remote token revoke paths.
+- The shell hnc_json implementation remains the fallback for every migrated command.
+- Kept legacy JSON fallback telemetry intact.
+
 ## v5.1.0-rc1-hotfix20.2
 
 - Started the cautious C migration for hnc_json with an optional read-only `bin/hnc_json_c` helper.

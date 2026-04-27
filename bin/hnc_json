@@ -43,8 +43,8 @@ Usage:
   hnc_json version
 
 Notes:
-  If bin/hnc_json_c exists and is executable, validate/get-top/version may use it.
-  Shell implementation remains the fallback and the only writer in this release.
+  If bin/hnc_json_c exists and is executable, selected read and write commands may try it first.
+  Shell implementation remains the fallback for every write path.
 USAGE
 }
 
@@ -70,7 +70,8 @@ hnc_json_c_available() {
 hnc_json_c_try() {
   hnc_json_c_available || return 127
   case "${1:-}" in
-    validate|get-top|get|version) "$HNC_JSON_C" "$@"; return $? ;;
+    validate|get-top|get|version|set-object-key|object-set|del-object-key|object-del|add-array-unique|array-add-unique|del-array-value|array-del-value|token-revoke|token-revoke-all)
+      "$HNC_JSON_C" "$@"; return $? ;;
     *) return 127 ;;
   esac
 }
@@ -1029,18 +1030,30 @@ case "$cmd" in
     ;;
   set-object-key|object-set)
     [ $# -ge 4 ] && [ $# -le 5 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try set-object-key "$2" "$3" "$4" "${5:-str}" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     set_object_key "$2" "$3" "$4" "${5:-str}"
     ;;
   del-object-key|object-del)
     [ $# -eq 3 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try del-object-key "$2" "$3" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     del_object_key "$2" "$3"
     ;;
   add-array-unique|array-add-unique)
     [ $# -eq 4 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try add-array-unique "$2" "$3" "$4" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     array_add_unique "$2" "$3" "$4"
     ;;
   del-array-value|array-del-value)
     [ $# -eq 4 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try del-array-value "$2" "$3" "$4" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     array_del_value "$2" "$3" "$4"
     ;;
   set-map-field|map-set-field)
@@ -1049,14 +1062,20 @@ case "$cmd" in
     ;;
   token-revoke)
     [ $# -eq 3 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try token-revoke "$2" "$3" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     token_revoke "$2" "$3"
     ;;
   token-revoke-all)
     [ $# -eq 2 ] || { usage >&2; exit 2; }
+    unset rc
+    hnc_json_c_try token-revoke-all "$2" || rc=$?
+    [ "${rc:-0}" = "0" ] && exit 0
     token_revoke_all "$2"
     ;;
   version)
-    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.2 c-bridge+c-helper" || echo "hnc_json hotfix20.2 c-bridge"
+    hnc_json_c_try version >/dev/null 2>&1 && echo "hnc_json hotfix20.6 c-write-bridge+c-helper" || echo "hnc_json hotfix20.6 c-write-bridge"
     ;;
   -h|--help|help|"")
     usage

@@ -1,181 +1,106 @@
-/*
- * HNC hotfix20.2 - optional C helper for hnc_json.
- *
- * Scope is intentionally conservative:
- *   hnc_json_c validate <file>
- *   hnc_json_c get-top <file> <key>
- *   hnc_json_c version
- *
- * Runtime writes still stay in the shell frontend. bin/hnc_json may delegate
- * read-only validate/get-top calls to this helper when bin/hnc_json_c exists,
- * and falls back to shell implementation otherwise.
+/* HNC hotfix20.6 - optional hnc_json C helper.
+ * Conservative helper: bin/hnc_json tries this helper first for selected
+ * commands and falls back to the shell implementation on any failure.
  */
 #include <ctype.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
-static char *read_file(const char *path, size_t *out_len) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return NULL;
-    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
-    long n = ftell(fp);
-    if (n < 0) { fclose(fp); return NULL; }
-    if (fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return NULL; }
-    char *buf = (char *)malloc((size_t)n + 1);
-    if (!buf) { fclose(fp); errno = ENOMEM; return NULL; }
-    size_t got = fread(buf, 1, (size_t)n, fp);
-    fclose(fp);
-    if (got != (size_t)n) { free(buf); return NULL; }
-    buf[got] = '\0';
-    if (out_len) *out_len = got;
-    return buf;
+static char *read_file(const char *p, size_t *n) {
+    FILE *f = fopen(p, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long l = ftell(f); fseek(f, 0, SEEK_SET);
+    if (l < 0) { fclose(f); return NULL; }
+    char *b = malloc((size_t)l + 1); if (!b) { fclose(f); return NULL; }
+    size_t r = fread(b, 1, (size_t)l, f); fclose(f); b[r] = 0; if (n) *n = r; return b;
 }
-
-static int validate_json_text(const char *s, size_t n) {
-    int in_string = 0;
-    int esc = 0;
-    char stack[1024];
-    int sp = 0;
-    int saw = 0;
-    for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (in_string) {
-            if (esc) { esc = 0; continue; }
-            if (c == '\\') { esc = 1; continue; }
-            if (c == '"') { in_string = 0; continue; }
-            if (c < 0x20) return 1;
-            continue;
-        }
-        if (isspace(c)) continue;
-        saw = 1;
-        if (c == '"') { in_string = 1; continue; }
-        if (c == '{' || c == '[') {
-            if (sp >= (int)sizeof(stack)) return 1;
-            stack[sp++] = (char)c;
-            continue;
-        }
-        if (c == '}' || c == ']') {
-            if (sp <= 0) return 1;
-            char open = stack[--sp];
-            if ((open == '{' && c != '}') || (open == '[' && c != ']')) return 1;
-            continue;
-        }
-    }
-    return (!saw || in_string || esc || sp != 0) ? 1 : 0;
-}
-
-static size_t skip_ws(const char *s, size_t n, size_t i) {
-    while (i < n && isspace((unsigned char)s[i])) i++;
-    return i;
-}
-
-static int parse_string_key(const char *s, size_t n, size_t *io, char *out, size_t out_sz) {
-    size_t i = *io;
-    size_t k = 0;
-    if (i >= n || s[i] != '"') return 0;
-    i++;
-    while (i < n) {
-        unsigned char c = (unsigned char)s[i++];
-        if (c == '"') { out[k < out_sz ? k : out_sz - 1] = '\0'; *io = i; return 1; }
-        if (c == '\\') {
-            if (i >= n) return 0;
-            c = (unsigned char)s[i++];
-            switch (c) {
-                case '"': case '\\': case '/': break;
-                case 'b': c = '\b'; break;
-                case 'f': c = '\f'; break;
-                case 'n': c = '\n'; break;
-                case 'r': c = '\r'; break;
-                case 't': c = '\t'; break;
-                case 'u':
-                    /* Keys used by HNC are ASCII identifiers. Preserve a placeholder
-                     * for unicode escapes instead of implementing full UTF-8 decode. */
-                    if (i + 4 > n) return 0;
-                    i += 4;
-                    c = '?';
-                    break;
-                default: return 0;
-            }
-        }
-        if (k + 1 < out_sz) out[k++] = (char)c;
-    }
+static int write_file(const char *p, const char *s) {
+    char tmp[1024]; snprintf(tmp, sizeof(tmp), "%s.hnc_json_c.%ld.tmp", p, (long)getpid());
+    FILE *f = fopen(tmp, "wb"); if (!f) return 1;
+    fwrite(s, 1, strlen(s), f); fputc('\n', f); if (fclose(f) != 0) { unlink(tmp); return 1; }
+    if (rename(tmp, p) != 0) { unlink(tmp); return 1; }
     return 0;
 }
-
-static int value_end(const char *s, size_t n, size_t start, size_t *end_out) {
-    int in_string = 0;
-    int esc = 0;
-    int depth = 0;
-    for (size_t i = start; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (in_string) {
-            if (esc) { esc = 0; continue; }
-            if (c == '\\') { esc = 1; continue; }
-            if (c == '"') { in_string = 0; continue; }
-            continue;
-        }
-        if (c == '"') { in_string = 1; continue; }
-        if (c == '{' || c == '[') { depth++; continue; }
-        if (c == '}' || c == ']') {
-            if (depth == 0) { *end_out = i; return 1; }
-            depth--;
-            continue;
-        }
-        if (c == ',' && depth == 0) { *end_out = i; return 1; }
-    }
-    *end_out = n;
-    return 1;
+static int valid_json(const char *s) {
+    int ins = 0, esc = 0, dep = 0, seen = 0;
+    for (; *s; s++) { unsigned char c = (unsigned char)*s; if (ins) { if (esc) { esc = 0; continue; } if (c == '\\') { esc = 1; continue; } if (c == '"') { ins = 0; continue; } if (c < 32) return 1; continue; } if (isspace(c)) continue; seen = 1; if (c == '"') ins = 1; else if (c == '{' || c == '[') dep++; else if (c == '}' || c == ']') { if (--dep < 0) return 1; } }
+    return (!seen || ins || esc || dep) ? 1 : 0;
 }
-
-static int get_top(const char *path, const char *key) {
-    size_t n = 0;
-    char *s = read_file(path, &n);
-    if (!s) { perror("open"); return 2; }
-    if (validate_json_text(s, n) != 0) { free(s); return 2; }
-    size_t i = skip_ws(s, n, 0);
-    if (i >= n || s[i] != '{') { free(s); return 2; }
-    i++;
-    for (;;) {
-        i = skip_ws(s, n, i);
-        if (i >= n) { free(s); return 2; }
-        if (s[i] == '}') { free(s); return 3; }
-        if (s[i] == ',') { i++; continue; }
-        char kbuf[256];
-        if (!parse_string_key(s, n, &i, kbuf, sizeof(kbuf))) { free(s); return 2; }
-        i = skip_ws(s, n, i);
-        if (i >= n || s[i] != ':') { free(s); return 2; }
-        i = skip_ws(s, n, i + 1);
-        size_t ve = i;
-        if (!value_end(s, n, i, &ve)) { free(s); return 2; }
-        if (strcmp(kbuf, key) == 0) {
-            while (ve > i && isspace((unsigned char)s[ve - 1])) ve--;
-            fwrite(s + i, 1, ve - i, stdout);
-            fputc('\n', stdout);
-            free(s);
-            return 0;
-        }
-        i = ve;
-    }
+static char *escstr(const char *v) {
+    size_t cap = strlen(v) * 2 + 3, k = 0; char *o = malloc(cap); if (!o) return NULL; o[k++] = '"';
+    for (; *v; v++) { unsigned char c = (unsigned char)*v; if (k + 4 >= cap) { cap *= 2; char *p = realloc(o, cap); if (!p) { free(o); return NULL; } o = p; } if (c == '\\' || c == '"') { o[k++] = '\\'; o[k++] = c; } else if (c >= 32) o[k++] = c; }
+    o[k++] = '"'; o[k] = 0; return o;
 }
-
+static char *literal(const char *v, const char *t) {
+    if (!t || !strcmp(t, "str") || !strcmp(t, "string")) return escstr(v);
+    if (!strcmp(t, "bool") || !strcmp(t, "boolean")) return (!strcmp(v, "true") || !strcmp(v, "false")) ? strdup(v) : NULL;
+    if (!strcmp(t, "null")) return !strcmp(v, "null") ? strdup("null") : NULL;
+    if (!strcmp(t, "num") || !strcmp(t, "number")) return strdup(v);
+    if (!strcmp(t, "json") || !strcmp(t, "raw")) return valid_json(v) == 0 ? strdup(v) : NULL;
+    return NULL;
+}
+static char *join3(const char *a, size_t an, const char *m, const char *b) {
+    size_t mn = strlen(m), bn = strlen(b); char *o = malloc(an + mn + bn + 1); if (!o) return NULL;
+    memcpy(o, a, an); memcpy(o + an, m, mn); memcpy(o + an + mn, b, bn); o[an + mn + bn] = 0; return o;
+}
+static char *find_key(const char *s, const char *key, char **val, char **end) {
+    char *k = escstr(key); if (!k) return NULL; size_t kn = strlen(k); char *p = s ? strstr((char *)s, k) : NULL; free(k); if (!p) return NULL;
+    char *c = strchr(p + kn, ':'); if (!c) return NULL; c++; while (isspace((unsigned char)*c)) c++;
+    int ins = 0, esc = 0, dep = 0; char *q = c; for (; *q; q++) { unsigned char ch = (unsigned char)*q; if (ins) { if (esc) { esc = 0; continue; } if (ch == '\\') { esc = 1; continue; } if (ch == '"') ins = 0; continue; } else { if (ch == '"') ins = 1; else if (ch == '{' || ch == '[') dep++; else if ((ch == ',' || ch == '}') && dep == 0) break; else if (ch == '}' || ch == ']') dep--; } }
+    if (val) *val = c;
+    if (end) *end = q;
+    return p;
+}
+static int set_object_key(const char *file, const char *key, const char *v, const char *typ) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) s = strdup("{}"); if (!s) return 1; if (valid_json(s)) { free(s); return 2; }
+    char *lit = literal(v, typ); if (!lit) { free(s); return 2; }
+    char *val = NULL, *end = NULL, *p = find_key(s, key, &val, &end), *out = NULL;
+    if (p) out = join3(s, (size_t)(val - s), lit, end);
+    else { char *k = escstr(key); if (!k) { free(s); free(lit); return 1; } char *r = strchr(s, '{'); if (!r) { free(k); free(s); free(lit); return 2; } char *q = r + 1; while (isspace((unsigned char)*q)) q++; int empty = (*q == '}'); size_t ml = strlen(k) + strlen(lit) + 4; char *m = malloc(ml); if (!m) { free(k); free(s); free(lit); return 1; } snprintf(m, ml, "%s:%s%s", k, lit, empty ? "" : ","); out = join3(s, (size_t)(r + 1 - s), m, r + 1); free(m); free(k); }
+    free(s); free(lit); if (!out) return 1; int rc = valid_json(out) ? 1 : write_file(file, out); free(out); return rc;
+}
+static int del_object_key(const char *file, const char *key) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) return 0; if (valid_json(s)) { free(s); return 2; }
+    char *val = NULL, *end = NULL, *p = find_key(s, key, &val, &end); if (!p) { free(s); return 0; }
+    char *after = end; while (isspace((unsigned char)*after)) after++; if (*after == ',') after++;
+    else { while (p > s && isspace((unsigned char)p[-1])) p--; if (p > s && p[-1] == ',') p--; }
+    char *out = join3(s, (size_t)(p - s), "", after); free(s); if (!out) return 1; int rc = valid_json(out) ? 1 : write_file(file, out); free(out); return rc;
+}
+static int array_add(const char *file, const char *key, const char *v) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) s = strdup("{}"); if (!s) return 1; if (valid_json(s)) { free(s); return 2; }
+    char *lit = escstr(v), *val = NULL, *end = NULL, *p = find_key(s, key, &val, &end), *out = NULL; if (!lit) { free(s); return 1; }
+    if (!p) { char *arr = malloc(strlen(lit) + 3); sprintf(arr, "[%s]", lit); int rc = set_object_key(file, key, arr, "json"); free(arr); free(lit); free(s); return rc; }
+    if (strstr(val, lit)) { free(lit); free(s); return 0; }
+    char *rb = strrchr(val, ']'); if (!rb || rb > end) { free(lit); free(s); return 2; }
+    char *q = val + 1; while (isspace((unsigned char)*q)) q++; int empty = (*q == ']'); char *m = malloc(strlen(lit) + 2); sprintf(m, "%s%s", empty ? "" : ",", lit); out = join3(s, (size_t)(rb - s), m, rb); free(m); free(lit); free(s); if (!out) return 1; int rc = valid_json(out) ? 1 : write_file(file, out); free(out); return rc;
+}
+static int array_del(const char *file, const char *key, const char *v) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) return 0; char *lit = escstr(v), *val = NULL, *end = NULL, *p = find_key(s, key, &val, &end); if (!lit) { free(s); return 1; } if (!p) { free(s); free(lit); return 0; }
+    char *x = strstr(val, lit); if (!x || x > end) { free(s); free(lit); return 0; } char *a = x, *b = x + strlen(lit); while (isspace((unsigned char)*b)) b++; if (*b == ',') b++; else { while (a > val && isspace((unsigned char)a[-1])) a--; if (a > val && a[-1] == ',') a--; }
+    char *out = join3(s, (size_t)(a - s), "", b); free(s); free(lit); if (!out) return 1; int rc = valid_json(out) ? 1 : write_file(file, out); free(out); return rc;
+}
+static int token_revoke(const char *file, const char *tid) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) return 0; char *tk = escstr(tid); if (!tk) { free(s); return 1; } char *p = strstr(s, tk); free(tk); if (!p) { free(s); return 0; }
+    char *r = strstr(p, "\"revoked\""); if (!r) { free(s); return 0; } char *f = strstr(r, "false"); if (!f) { free(s); return 0; } char *out = join3(s, (size_t)(f - s), "true", f + 5); free(s); if (!out) return 1; int rc = valid_json(out) ? 1 : write_file(file, out); free(out); chmod(file, 0600); return rc;
+}
+static int token_revoke_all(const char *file) {
+    size_t n = 0; char *s = read_file(file, &n); if (!s) return 0; size_t cap = n + 1, k = 0; char *o = malloc(cap + 16); if (!o) { free(s); return 1; }
+    for (char *p = s; *p;) { if (!strncmp(p, "false", 5)) { memcpy(o + k, "true", 4); k += 4; p += 5; } else o[k++] = *p++; if (k + 8 > cap) { cap *= 2; char *np = realloc(o, cap); if (!np) { free(o); free(s); return 1; } o = np; } }
+    o[k] = 0; free(s); int rc = valid_json(o) ? 1 : write_file(file, o); free(o); chmod(file, 0600); return rc;
+}
+static int get_top(const char *file, const char *key) { size_t n = 0; char *s = read_file(file, &n); if (!s) return 2; char *val = NULL, *end = NULL; if (!find_key(s, key, &val, &end)) { free(s); return 3; } fwrite(val, 1, (size_t)(end - val), stdout); putchar('\n'); free(s); return 0; }
 int main(int argc, char **argv) {
-    if (argc >= 2 && strcmp(argv[1], "version") == 0) {
-        puts("hnc_json_c hotfix20.2 read-only helper");
-        return 0;
-    }
-    if (argc == 3 && strcmp(argv[1], "validate") == 0) {
-        size_t n = 0;
-        char *s = read_file(argv[2], &n);
-        if (!s) { perror("open"); return 2; }
-        int rc = validate_json_text(s, n);
-        free(s);
-        return rc;
-    }
-    if (argc == 4 && (strcmp(argv[1], "get-top") == 0 || strcmp(argv[1], "get") == 0)) {
-        return get_top(argv[2], argv[3]);
-    }
-    fprintf(stderr, "usage: %s validate <file> | get-top <file> <key> | version\n", argv[0]);
+    if (argc >= 2 && !strcmp(argv[1], "version")) { puts("hnc_json_c hotfix20.6 optional write helper"); return 0; }
+    if (argc == 3 && !strcmp(argv[1], "validate")) { size_t n = 0; char *s = read_file(argv[2], &n); if (!s) return 2; int rc = valid_json(s); free(s); return rc; }
+    if (argc == 4 && (!strcmp(argv[1], "get-top") || !strcmp(argv[1], "get"))) return get_top(argv[2], argv[3]);
+    if ((argc == 5 || argc == 6) && (!strcmp(argv[1], "set-object-key") || !strcmp(argv[1], "object-set"))) return set_object_key(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : "str");
+    if (argc == 4 && (!strcmp(argv[1], "del-object-key") || !strcmp(argv[1], "object-del"))) return del_object_key(argv[2], argv[3]);
+    if (argc == 5 && (!strcmp(argv[1], "add-array-unique") || !strcmp(argv[1], "array-add-unique"))) return array_add(argv[2], argv[3], argv[4]);
+    if (argc == 5 && (!strcmp(argv[1], "del-array-value") || !strcmp(argv[1], "array-del-value"))) return array_del(argv[2], argv[3], argv[4]);
+    if (argc == 4 && !strcmp(argv[1], "token-revoke")) return token_revoke(argv[2], argv[3]);
+    if (argc == 3 && !strcmp(argv[1], "token-revoke-all")) return token_revoke_all(argv[2]);
     return 2;
 }
