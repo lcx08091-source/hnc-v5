@@ -19,6 +19,7 @@ TMP=$HNC/data/rules.tmp
 SCRIPT_DIR=${0%/*}
 [ "$SCRIPT_DIR" = "$0" ] && SCRIPT_DIR="."
 JSON_GUARD=${JSON_GUARD:-$SCRIPT_DIR/json_guard.sh}
+HNC_JSON=${HNC_JSON:-$SCRIPT_DIR/hnc_json}
 JSON_BACKUP_DIR=${JSON_BACKUP_DIR:-$HNC/data/.json_backups}
 
 # ═══════════════════════════════════════════════════════════════
@@ -585,6 +586,32 @@ json_remove_device_safe() {
     }' "$RULES" > "$TMP" && atomic_write
 }
 
+# hotfix19.1: bridge top-level writes to hnc_json when available.
+# This is the first runtime adoption step for the unified JSON helper. It keeps
+# the legacy state-machine writer as a fallback so devices that somehow lack
+# bin/hnc_json do not lose config writes.
+hnc_json_type_for_value() {
+    local v="$1"
+    case "$v" in
+        true|false) echo bool ;;
+        null) echo null ;;
+        *)
+            if echo "$v" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
+                echo num
+            else
+                echo str
+            fi
+            ;;
+    esac
+}
+
+json_update_top_hnc_json() {
+    local field="$1" value="$2" typ
+    [ -x "$HNC_JSON" ] || return 127
+    typ=$(hnc_json_type_for_value "$value")
+    "$HNC_JSON" set-top "$RULES" "$field" "$value" "$typ"
+}
+
 case "$CMD" in
 
 # ── 更新顶层字段（hotspot_auto / whitelist_mode 等）────────
@@ -595,8 +622,13 @@ case "$CMD" in
 #   3) 原实现只替换已存在字段；若字段不存在则无效。现补上“插入”分支
 top)
     FIELD=$2; VALUE=$3
-    JVAL=$(json_encode "$VALUE")
-    json_update_top_safe "$FIELD" "$JVAL"
+    # hotfix19.1: prefer hnc_json set-top so top-level JSON writes use the
+    # unified helper. Fallback preserves hotfix18 state-machine behavior.
+    if ! json_update_top_hnc_json "$FIELD" "$VALUE"; then
+        echo "json_set: hnc_json top writer unavailable/failed, using legacy fallback" >&2
+        JVAL=$(json_encode "$VALUE")
+        json_update_top_safe "$FIELD" "$JVAL"
+    fi
     ;;
 
 
