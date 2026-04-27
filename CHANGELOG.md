@@ -1,3 +1,13 @@
+# v5.1.0-rc1-hotfix18.2
+
+## JSON writer hardening phase 3
+
+- Replaced `bin/json_set_batch.sh` with a safe serial wrapper around the hardened `json_set.sh device` writer.
+- Removed the old batch regex writer that matched device objects with `\{[^}]*\}` and field values with `[^,}]*`.
+- Batch updates now share the same `json.lock` / stale-PID policy through `json_set.sh`; the wrapper does not take its own lock to avoid self-deadlock.
+- Added basic MAC and field-name validation before delegation.
+- Tradeoff: multi-field updates are now serial rather than one atomic awk transaction. True atomic batch writes are deferred to the planned `hnc_json` helper.
+
 # v5.1.0-rc1-hotfix18.1
 
 ## JSON writer hardening phase 2
