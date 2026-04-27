@@ -88,6 +88,10 @@ if [ -x "$BIN/stats_diag.sh" ]; then
   run_cmd stats_diag_json sh "$BIN/stats_diag.sh" json
   run_cmd stats_diag_text sh "$BIN/stats_diag.sh" text
 fi
+if [ -x "$BIN/stats_identity_diag.sh" ]; then
+  run_cmd stats_identity_diag_json sh "$BIN/stats_identity_diag.sh" json
+  run_cmd stats_identity_diag_text sh "$BIN/stats_identity_diag.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -147,7 +151,8 @@ done
   echo "  \"has_legacy_fallback_status\": $([ -x "$BIN/json_legacy_fallback_status.sh" ] && echo true || echo false),"
   echo "  \"has_hnc_json\": $([ -x "$BIN/hnc_json" ] && echo true || echo false),"
   echo "  \"has_hnc_json_c_status\": $([ -x "$BIN/hnc_json_c_status.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_diag\": $([ -x "$BIN/stats_diag.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_diag\": $([ -x "$BIN/stats_diag.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_identity_diag\": $([ -x "$BIN/stats_identity_diag.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 
