@@ -74,6 +74,14 @@ if [ -x "$BIN/hnc_json_c_status.sh" ]; then
   HNC_JSON_C_STATUS_RAW="$(sh "$BIN/hnc_json_c_status.sh" 2>/dev/null)"
 fi
 
+
+STATS_DIAG_RAW=""
+STATS_DIAG_PRESENT=false
+if [ -x "$BIN/stats_diag.sh" ]; then
+  STATS_DIAG_PRESENT=true
+  STATS_DIAG_RAW="$(sh "$BIN/stats_diag.sh" json 2>/dev/null)"
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -106,6 +114,10 @@ cat <<JSON
   "hnc_json_c": {
     "has_status_helper": $HNC_JSON_C_STATUS_PRESENT,
     "status_raw": "$(json_escape "$HNC_JSON_C_STATUS_RAW")"
+  },
+  "stats": {
+    "has_diag_helper": $STATS_DIAG_PRESENT,
+    "status_raw": "$(json_escape "$STATS_DIAG_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",

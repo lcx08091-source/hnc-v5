@@ -82,6 +82,17 @@ if [ -x "$BIN/hnc_json" ]; then
   run_cmd hnc_json_version sh "$BIN/hnc_json" version
 fi
 
+# Stats diagnostics are read-only and collected before the v5.2 stats overhaul.
+# Do not copy full raw/daily files into the bundle by default; they may become large.
+if [ -x "$BIN/stats_diag.sh" ]; then
+  run_cmd stats_diag_json sh "$BIN/stats_diag.sh" json
+  run_cmd stats_diag_text sh "$BIN/stats_diag.sh" text
+fi
+mkdir -p "$OUT/stats_tail" 2>/dev/null
+[ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
+[ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
+copy_if_exists "$RUN/stats_last_date" "$OUT/run/stats_last_date"
+
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
   run_cmd tc_state_snapshot sh "$BIN/tc_state_snapshot.sh"
@@ -135,7 +146,8 @@ done
   echo "  \"has_tc_snapshot\": $([ -x "$BIN/tc_state_snapshot.sh" ] && echo true || echo false),"
   echo "  \"has_legacy_fallback_status\": $([ -x "$BIN/json_legacy_fallback_status.sh" ] && echo true || echo false),"
   echo "  \"has_hnc_json\": $([ -x "$BIN/hnc_json" ] && echo true || echo false),"
-  echo "  \"has_hnc_json_c_status\": $([ -x "$BIN/hnc_json_c_status.sh" ] && echo true || echo false)"
+  echo "  \"has_hnc_json_c_status\": $([ -x "$BIN/hnc_json_c_status.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_diag\": $([ -x "$BIN/stats_diag.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 
