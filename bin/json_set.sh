@@ -16,6 +16,10 @@
 HNC=${HNC:-/data/local/hnc}
 RULES=$HNC/data/rules.json
 TMP=$HNC/data/rules.tmp
+SCRIPT_DIR=${0%/*}
+[ "$SCRIPT_DIR" = "$0" ] && SCRIPT_DIR="."
+JSON_GUARD=${JSON_GUARD:-$SCRIPT_DIR/json_guard.sh}
+JSON_BACKUP_DIR=${JSON_BACKUP_DIR:-$HNC/data/.json_backups}
 
 # ═══════════════════════════════════════════════════════════════
 # v3.4.11 P0-2 修复:加 mkdir 文件锁,防并发写竞态
@@ -151,6 +155,56 @@ ensure_names_file() {
     [ -f "$NAMES_FILE" ] || echo '{}' > "$NAMES_FILE"
 }
 
+
+# hotfix18.3: write-after-validate guard + automatic rollback.
+json_validate_file() {
+    local f="$1"
+    [ -s "$f" ] || { echo "json_set: empty JSON candidate: $f" >&2; return 1; }
+    if [ -x "$JSON_GUARD" ]; then
+        sh "$JSON_GUARD" "$f" >/dev/null 2>&1
+        return $?
+    fi
+    awk 'BEGIN{q=0;esc=0;b=0;s=0} {for(i=1;i<=length($0);i++){c=substr($0,i,1); if(q){ if(esc){esc=0;next} if(c=="\\"){esc=1;next} if(c=="\"")q=0; next } if(c=="\""){q=1;next} if(c=="{")b++; else if(c=="}")b--; else if(c=="[")s++; else if(c=="]")s--; if(b<0||s<0)exit 1 }} END{exit (q||esc||b||s)?1:0}' "$f"
+}
+
+json_backup_file() {
+    local f="$1" base ts bak
+    [ -f "$f" ] || return 0
+    mkdir -p "$JSON_BACKUP_DIR" 2>/dev/null || return 0
+    base=$(basename "$f")
+    ts=$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)
+    bak="$JSON_BACKUP_DIR/$base.$ts.$$.bak"
+    cp -p "$f" "$bak" 2>/dev/null || return 0
+    echo "$bak"
+}
+
+json_prune_backups() {
+    mkdir -p "$JSON_BACKUP_DIR" 2>/dev/null || return 0
+    (ls -1t "$JSON_BACKUP_DIR"/*.bak 2>/dev/null | sed -n '31,$p' | xargs rm -f) 2>/dev/null || true
+}
+
+guarded_commit() {
+    local tmpfile="$1" target="$2" backup rc
+    if ! json_validate_file "$tmpfile"; then
+        echo "json_set: refusing invalid JSON candidate for $target" >&2
+        rm -f "$tmpfile" 2>/dev/null
+        return 1
+    fi
+    backup=$(json_backup_file "$target")
+    mv "$tmpfile" "$target" || return 1
+    chmod 600 "$target" 2>/dev/null || true
+    if json_validate_file "$target"; then
+        json_prune_backups
+        return 0
+    fi
+    rc=$?
+    echo "json_set: post-write validation failed for $target, rolling back" >&2
+    if [ -n "$backup" ] && [ -f "$backup" ]; then
+        cp -p "$backup" "$target" 2>/dev/null || true
+    fi
+    return $rc
+}
+
 CMD=$1
 
 # v3.4.11 P0-2: 写命令统一加锁,读命令不加锁(避免阻塞 cfg_get / name_get)
@@ -193,7 +247,7 @@ json_object_set_safe_file() {
         p=index(s,"{"); if(!p){ print s; exit 1 }
         q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
         print substr(s,1,p) "\"" key "\": " val comma substr(s,p+1)
-    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    }' "$file" > "$tmpfile" && guarded_commit "$tmpfile" "$file"
     local rc=$?
     rm -f "$keytmp" "$valtmp"
     return $rc
@@ -220,7 +274,7 @@ json_object_del_safe_file() {
         if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
         else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
         else print substr(s,1,fk-1) substr(s,end+1)
-    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    }' "$file" > "$tmpfile" && guarded_commit "$tmpfile" "$file"
     local rc=$?
     rm -f "$keytmp"
     return $rc
@@ -301,7 +355,7 @@ esac
 
 # ── 原子写入：先写临时文件，再 mv ──────────────────────────
 atomic_write() {
-    mv "$TMP" "$RULES"
+    guarded_commit "$TMP" "$RULES"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -431,7 +485,7 @@ json_object_set_safe_file() {
         p=index(s,"{"); if(!p){ print s; exit 1 }
         q=skipws(p+1); comma=(ch(q)=="}" ? "" : ",")
         print substr(s,1,p) "\"" key "\": " val comma substr(s,p+1)
-    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    }' "$file" > "$tmpfile" && guarded_commit "$tmpfile" "$file"
     local rc=$?
     rm -f "$keytmp" "$valtmp"
     return $rc
@@ -458,7 +512,7 @@ json_object_del_safe_file() {
         if(after<=n && ch(after)==",") print substr(s,1,fk-1) substr(s,after+1)
         else if(before>=1 && ch(before)==",") print substr(s,1,before-1) substr(s,end+1)
         else print substr(s,1,fk-1) substr(s,end+1)
-    }' "$file" > "$tmpfile" && mv "$tmpfile" "$file"
+    }' "$file" > "$tmpfile" && guarded_commit "$tmpfile" "$file"
     local rc=$?
     rm -f "$keytmp"
     return $rc
@@ -873,7 +927,7 @@ token_revoke)
         }
         print line
     }
-    ' "$TOKENS_FILE" > "$TOKENS_TMP" && mv "$TOKENS_TMP" "$TOKENS_FILE"
+    ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
     chmod 600 "$TOKENS_FILE" 2>/dev/null
     ;;
 
@@ -884,7 +938,7 @@ token_revoke_all)
     [ -f "$TOKENS_FILE" ] || echo '{"version":1,"tokens":{}}' > "$TOKENS_FILE"
     awk '
     { sub(/"revoked"[ \t]*:[ \t]*false/, "\"revoked\": true"); print }
-    ' "$TOKENS_FILE" > "$TOKENS_TMP" && mv "$TOKENS_TMP" "$TOKENS_FILE"
+    ' "$TOKENS_FILE" > "$TOKENS_TMP" && guarded_commit "$TOKENS_TMP" "$TOKENS_FILE"
     chmod 600 "$TOKENS_FILE" 2>/dev/null
     ;;
 

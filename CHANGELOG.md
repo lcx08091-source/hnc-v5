@@ -1,3 +1,11 @@
+
+## v5.1.0-rc1-hotfix18.3
+
+- JSON 写入增加写前/写后语法校验，避免异常候选文件覆盖 live JSON。
+- 新增 `bin/json_guard.sh`，在 Android shell 环境下无依赖校验 JSON 基本语法。
+- `json_set.sh` 写入 `rules.json`、`device_names.json`、`templates.json`、`remote_tokens.json` 前自动备份，写后校验失败会回滚。
+- 保留最近约 30 个 JSON 备份，降低 rules.json / names / templates / tokens 损坏后的恢复成本。
+
 # v5.1.0-rc1-hotfix18.2
 
 ## JSON writer hardening phase 3
