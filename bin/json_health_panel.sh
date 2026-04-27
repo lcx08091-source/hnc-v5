@@ -136,6 +136,17 @@ if [ -x "$BIN/stats_health_summary.sh" ]; then
   esac
 fi
 
+STATS_MIGRATION_READINESS_RAW=""
+STATS_MIGRATION_READINESS_PRESENT=false
+if [ -x "$BIN/stats_migration_readiness.sh" ]; then
+  STATS_MIGRATION_READINESS_PRESENT=true
+  STATS_MIGRATION_READINESS_RAW="$(sh "$BIN/stats_migration_readiness.sh" json 2>/dev/null)"
+  case "$STATS_MIGRATION_READINESS_RAW" in
+    *'"status":"blocked"'*) OVERALL="fail" ;;
+    *'"status":"not_ready"'*|*'"status":"warmup"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -186,7 +197,9 @@ cat <<JSON
     "has_compare_helper": $STATS_COMPARE_PRESENT,
     "compare_raw": "$(json_escape "$STATS_COMPARE_RAW")",
     "has_health_summary_helper": $STATS_HEALTH_PRESENT,
-    "health_summary_raw": "$(json_escape "$STATS_HEALTH_RAW")"
+    "health_summary_raw": "$(json_escape "$STATS_HEALTH_RAW")",
+    "has_migration_readiness_helper": $STATS_MIGRATION_READINESS_PRESENT,
+    "migration_readiness_raw": "$(json_escape "$STATS_MIGRATION_READINESS_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",

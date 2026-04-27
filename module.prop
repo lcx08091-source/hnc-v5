@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix21.8
-versionCode=509218
+version=v5.1.0-rc1-hotfix21.9
+versionCode=509219
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix21.7 · shadow stats opt-in control · stats health summary for WebUI diagnostics · JSON debug bundle · diag JSON health · 备份/回滚状态诊断 · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix21.9 · stats migration readiness gate · optional shadow stats source · shadow stats opt-in control · stats health summary for WebUI diagnostics · JSON debug bundle · diag JSON health · 备份/回滚状态诊断 · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
