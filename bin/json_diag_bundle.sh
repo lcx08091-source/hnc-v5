@@ -92,6 +92,10 @@ if [ -x "$BIN/stats_identity_diag.sh" ]; then
   run_cmd stats_identity_diag_json sh "$BIN/stats_identity_diag.sh" json
   run_cmd stats_identity_diag_text sh "$BIN/stats_identity_diag.sh" text
 fi
+if [ -x "$BIN/stats_retention_diag.sh" ]; then
+  run_cmd stats_retention_diag_json sh "$BIN/stats_retention_diag.sh" json
+  run_cmd stats_retention_diag_text sh "$BIN/stats_retention_diag.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
