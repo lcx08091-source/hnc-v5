@@ -181,6 +181,28 @@ if [ -x "$BIN/stats_v52_diag_bundle.sh" ]; then
   esac
 fi
 
+STATS_V52_DEVICE_CHECK_RAW=""
+STATS_V52_DEVICE_CHECK_PRESENT=false
+if [ -x "$BIN/stats_v52_device_check.sh" ]; then
+  STATS_V52_DEVICE_CHECK_PRESENT=true
+  STATS_V52_DEVICE_CHECK_RAW="$(sh "$BIN/stats_v52_device_check.sh" json 2>/dev/null)"
+  case "$STATS_V52_DEVICE_CHECK_RAW" in
+    *'"status":"fail"'*) OVERALL="fail" ;;
+    *'"status":"warn"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
+STATS_V52_RC1_SWITCH_RAW=""
+STATS_V52_RC1_SWITCH_PRESENT=false
+if [ -x "$BIN/stats_v52_rc1_switch.sh" ]; then
+  STATS_V52_RC1_SWITCH_PRESENT=true
+  STATS_V52_RC1_SWITCH_RAW="$(sh "$BIN/stats_v52_rc1_switch.sh" json 2>/dev/null)"
+  case "$STATS_V52_RC1_SWITCH_RAW" in
+    *"status":"blocked"*|*"status":"drift"*) OVERALL="fail" ;;
+    *"legacy_default_preserved":false*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -239,7 +261,11 @@ cat <<JSON
     "has_v52_rc_smoke_helper": $STATS_V52_RC_SMOKE_PRESENT,
     "v52_rc_smoke_raw": "$(json_escape "$STATS_V52_RC_SMOKE_RAW")"
     ,"has_v52_diag_bundle_helper": $STATS_V52_DIAG_BUNDLE_PRESENT,
-    "v52_diag_bundle_raw": "$(json_escape "$STATS_V52_DIAG_BUNDLE_RAW")"
+    "v52_diag_bundle_raw": "$(json_escape "$STATS_V52_DIAG_BUNDLE_RAW")",
+    "has_v52_device_check_helper": $STATS_V52_DEVICE_CHECK_PRESENT,
+    "v52_device_check_raw": "$(json_escape "$STATS_V52_DEVICE_CHECK_RAW")",
+    "has_v52_rc1_switch_helper": $STATS_V52_RC1_SWITCH_PRESENT,
+    "v52_rc1_switch_raw": "$(json_escape "$STATS_V52_RC1_SWITCH_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",

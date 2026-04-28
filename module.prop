@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.1.0-rc1-hotfix22.3
-versionCode=509223
+version=v5.2.0-rc1
+versionCode=520001
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.1.0-rc1 hotfix22.3 · v5.2 stats diagnostic bundle · v5.2 stats RC smoke gate · guarded v5.2 stats RC control · stats migration readiness gate · optional shadow stats source · shadow stats opt-in control · stats health summary for WebUI diagnostics · JSON debug bundle · diag JSON health · 备份/回滚状态诊断 · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.2.0-rc1 · staged v5.2 stats gray release · legacy stats remains default · guarded RC enable with device check · one-command rollback · v5.2 real-device stats pre-RC check · v5.2 stats diagnostic bundle · v5.2 stats RC smoke gate · stats migration readiness gate · optional shadow stats source · shadow stats opt-in control · JSON debug bundle · diag JSON health · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485
