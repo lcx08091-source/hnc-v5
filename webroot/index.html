@@ -673,7 +673,7 @@ body.ptr-tracking .container { transition: none; }
   line-height: 1.5;
 }
 
-/* v5.2-rc1.9 · WebUI bridge/boot status card
+/* v5.2-rc1.10 · WebUI bridge/boot status card
    用于 KSU/SukiSU bridge 不回调或 httpd 暂不可达时给出常驻可见状态，避免看起来像白屏。 */
 .bridge-status-card {
   margin: 12px 0 12px;
@@ -2952,7 +2952,7 @@ body.kb-open .container {
 
   const API_BASE = 'http://127.0.0.1:8444';
 
-  /* v5.2-rc1.9 · WebUI transport guard
+  /* v5.2-rc1.10 · WebUI transport guard
    * rc1.8 已确认: HTTP 直连在部分 SukiSU/ColorOS WebView 会失败，但用户手动强制 bridge 可正常工作。
    * rc1.9 策略: 首屏先完整渲染并尝试 fetch；若 fetch 失败，在首屏 paint 后延迟自动 bridge 一次。
    * 自动 bridge 只尝试一次，失败后保留手动按钮；避免回到 rc1.7 的启动即卡死。 */
@@ -2970,6 +2970,27 @@ body.kb-open .container {
     __hncAllowBridgeTransport = false;
     __hncPreferBridgeTransport = false;
     __hncTransportMode = 'fetch-only';
+  }
+
+  /* v5.2-rc1.10 · transport hint persistence
+   * rc1.8/rc1.9 实机结果: HTTP 直连在部分 SukiSU/ColorOS WebView 中不可用，
+   * 但延迟/手动 bridge 可用。成功连接 bridge 后记住偏好，下次首屏完成后优先走
+   * 延迟 bridge，避免每次都先等待 HTTP fetch 失败。只保存 transport hint，不保存
+   * token/IP/MAC/设备信息；bridge 失败时自动清除。 */
+  const HNC_TRANSPORT_HINT_KEY = 'hnc.transport_hint.v1';
+  function __hncGetTransportHint() {
+    try { return localStorage.getItem(HNC_TRANSPORT_HINT_KEY) || ''; } catch (_) { return ''; }
+  }
+  function __hncRememberBridgeTransport(reason) {
+    try { localStorage.setItem(HNC_TRANSPORT_HINT_KEY, 'bridge'); } catch (_) {}
+    try { localStorage.setItem('hnc.transport_hint_reason.v1', String(reason || 'bridge')); } catch (_) {}
+  }
+  function __hncForgetBridgeTransport() {
+    try { localStorage.removeItem(HNC_TRANSPORT_HINT_KEY); } catch (_) {}
+    try { localStorage.removeItem('hnc.transport_hint_reason.v1'); } catch (_) {}
+  }
+  function __hncHasBridgeHint() {
+    return __hncGetTransportHint() === 'bridge';
   }
 
   function validateApiObject(obj) {
@@ -3041,7 +3062,7 @@ body.kb-open .container {
     }
     const url = API_BASE + p;
 
-    // rc1.9 · first transport: browser fetch.
+    // rc1.10 · first transport: browser fetch.
     // 这是异步 Web API，不会像 window.ksu.exec 那样同步卡死 UI 线程。
     // 一旦 bridge 已确认可用，后续请求直接走 bridge，避免每个接口先等 fetch 失败 1.8s。
     if (!__hncPreferBridgeTransport) {
@@ -3055,7 +3076,7 @@ body.kb-open .container {
       }
     }
 
-    // rc1.9 · bridge transport is delayed/explicit.
+    // rc1.10 · bridge transport is delayed/explicit.
     // 首屏 paint 后自动尝试一次；或者用户点击“强制桥接”后到这里。
     const cmd = "curl -sS --connect-timeout 1 --max-time 6 -H " + sq('Cache-Control: no-cache') + " " + sq(url);
     const raw = await withTimeout(kexec(cmd), 8000, 'GET ' + p);
@@ -5453,7 +5474,7 @@ body.kb-open .container {
 
   document.addEventListener('click', (e) => {
 
-    /* v5.2-rc1.9 · retry 先尝试 fetch，失败后延迟自动 bridge 一次 */
+    /* v5.2-rc1.10 · retry 先尝试 fetch，失败后延迟自动 bridge 一次 */
     if (e.target.closest('[data-action="bridge-retry"]')) {
       e.preventDefault();
       __hncDisableBridgeTransport();
@@ -5461,6 +5482,7 @@ body.kb-open .container {
       showBridgeStatus('warn', '正在重试连接', '先尝试 HTTP 直连；若仍失败，将延迟自动尝试一次 KSU/SukiSU bridge。');
       apiGet('/api/health').then(function(){
         __hncBridgeConnected = true;
+        if (__hncPreferBridgeTransport || __hncTransportMode === 'bridge') __hncRememberBridgeTransport('retry');
         hideBridgeStatus();
         toast('后端已连接，正在刷新设备', 'ok');
         return requestForceRefresh();
@@ -5473,22 +5495,36 @@ body.kb-open .container {
       return;
     }
 
-    /* v5.2-rc1.9 · advanced: 用户显式确认后立即使用 KSU bridge transport */
+    /* v5.2-rc1.10 · advanced: 用户显式确认后立即使用 KSU bridge transport */
     if (e.target.closest('[data-action="bridge-force-retry"]')) {
       e.preventDefault();
       __hncEnableBridgeTransport('manual-force');
       showBridgeStatus('warn', '正在强制使用 KSU bridge', '这一步会立即通过 SukiSU/KernelSU bridge 调用本地 httpd；若长时间无响应，请退出 WebUI 后重新进入。');
       apiGet('/api/health').then(function(){
         __hncBridgeConnected = true;
+        __hncRememberBridgeTransport('manual-force');
         hideBridgeStatus();
         toast('bridge 已连接，正在刷新设备', 'ok');
         return requestForceRefresh();
       }).catch(function(err){
         dbg('force bridge failed: ' + (err && err.message || err), true);
+        __hncForgetBridgeTransport();
         __hncDisableBridgeTransport();
-        showBridgeStatus('err', 'KSU bridge 仍失败', '已重新禁用 bridge。错误：' + ((err && err.message) || err || 'unknown'));
+        showBridgeStatus('err', 'KSU bridge 仍失败', '已重新禁用 bridge，并清除已记住的连接方式。错误：' + ((err && err.message) || err || 'unknown'));
         toast('bridge 失败，已禁用', 'err');
       });
+      return;
+    }
+
+    /* v5.2-rc1.10 · 清除已记住的 bridge 偏好，回到 fetch-first 调试路径 */
+    if (e.target.closest('[data-action="bridge-reset-mode"]')) {
+      e.preventDefault();
+      __hncForgetBridgeTransport();
+      __hncDisableBridgeTransport();
+      __hncAutoBridgeAttempted = false;
+      __hncBridgeConnected = false;
+      showBridgeStatus('warn', '已重置连接方式', '下次重试会先尝试 HTTP 直连；若仍失败，再延迟自动 bridge。');
+      toast('已重置连接方式', 'ok');
       return;
     }
 
@@ -6087,10 +6123,10 @@ body.kb-open .container {
 
   /* ═══════════════════════════════════════════════════════════════
      INIT · v5.1 通过 KSU WebUI curl 桥接到本地 Go httpd
-     v5.2-rc1.9: init 改回当前 script 内直接启动，避免 setTimeout(0) 在部分 WebView 上不调度导致白屏
+     v5.2-rc1.10: init 改回当前 script 内直接启动，避免 setTimeout(0) 在部分 WebView 上不调度导致白屏
      WebView 仍保留静态空壳，但不再把 init 推迟到 timer task
      ═══════════════════════════════════════════════════════════════ */
-  /* v5.2-rc1.9 · WebUI booting 状态兜底
+  /* v5.2-rc1.10 · WebUI booting 状态兜底
    * 所有 init 成功/失败/提前 return 路径都必须最终移除 booting。
    * rc1.6 关键修复：finishBootVisual() 不再依赖双 requestAnimationFrame；
    * booting class 立即移除，避免部分 ColorOS/WebView rAF/timer 调度异常时一直白屏。
@@ -6118,7 +6154,8 @@ body.kb-open .container {
           '<div class="bridge-status-msg"></div>' +
           '<div class="bridge-status-actions"><button type="button" data-action="bridge-retry">重试连接</button>' +
           '<button type="button" data-action="manual-refresh">刷新设备</button>' +
-          '<button type="button" data-action="bridge-force-retry">强制桥接</button></div></div>';
+          '<button type="button" data-action="bridge-force-retry">强制桥接</button>' +
+          '<button type="button" data-action="bridge-reset-mode">重置连接方式</button></div></div>';
         const line = document.getElementById('freshness-line');
         if (line && line.parentNode) line.parentNode.insertBefore(card, line.nextSibling);
         else root.insertBefore(card, root.firstChild);
@@ -6175,11 +6212,13 @@ body.kb-open .container {
     try {
       await apiGet('/api/health');
       __hncBridgeConnected = true;
+      __hncRememberBridgeTransport('auto-delayed');
       hideBridgeStatus();
       toast('bridge 已自动连接，正在刷新设备', 'ok');
       return true;
     } catch (e) {
       dbg('auto bridge failed: ' + (e && e.message || e), true);
+      __hncForgetBridgeTransport();
       __hncDisableBridgeTransport();
       showBridgeStatus('err', '自动 bridge 失败',
         '已停止自动尝试，页面保持可操作。你可以点“重试连接”再试一次，或点“强制桥接”。错误：' + ((e && e.message) || e || 'unknown'));
@@ -6225,24 +6264,41 @@ body.kb-open .container {
     loadTemplatesFromStorage();
     renderDeviceList();   // 空骨架，先让用户看到结构
     renderBarsPlaceholder('等待后端连接 · 统计图稍后刷新');
-    showBridgeStatus('warn', '正在连接 HNC 后端', '首屏已经完成渲染；先尝试 WebView HTTP 直连。若直连失败，将在首屏稳定后自动尝试一次 KSU/SukiSU bridge。');
+    showBridgeStatus('warn', '正在连接 HNC 后端', '首屏已经完成渲染；若上次 bridge 成功会优先延迟 bridge，否则先尝试 WebView HTTP 直连。');
     finishBootVisual();   // 立即移除 booting，不等 health
     __t.skeleton = performance.now();
 
-    // rc1.9 · 先让 WebView 有机会 paint，再进行首次连接探测。
+    // rc1.10 · 先让 WebView 有机会 paint，再进行首次连接探测。
     // 先试 fetch；若 fetch 失败，则延迟 1.2 秒自动 bridge 一次。
     await waitForFirstPaintBeforeBridge();
     __t.bridge_yield = performance.now();
 
     let __healthOk = false;
+    const __hasSavedBridgeHint = __hncHasBridgeHint();
+    if (__hasSavedBridgeHint) {
+      showBridgeStatus('warn', '正在使用已记住的 bridge 连接',
+        '上次连接确认 KSU/SukiSU bridge 可用；本次跳过 HTTP 直连等待，在首屏稳定后直接尝试 bridge。');
+      await sleepMs(320);
+      __hncEnableBridgeTransport('remembered');
+    }
     try {
       await apiGet('/api/health');
       __healthOk = true;
       __hncBridgeConnected = true;
+      if (__hncPreferBridgeTransport || __hncTransportMode === 'bridge') __hncRememberBridgeTransport(__hasSavedBridgeHint ? 'remembered' : 'health');
       hideBridgeStatus();
     } catch (e) {
-      dbg('init: fetch health failed, will try delayed bridge: ' + e.message, true);
-      __healthOk = await tryDelayedAutoBridgeHealth(e);
+      if (__hasSavedBridgeHint) {
+        dbg('init: remembered bridge failed, clearing hint: ' + e.message, true);
+        __hncForgetBridgeTransport();
+        __hncDisableBridgeTransport();
+        showBridgeStatus('err', '已记住的 bridge 连接失败',
+          '已清除连接偏好。你可以点“重试连接”重新走 HTTP→延迟 bridge 流程，或点“强制桥接”。错误：' + ((e && e.message) || e || 'unknown'));
+        __healthOk = false;
+      } else {
+        dbg('init: fetch health failed, will try delayed bridge: ' + e.message, true);
+        __healthOk = await tryDelayedAutoBridgeHealth(e);
+      }
     }
     __t.health = performance.now();
 
@@ -6543,7 +6599,7 @@ body.kb-open .container {
 (function(){
   if(window.__hncJsonHealthEntry187) return;
   window.__hncJsonHealthEntry187 = true;
-  // v5.2-rc1.9: 禁用主 WebUI 内嵌 JSON 健康入口的自动 window.ksu.exec。
+  // v5.2-rc1.10: 禁用主 WebUI 内嵌 JSON 健康入口的自动 window.ksu.exec。
   // 该 legacy 注入脚本使用 promise 风格 window.ksu.exec(cmd).then(...)，
   // 在部分 SukiSU/ColorOS WebView 中可能在 DOMContentLoaded 后再次卡住页面。
   // JSON 健康仍可通过独立 json-health.html 打开，不应在主页面加载时自动探测。
