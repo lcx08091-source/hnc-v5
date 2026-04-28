@@ -84,6 +84,44 @@ html.booting .page.active {
   animation: none !important;
 }
 
+/* v5.2-rc1.5 · booting 可视兜底
+   之前 booting 会禁用 blur/shadow；如果 init 在 health/ksu 检查处提前 return，
+   白底 + 白卡片会像白屏。这里给首屏卡片补边框/实体底色，保证失败态也能看见。 */
+html.booting .glass,
+html.booting .glass-elevated,
+html.booting .glass-floating,
+html.booting .stat-card,
+html.booting .search-bar,
+html.booting .toolbar,
+html.booting .device-card,
+html.booting .device-filter-bar {
+  border: 1px solid var(--stroke-strong) !important;
+  background: var(--glass-bg-3) !important;
+}
+html.booting[data-theme="light"] .glass,
+html.booting[data-theme="light"] .glass-elevated,
+html.booting[data-theme="light"] .glass-floating,
+html.booting[data-theme="light"] .stat-card,
+html.booting[data-theme="light"] .search-bar,
+html.booting[data-theme="light"] .toolbar,
+html.booting[data-theme="light"] .device-card,
+html.booting[data-theme="light"] .device-filter-bar {
+  background: rgba(255,255,255,0.94) !important;
+  border-color: rgba(0,0,0,0.14) !important;
+}
+html.booting[data-theme="dark"] .glass,
+html.booting[data-theme="dark"] .glass-elevated,
+html.booting[data-theme="dark"] .glass-floating,
+html.booting[data-theme="dark"] .stat-card,
+html.booting[data-theme="dark"] .search-bar,
+html.booting[data-theme="dark"] .toolbar,
+html.booting[data-theme="dark"] .device-card,
+html.booting[data-theme="dark"] .device-filter-bar {
+  background: rgba(28,28,32,0.92) !important;
+  border-color: rgba(255,255,255,0.18) !important;
+}
+
+
 /* ═══════════════════════════════════════════════════════════════════
    TOKENS
    ═══════════════════════════════════════════════════════════════════ */
@@ -5825,14 +5863,35 @@ body.kb-open .container {
 
   /* ═══════════════════════════════════════════════════════════════
      INIT · v5.1 通过 KSU WebUI curl 桥接到本地 Go httpd
-     rc3.1.21 perf: 从 IIFE 立即跑改为 setTimeout(init, 0) 让出首帧
-     WebView 可以先 paint 静态空壳再跑 JS, FCP 提前
+     v5.2-rc1.6: init 改回当前 script 内直接启动，避免 setTimeout(0) 在部分 WebView 上不调度导致白屏
+     WebView 仍保留静态空壳，但不再把 init 推迟到 timer task
      ═══════════════════════════════════════════════════════════════ */
+  /* v5.2-rc1.6 · WebUI booting 状态兜底
+   * 所有 init 成功/失败/提前 return 路径都必须最终移除 booting。
+   * rc1.6 关键修复：finishBootVisual() 不再依赖双 requestAnimationFrame；
+   * booting class 立即移除，避免部分 ColorOS/WebView rAF/timer 调度异常时一直白屏。 */
+  let __hncBootFinished = false;
+  function finishBootVisual() {
+    if (__hncBootFinished) return;
+    __hncBootFinished = true;
+    try { document.documentElement.classList.remove('booting'); } catch (_) {}
+    try { document.documentElement.setAttribute('data-boot-finished', '1'); } catch (_) {}
+  }
+  setTimeout(() => {
+    try {
+      if (document.documentElement.classList.contains('booting')) {
+        finishBootVisual();
+        if (window.__HNC_DEBUG) dbg('booting fallback timeout: class removed', true);
+      }
+    } catch (_) {}
+  }, 8000);
+
+
   async function init() {
     // rc3.1.17 perf F · 各阶段 performance.now() 时间戳, 末尾输出到 dbg 栏
-    // rc3.1.22 · sched = setTimeout 设置时刻 (在 init 被定义后 setTimeout 包装时写的)
-    //           start = setTimeout 回调实际触发时刻 (WebView 调度到 init 的那一刻)
-    //           差值 start - sched = setTimeout 黑洞 (被 layout/compositor 抢的时长)
+    // v5.2-rc1.6 · sched = init 直接启动前的时刻
+    //           start = init 第一行实际进入时刻
+    //           差值 start - sched 应接近 0；若不是，说明同步启动前已有阻塞
     const __t = {
       sched: (typeof window.__t_sched === 'number') ? window.__t_sched : 0,
       start: performance.now()
@@ -5841,6 +5900,7 @@ body.kb-open .container {
     // v5.1: 必须有 ksu WebUI 框架(curl 桥接)
     if (!detectKsuLike()) {
       showNoKsuPage();
+      finishBootVisual();
       return;
     }
     // P1-4 修: health 失败时 return, 不继续跑后续 init, 不假报 "系统就绪"
@@ -5851,6 +5911,7 @@ body.kb-open .container {
       // 渲染空态让用户看到结构, 避免白屏
       renderDeviceList();
       renderBars();
+      finishBootVisual();
       return;
     }
     __t.health = performance.now();
@@ -6052,22 +6113,33 @@ body.kb-open .container {
     // rc3.1.21 · init 全部完成, 移除 booting class 让 backdrop-filter / box-shadow 恢复
     // 双 rAF 让浏览器先处理完当前帧 (可能还在 layout/paint init 触发的变更),
     // 第二帧才切 class, 避免跟首屏渲染抢 GPU
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        document.documentElement.classList.remove('booting');
-      });
-    });
+    finishBootVisual();
   }
 
-  // rc3.1.21 · setTimeout(0) 让 WebView 先 paint 静态空壳再跑 init
-  // 之前是 (async function init(){...})() 立即跑, 阻塞首帧
-  // rc3.1.22 · 在 setTimeout 前记 schedAt 时刻, init 内第一行记 start, 看 delay
-  // rc3.1.23 · reviewer H8 诊断探针: setTimeout 同时 requestAnimationFrame
-  //           raf1 早 + init.start 晚 = timer task 饿死 (Chromium 调度器问题)
-  //           raf1 晚 + init.start 晚 = 主线程被真占 (H6/H7, paint 阻塞)
+  // v5.2-rc1.6 · WebUI init 同步启动兜底
+  // 部分 ColorOS/WebView 上 setTimeout(0) / rAF / DOMContentLoaded 可能不再被调度，
+  // 导致 init 从未进入、/api/health 从未请求、booting 永久残留。
+  // 因此：rAF 只保留为可选性能标记，init() 必须在当前 script 内直接启动。
   window.__t_sched = performance.now();
-  requestAnimationFrame(function(){ window.__t_raf1 = performance.now(); });
-  setTimeout(() => { init().catch(e => { try { dbg('init err: ' + (e && e.message), true); } catch(_){} }); }, 0);
+  try {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function(){ window.__t_raf1 = performance.now(); });
+    }
+  } catch (_) {
+    try { window.__t_raf1 = -1; } catch (__) {}
+  }
+  try {
+    var __hncInitPromise = init();
+    if (__hncInitPromise && typeof __hncInitPromise.catch === 'function') {
+      __hncInitPromise.catch(function(e) {
+        try { dbg('init err: ' + (e && e.message), true); } catch(_){}
+        finishBootVisual();
+      });
+    }
+  } catch (e) {
+    try { dbg('init sync err: ' + (e && e.message), true); } catch(_){}
+    finishBootVisual();
+  }
 
   /* ═══════════════════════════════════════════════════════════════
      KEYBOARD AVOIDANCE
