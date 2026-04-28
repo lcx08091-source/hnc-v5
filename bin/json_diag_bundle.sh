@@ -128,6 +128,10 @@ if [ -x "$BIN/stats_v52_rc_smoke.sh" ]; then
   run_cmd stats_v52_rc_smoke_json sh "$BIN/stats_v52_rc_smoke.sh" json
   run_cmd stats_v52_rc_smoke_text sh "$BIN/stats_v52_rc_smoke.sh" text
 fi
+if [ -x "$BIN/stats_v52_diag_bundle.sh" ]; then
+  run_cmd stats_v52_diag_bundle_json sh "$BIN/stats_v52_diag_bundle.sh" json
+  run_cmd stats_v52_diag_bundle_text sh "$BIN/stats_v52_diag_bundle.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -148,6 +152,8 @@ copy_if_exists "$RUN/stats_v52_rc_control.json" "$OUT/run/stats_v52_rc_control.j
 copy_if_exists "$RUN/stats_v52_rc_control.txt" "$OUT/run/stats_v52_rc_control.txt"
 copy_if_exists "$RUN/stats_v52_rc_smoke.json" "$OUT/run/stats_v52_rc_smoke.json"
 copy_if_exists "$RUN/stats_v52_rc_smoke.txt" "$OUT/run/stats_v52_rc_smoke.txt"
+copy_if_exists "$RUN/stats_v52_diag_bundle.json" "$OUT/run/stats_v52_diag_bundle.json"
+copy_if_exists "$RUN/stats_v52_diag_bundle.txt" "$OUT/run/stats_v52_diag_bundle.txt"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
@@ -214,7 +220,8 @@ done
   echo "  \"has_stats_health_summary\": $([ -x "$BIN/stats_health_summary.sh" ] && echo true || echo false),"
   echo "  \"has_stats_migration_readiness\": $([ -x "$BIN/stats_migration_readiness.sh" ] && echo true || echo false),"
   echo "  \"has_stats_v52_rc_control\": $([ -x "$BIN/stats_v52_rc_control.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_v52_rc_smoke\": $([ -x "$BIN/stats_v52_rc_smoke.sh" ] && echo true || echo false)"
+  echo '  "has_stats_v52_rc_smoke": '$([ -x "$BIN/stats_v52_rc_smoke.sh" ] && echo true || echo false)', '
+  echo "  \"has_stats_v52_diag_bundle\": $([ -x "$BIN/stats_v52_diag_bundle.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 

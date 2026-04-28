@@ -170,6 +170,17 @@ if [ -x "$BIN/stats_v52_rc_smoke.sh" ]; then
   esac
 fi
 
+STATS_V52_DIAG_BUNDLE_RAW=""
+STATS_V52_DIAG_BUNDLE_PRESENT=false
+if [ -x "$BIN/stats_v52_diag_bundle.sh" ]; then
+  STATS_V52_DIAG_BUNDLE_PRESENT=true
+  STATS_V52_DIAG_BUNDLE_RAW="$(sh "$BIN/stats_v52_diag_bundle.sh" json 2>/dev/null)"
+  case "$STATS_V52_DIAG_BUNDLE_RAW" in
+    *'"status":"fail"'*) OVERALL="fail" ;;
+    *'"status":"warn"'*|*'"status":"disabled"'*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -227,6 +238,8 @@ cat <<JSON
     "v52_rc_control_raw": "$(json_escape "$STATS_V52_RC_RAW")",
     "has_v52_rc_smoke_helper": $STATS_V52_RC_SMOKE_PRESENT,
     "v52_rc_smoke_raw": "$(json_escape "$STATS_V52_RC_SMOKE_RAW")"
+    ,"has_v52_diag_bundle_helper": $STATS_V52_DIAG_BUNDLE_PRESENT,
+    "v52_diag_bundle_raw": "$(json_escape "$STATS_V52_DIAG_BUNDLE_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",
