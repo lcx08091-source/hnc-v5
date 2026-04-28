@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_install_selfcheck.sh — v5.2-rc1.11 install/first-boot safety self-check.
+# stats_v52_install_selfcheck.sh — v5.2-rc1.12 install/first-boot safety self-check.
 # Read-only: verifies gray stats wiring, legacy-default preservation, rollback
 # availability, and diagnostic helper presence. It does not enable RC, does not
 # switch stats source, and does not touch tc/iptables/watchdog/network rules.
@@ -35,36 +35,33 @@ add_issue() {
 }
 
 run_helper_timeout() {
-  h="$1"; mode="$2"; fallback="$3"; limit="${4:-$HELPER_TIMEOUT}"
-  if [ ! -x "$BIN/$h" ]; then
-    printf '%s' "$fallback"
+  h="$1"; mode="$2"; missing_fallback="$3"; timeout_fallback="${4:-$3}"; empty_fallback="${5:-$3}"; limit="${6:-$HELPER_TIMEOUT}"
+  if [ ! -f "$BIN/$h" ]; then
+    printf '%s' "$missing_fallback"
     return 0
   fi
   tmp="$RUN/.selfcheck_${h}_${mode}_$$.out"
-  rm -f "$tmp" 2>/dev/null
-  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null ) &
+  done="$RUN/.selfcheck_${h}_${mode}_$$.done"
+  rm -f "$tmp" "$done" 2>/dev/null
+  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null; echo $? >"$done" ) &
   pid=$!
-  i=0
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$i" -ge "$limit" ]; then
-      kill "$pid" 2>/dev/null || true
-      sleep 1
-      kill -9 "$pid" 2>/dev/null || true
-      rm -f "$tmp" 2>/dev/null
-      printf '%s' "$fallback"
-      return 0
-    fi
-    sleep 1
-    i=$((i+1))
-  done
+  ( sleep "$limit" 2>/dev/null || sleep 8; [ -f "$done" ] || kill "$pid" 2>/dev/null; sleep 1; [ -f "$done" ] || kill -9 "$pid" 2>/dev/null ) &
+  watchdog=$!
   wait "$pid" 2>/dev/null
-  if [ -s "$tmp" ]; then cat "$tmp"; else printf '%s' "$fallback"; fi
-  rm -f "$tmp" 2>/dev/null
+  kill "$watchdog" 2>/dev/null || true
+  if [ -s "$tmp" ]; then
+    cat "$tmp"
+  elif [ -f "$done" ]; then
+    printf '%s' "$empty_fallback"
+  else
+    printf '%s' "$timeout_fallback"
+  fi
+  rm -f "$tmp" "$done" 2>/dev/null
 }
 
 helper_json() {
   h="$1"
-  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}"
+  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"timeout\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}"
 }
 
 status_of() {
@@ -89,13 +86,13 @@ str_key_of() {
 
 exists_exec() {
   f="$1"
-  [ -x "$BIN/$f" ]
+  [ -f "$BIN/$f" ] && [ -r "$BIN/$f" ]
 }
 
 # Required helpers for v5.2-rc1 gray safety and diagnostics.
 REQUIRED="stats_v52_rc1_switch.sh stats_v52_web_status.sh stats_v52_device_check.sh stats_v52_rc_control.sh stats_v52_rc_smoke.sh stats_v52_diag_bundle.sh stats_health_summary.sh stats_migration_readiness.sh stats_compare.sh stats_source_diag.sh stats_shadow_control.sh json_health_panel.sh json_diag_bundle.sh stats_v52_install_selfcheck.sh stats_v52_gray_report.sh stats_v52_review_bundle.sh"
 for h in $REQUIRED; do
-  exists_exec "$h" || add_issue fail "missing executable helper $h"
+  exists_exec "$h" || add_issue fail "missing helper $h"
 done
 
 # module.prop may live under MODDIR on installed devices, or under HNC_DIR in tests/source trees.
@@ -184,7 +181,7 @@ RECOMMENDATION="installation wiring looks safe; keep legacy default and monitor 
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable v5.2 RC; fix failed install/self-check items or run rollback"
 
 {
-  echo "HNC v5.2-rc1.11 install/first-boot self-check"
+  echo "HNC v5.2-rc1.12 install/first-boot self-check"
   echo "status=$STATUS"
   echo "install_ready=$INSTALL_READY"
   echo "first_boot_safe=$FIRST_BOOT_SAFE"

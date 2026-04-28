@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_gray_report.sh — v5.2-rc1.11 gray observation report exporter.
+# stats_v52_gray_report.sh — v5.2-rc1.12 gray observation report exporter.
 # Read-only: aggregates v5.2 stats gray-release signals for human review.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
 
@@ -24,41 +24,38 @@ json_escape() {
 }
 
 run_helper_timeout() {
-  h="$1"; mode="$2"; fallback="$3"; limit="${4:-$HELPER_TIMEOUT}"
-  if [ ! -x "$BIN/$h" ]; then
-    printf '%s' "$fallback"
+  h="$1"; mode="$2"; missing_fallback="$3"; timeout_fallback="${4:-$3}"; empty_fallback="${5:-$3}"; limit="${6:-$HELPER_TIMEOUT}"
+  if [ ! -f "$BIN/$h" ]; then
+    printf '%s' "$missing_fallback"
     return 0
   fi
   tmp="$RUN/.gray_${h}_${mode}_$$.out"
-  rm -f "$tmp" 2>/dev/null
-  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null ) &
+  done="$RUN/.gray_${h}_${mode}_$$.done"
+  rm -f "$tmp" "$done" 2>/dev/null
+  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null; echo $? >"$done" ) &
   pid=$!
-  i=0
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$i" -ge "$limit" ]; then
-      kill "$pid" 2>/dev/null || true
-      sleep 1
-      kill -9 "$pid" 2>/dev/null || true
-      rm -f "$tmp" 2>/dev/null
-      printf '%s' "$fallback"
-      return 0
-    fi
-    sleep 1
-    i=$((i+1))
-  done
+  ( sleep "$limit" 2>/dev/null || sleep 8; [ -f "$done" ] || kill "$pid" 2>/dev/null; sleep 1; [ -f "$done" ] || kill -9 "$pid" 2>/dev/null ) &
+  watchdog=$!
   wait "$pid" 2>/dev/null
-  if [ -s "$tmp" ]; then cat "$tmp"; else printf '%s' "$fallback"; fi
-  rm -f "$tmp" 2>/dev/null
+  kill "$watchdog" 2>/dev/null || true
+  if [ -s "$tmp" ]; then
+    cat "$tmp"
+  elif [ -f "$done" ]; then
+    printf '%s' "$empty_fallback"
+  else
+    printf '%s' "$timeout_fallback"
+  fi
+  rm -f "$tmp" "$done" 2>/dev/null
 }
 
 helper_json() {
   h="$1"
-  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}"
+  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"timeout\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}"
 }
 
 helper_text() {
   h="$1"
-  run_helper_timeout "$h" text "missing or timeout helper: $h\n"
+  run_helper_timeout "$h" text "missing helper: $h\n" "timeout helper: $h\n" "empty helper output: $h\n"
 }
 
 str_key_of() {
@@ -158,7 +155,7 @@ SAFE_ROLLBACK_EXPECTED=true
 [ "$FAILS" -eq 0 ] && REVIEW_READY=true
 [ "$FAILS" -eq 0 ] && [ "$SAFE_TO_ENABLE_RC" = true ] && [ "$RC_ENABLE_READY" = true ] && GRAY_READY=true
 
-RECOMMENDATION="v5.2-rc1.11 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
+RECOMMENDATION="v5.2-rc1.12 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
 [ "$OVERALL" = warn ] && RECOMMENDATION="keep legacy default; review warnings and continue gray observation before enabling or widening v5.2 stats"
 [ "$OVERALL" = fail ] && RECOMMENDATION="do not enable or widen v5.2 stats; keep legacy default and fix failed gray-check items or rollback"
 
@@ -172,7 +169,7 @@ SMOKE_TEXT="$(helper_text stats_v52_rc_smoke.sh | head -120)"
 RC1_TEXT="$(helper_text stats_v52_rc1_switch.sh | head -100)"
 
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.11 gray observation report
+HNC v5.2-rc1.12 gray observation report
 status=$OVERALL
 review_ready=$REVIEW_READY
 gray_ready=$GRAY_READY
@@ -210,7 +207,7 @@ paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.11 灰度观察报告
+# HNC v5.2-rc1.12 灰度观察报告
 
 ## 结论
 
@@ -306,7 +303,7 @@ cat > "$OUT_JSON" <<JSON
 JSON
 
 make_bundle() {
-  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.11-gray-$STAMP"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.12-gray-$STAMP"
   mkdir -p "$BUNDLE_DIR/cmd" 2>/dev/null || return 1
   cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
   cp -af "$OUT_MD" "$BUNDLE_DIR/report.md" 2>/dev/null
