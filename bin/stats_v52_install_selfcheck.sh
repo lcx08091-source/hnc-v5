@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_install_selfcheck.sh — v5.2-rc1.3 install/first-boot safety self-check.
+# stats_v52_install_selfcheck.sh — v5.2-rc1.11 install/first-boot safety self-check.
 # Read-only: verifies gray stats wiring, legacy-default preservation, rollback
 # availability, and diagnostic helper presence. It does not enable RC, does not
 # switch stats source, and does not touch tc/iptables/watchdog/network rules.
@@ -14,9 +14,12 @@ OUT_JSON="$RUN/stats_v52_install_selfcheck.json"
 OUT_TXT="$RUN/stats_v52_install_selfcheck.txt"
 TS="$(date +%s 2>/dev/null || echo 0)"
 MODE=${1:-text}
+HELPER_TIMEOUT=${HNC_HELPER_TIMEOUT:-8}
 mkdir -p "$RUN" 2>/dev/null
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' '; }
+json_escape() {
+  printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
 FAILS=0
 WARNS=0
@@ -31,13 +34,37 @@ add_issue() {
   if [ -n "$ISSUES" ]; then ISSUES="$ISSUES; $level:$msg"; else ISSUES="$level:$msg"; fi
 }
 
+run_helper_timeout() {
+  h="$1"; mode="$2"; fallback="$3"; limit="${4:-$HELPER_TIMEOUT}"
+  if [ ! -x "$BIN/$h" ]; then
+    printf '%s' "$fallback"
+    return 0
+  fi
+  tmp="$RUN/.selfcheck_${h}_${mode}_$$.out"
+  rm -f "$tmp" 2>/dev/null
+  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null ) &
+  pid=$!
+  i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge "$limit" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+      rm -f "$tmp" 2>/dev/null
+      printf '%s' "$fallback"
+      return 0
+    fi
+    sleep 1
+    i=$((i+1))
+  done
+  wait "$pid" 2>/dev/null
+  if [ -s "$tmp" ]; then cat "$tmp"; else printf '%s' "$fallback"; fi
+  rm -f "$tmp" 2>/dev/null
+}
+
 helper_json() {
   h="$1"
-  if [ -x "$BIN/$h" ]; then
-    sh "$BIN/$h" json 2>/dev/null
-  else
-    echo '{"ok":false,"status":"missing"}'
-  fi
+  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}"
 }
 
 status_of() {
@@ -66,7 +93,7 @@ exists_exec() {
 }
 
 # Required helpers for v5.2-rc1 gray safety and diagnostics.
-REQUIRED="stats_v52_rc1_switch.sh stats_v52_web_status.sh stats_v52_device_check.sh stats_v52_rc_control.sh stats_v52_rc_smoke.sh stats_v52_diag_bundle.sh stats_health_summary.sh stats_migration_readiness.sh stats_compare.sh stats_source_diag.sh stats_shadow_control.sh json_health_panel.sh json_diag_bundle.sh"
+REQUIRED="stats_v52_rc1_switch.sh stats_v52_web_status.sh stats_v52_device_check.sh stats_v52_rc_control.sh stats_v52_rc_smoke.sh stats_v52_diag_bundle.sh stats_health_summary.sh stats_migration_readiness.sh stats_compare.sh stats_source_diag.sh stats_shadow_control.sh json_health_panel.sh json_diag_bundle.sh stats_v52_install_selfcheck.sh stats_v52_gray_report.sh stats_v52_review_bundle.sh"
 for h in $REQUIRED; do
   exists_exec "$h" || add_issue fail "missing executable helper $h"
 done
@@ -80,7 +107,10 @@ VERSION_CODE="unknown"
 if [ -n "$MODULE_PROP" ]; then
   VERSION="$(awk -F= '$1=="version"{print $2; exit}' "$MODULE_PROP" 2>/dev/null)"
   VERSION_CODE="$(awk -F= '$1=="versionCode"{print $2; exit}' "$MODULE_PROP" 2>/dev/null)"
-  case "$VERSION" in v5.2.0-rc1.3) : ;; v5.2.0-rc1*) add_issue warn "module version is $VERSION, expected rc1.3 after applying this patch" ;; *) add_issue warn "module version is $VERSION, expected v5.2.0-rc1.3" ;; esac
+  case "$VERSION" in
+    v5.2.0-rc1.*|v5.2.0-rc1) : ;;
+    *) add_issue warn "module version is $VERSION, expected v5.2.0-rc1.x" ;;
+  esac
 else
   add_issue warn "module.prop not found under MODDIR or HNC_DIR"
 fi
@@ -126,8 +156,7 @@ case "$RC1_STATUS" in blocked|drift|fail) add_issue fail "rc1 switch status is $
 case "$WEB_SEVERITY" in fail) add_issue fail "web status severity is fail" ;; warn) add_issue warn "web status severity is warn" ;; unknown) add_issue warn "web status severity is unknown" ;; esac
 case "$DEVICE_STATUS" in fail|blocked) add_issue fail "device check status is $DEVICE_STATUS" ;; warn|not_ready|warmup) add_issue warn "device check status is $DEVICE_STATUS" ;; missing|unknown) add_issue warn "device check status is $DEVICE_STATUS" ;; esac
 
-# v5.2-rc1.x must preserve legacy as the default stats source. Shadow/RC can be
-# enabled only as a gray observer unless a later release explicitly changes this.
+# v5.2-rc1.x must preserve legacy as the default stats source.
 if [ "$DEFAULT_SOURCE" != legacy ]; then
   add_issue fail "default stats source is $DEFAULT_SOURCE, expected legacy"
 fi
@@ -135,7 +164,6 @@ if [ "$LEGACY_DEFAULT_PRESERVED" != true ]; then
   add_issue fail "legacy_default_preserved is false"
 fi
 
-# A user-controlled WebUI source override to shadow is not fatal, but it should be visible.
 if [ -f "$RUN/stats_webui_source" ]; then
   SRC_OVERRIDE="$(cat "$RUN/stats_webui_source" 2>/dev/null)"
   case "$SRC_OVERRIDE" in shadow) add_issue warn "stats_webui_source override is shadow" ;; esac
@@ -156,7 +184,7 @@ RECOMMENDATION="installation wiring looks safe; keep legacy default and monitor 
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable v5.2 RC; fix failed install/self-check items or run rollback"
 
 {
-  echo "HNC v5.2-rc1.3 install/first-boot self-check"
+  echo "HNC v5.2-rc1.11 install/first-boot self-check"
   echo "status=$STATUS"
   echo "install_ready=$INSTALL_READY"
   echo "first_boot_safe=$FIRST_BOOT_SAFE"

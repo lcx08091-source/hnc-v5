@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_gray_report.sh — v5.2-rc1.3 gray observation report exporter.
+# stats_v52_gray_report.sh — v5.2-rc1.11 gray observation report exporter.
 # Read-only: aggregates v5.2 stats gray-release signals for human review.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
 
@@ -16,31 +16,49 @@ STAMP="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
 OUT_JSON="$RUN/stats_v52_gray_report.json"
 OUT_TXT="$RUN/stats_v52_gray_report.txt"
 OUT_MD="$RUN/stats_v52_gray_report.md"
+HELPER_TIMEOUT=${HNC_HELPER_TIMEOUT:-8}
 mkdir -p "$RUN" 2>/dev/null
 
 json_escape() {
-  # Android-compatible JSON string escape for one-line diagnostic fields.
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' '
+  printf '%s' "$1" | tr '\r\n\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-trim_one_line() { printf '%s' "$1" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//'; }
+run_helper_timeout() {
+  h="$1"; mode="$2"; fallback="$3"; limit="${4:-$HELPER_TIMEOUT}"
+  if [ ! -x "$BIN/$h" ]; then
+    printf '%s' "$fallback"
+    return 0
+  fi
+  tmp="$RUN/.gray_${h}_${mode}_$$.out"
+  rm -f "$tmp" 2>/dev/null
+  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null ) &
+  pid=$!
+  i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge "$limit" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+      rm -f "$tmp" 2>/dev/null
+      printf '%s' "$fallback"
+      return 0
+    fi
+    sleep 1
+    i=$((i+1))
+  done
+  wait "$pid" 2>/dev/null
+  if [ -s "$tmp" ]; then cat "$tmp"; else printf '%s' "$fallback"; fi
+  rm -f "$tmp" 2>/dev/null
+}
 
 helper_json() {
   h="$1"
-  if [ -x "$BIN/$h" ]; then
-    sh "$BIN/$h" json 2>/dev/null
-  else
-    printf '{"ok":false,"status":"missing","helper":"%s"}' "$h"
-  fi
+  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}"
 }
 
 helper_text() {
   h="$1"
-  if [ -x "$BIN/$h" ]; then
-    sh "$BIN/$h" text 2>/dev/null
-  else
-    printf 'missing helper: %s\n' "$h"
-  fi
+  run_helper_timeout "$h" text "missing or timeout helper: $h\n"
 }
 
 str_key_of() {
@@ -122,7 +140,7 @@ OBSERVATIONS=""
 case "$SELF_STATUS" in pass) mark_level pass "install selfcheck pass" ;; warn) mark_level warn "install selfcheck warn" ;; fail|blocked|missing|unknown) mark_level fail "install selfcheck $SELF_STATUS" ;; *) mark_level warn "install selfcheck $SELF_STATUS" ;; esac
 case "$WEB_SEVERITY" in ok|pass) mark_level pass "web status severity $WEB_SEVERITY" ;; warn) mark_level warn "web status severity warn" ;; fail) mark_level fail "web status severity fail" ;; *) mark_level warn "web status severity $WEB_SEVERITY" ;; esac
 case "$DEVICE_STATUS" in pass|ready) mark_level pass "device check $DEVICE_STATUS" ;; warn|warmup|not_ready|disabled) mark_level warn "device check $DEVICE_STATUS" ;; fail|blocked|missing|unknown) mark_level fail "device check $DEVICE_STATUS" ;; *) mark_level warn "device check $DEVICE_STATUS" ;; esac
-case "$COMPARE_STATUS" in pass|ok|ready) mark_level pass "stats compare $COMPARE_STATUS" ;; warn|drift|disabled|warmup|not_ready) mark_level warn "stats compare $COMPARE_STATUS" ;; fail|blocked|missing|unknown) mark_level warn "stats compare $COMPARE_STATUS" ;; *) mark_level warn "stats compare $COMPARE_STATUS" ;; esac
+case "$COMPARE_STATUS" in pass|ok|ready) mark_level pass "stats compare $COMPARE_STATUS" ;; warn|drift|disabled|warmup|not_ready|unknown) mark_level warn "stats compare $COMPARE_STATUS" ;; fail|blocked|missing) mark_level warn "stats compare $COMPARE_STATUS" ;; *) mark_level warn "stats compare $COMPARE_STATUS" ;; esac
 case "$READINESS_STATUS" in ready|pass|ok) mark_level pass "readiness $READINESS_STATUS" ;; not_ready|warmup|disabled) mark_level warn "readiness $READINESS_STATUS" ;; blocked|fail|missing|unknown) mark_level fail "readiness $READINESS_STATUS" ;; *) mark_level warn "readiness $READINESS_STATUS" ;; esac
 case "$SMOKE_STATUS" in pass|ok) mark_level pass "smoke $SMOKE_STATUS" ;; disabled|warn|warmup) mark_level warn "smoke $SMOKE_STATUS" ;; fail|blocked|missing|unknown) mark_level fail "smoke $SMOKE_STATUS" ;; *) mark_level warn "smoke $SMOKE_STATUS" ;; esac
 case "$RC1_STATUS" in pass|ok|disabled|ready) mark_level pass "rc1 switch $RC1_STATUS" ;; warn|not_ready|warmup) mark_level warn "rc1 switch $RC1_STATUS" ;; blocked|drift|fail|missing|unknown) mark_level fail "rc1 switch $RC1_STATUS" ;; *) mark_level warn "rc1 switch $RC1_STATUS" ;; esac
@@ -140,11 +158,11 @@ SAFE_ROLLBACK_EXPECTED=true
 [ "$FAILS" -eq 0 ] && REVIEW_READY=true
 [ "$FAILS" -eq 0 ] && [ "$SAFE_TO_ENABLE_RC" = true ] && [ "$RC_ENABLE_READY" = true ] && GRAY_READY=true
 
-RECOMMENDATION="v5.2-rc1.3 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
+RECOMMENDATION="v5.2-rc1.11 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
 [ "$OVERALL" = warn ] && RECOMMENDATION="keep legacy default; review warnings and continue gray observation before enabling or widening v5.2 stats"
 [ "$OVERALL" = fail ] && RECOMMENDATION="do not enable or widen v5.2 stats; keep legacy default and fix failed gray-check items or rollback"
 
-# Store helper text snapshots for easier human review. These are read-only helper calls.
+# Store helper text snapshots for easier human review. These are read-only helper calls with hard timeout.
 SELF_TEXT="$(helper_text stats_v52_install_selfcheck.sh | head -80)"
 WEB_TEXT="$(helper_text stats_v52_web_status.sh | head -80)"
 DEVICE_TEXT="$(helper_text stats_v52_device_check.sh | head -120)"
@@ -154,7 +172,7 @@ SMOKE_TEXT="$(helper_text stats_v52_rc_smoke.sh | head -120)"
 RC1_TEXT="$(helper_text stats_v52_rc1_switch.sh | head -100)"
 
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.3 gray observation report
+HNC v5.2-rc1.11 gray observation report
 status=$OVERALL
 review_ready=$REVIEW_READY
 gray_ready=$GRAY_READY
@@ -192,7 +210,7 @@ paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.3 灰度观察报告
+# HNC v5.2-rc1.11 灰度观察报告
 
 ## 结论
 
@@ -284,22 +302,23 @@ $RC1_TEXT
 MD
 
 cat > "$OUT_JSON" <<JSON
-{"ok":true,"timestamp":$TS,"status":"$(json_escape "$OVERALL")","review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","module_prop":"$(json_escape "$MODULE_PROP")","default_source":"$(json_escape "$DEFAULT_SOURCE")","legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"rc1_enabled":$RC1_ENABLED,"rc_enabled":$RC_ENABLED,"install_ready":$INSTALL_READY,"first_boot_safe":$FIRST_BOOT_SAFE,"safe_to_enable_rc":$SAFE_TO_ENABLE_RC,"rc_enable_ready":$RC_ENABLE_READY,"safe_rollback_expected":$SAFE_ROLLBACK_EXPECTED,"statuses":{"selfcheck":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check":"$(json_escape "$DEVICE_STATUS")","compare":"$(json_escape "$COMPARE_STATUS")","readiness":"$(json_escape "$READINESS_STATUS")","smoke":"$(json_escape "$SMOKE_STATUS")","rc1_switch":"$(json_escape "$RC1_STATUS")","rc_control":"$(json_escape "$RC_CONTROL_STATUS")","source":"$(json_escape "$SOURCE_STATUS")","shadow":"$(json_escape "$SHADOW_STATUS")","health":"$(json_escape "$HEALTH_STATUS")"},"failures":$FAILS,"warnings":$WARNS,"passes":$PASSES,"observations":"$(json_escape "$OBSERVATIONS")","recommendation":"$(json_escape "$RECOMMENDATION")","paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
+{"ok":true,"status":"$(json_escape "$OVERALL")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"rc_enabled":$RC_ENABLED,"install_ready":$INSTALL_READY,"first_boot_safe":$FIRST_BOOT_SAFE,"safe_to_enable_rc":$SAFE_TO_ENABLE_RC,"rc_enable_ready":$RC_ENABLE_READY,"failures":$FAILS,"warnings":$WARNS,"passes":$PASSES,"signals":{"selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","rc_control_status":"$(json_escape "$RC_CONTROL_STATUS")","source_status":"$(json_escape "$SOURCE_STATUS")","shadow_status":"$(json_escape "$SHADOW_STATUS")","health_status":"$(json_escape "$HEALTH_STATUS")"},"observations":"$(json_escape "$OBSERVATIONS")","recommendation":"$(json_escape "$RECOMMENDATION")","paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
 JSON
 
 make_bundle() {
-  OUT_DIR="$OUT_BASE/hnc-v52-gray-report-$STAMP"
-  mkdir -p "$OUT_DIR" 2>/dev/null || return 1
-  cp -af "$OUT_JSON" "$OUT_TXT" "$OUT_MD" "$OUT_DIR/" 2>/dev/null
-  for f in stats_v52_install_selfcheck stats_v52_web_status stats_v52_device_check stats_compare stats_migration_readiness stats_v52_rc_smoke stats_v52_rc1_switch stats_v52_rc_control stats_source_diag stats_shadow_diag stats_health_summary; do
-    [ -f "$RUN/$f.json" ] && cp -af "$RUN/$f.json" "$OUT_DIR/" 2>/dev/null
-    [ -f "$RUN/$f.txt" ] && cp -af "$RUN/$f.txt" "$OUT_DIR/" 2>/dev/null
-  done
-  if command -v tar >/dev/null 2>&1; then
-    (cd "$OUT_BASE" 2>/dev/null && tar -czf "hnc-v52-gray-report-$STAMP.tar.gz" "hnc-v52-gray-report-$STAMP" 2>/dev/null)
-    [ -f "$OUT_BASE/hnc-v52-gray-report-$STAMP.tar.gz" ] && echo "$OUT_BASE/hnc-v52-gray-report-$STAMP.tar.gz" > "$RUN/stats_v52_gray_report_bundle.path"
-  fi
-  echo "$OUT_DIR"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.11-gray-$STAMP"
+  mkdir -p "$BUNDLE_DIR/cmd" 2>/dev/null || return 1
+  cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
+  cp -af "$OUT_MD" "$BUNDLE_DIR/report.md" 2>/dev/null
+  cp -af "$OUT_JSON" "$BUNDLE_DIR/report.json" 2>/dev/null
+  helper_json stats_v52_install_selfcheck.sh > "$BUNDLE_DIR/cmd/stats_v52_install_selfcheck.json" 2>/dev/null
+  helper_json stats_v52_web_status.sh > "$BUNDLE_DIR/cmd/stats_v52_web_status.json" 2>/dev/null
+  helper_json stats_v52_device_check.sh > "$BUNDLE_DIR/cmd/stats_v52_device_check.json" 2>/dev/null
+  helper_json stats_compare.sh > "$BUNDLE_DIR/cmd/stats_compare.json" 2>/dev/null
+  helper_json stats_migration_readiness.sh > "$BUNDLE_DIR/cmd/stats_migration_readiness.json" 2>/dev/null
+  helper_json stats_v52_rc_smoke.sh > "$BUNDLE_DIR/cmd/stats_v52_rc_smoke.json" 2>/dev/null
+  helper_json stats_v52_rc1_switch.sh > "$BUNDLE_DIR/cmd/stats_v52_rc1_switch.json" 2>/dev/null
+  echo "$BUNDLE_DIR"
 }
 
 case "$MODE" in
