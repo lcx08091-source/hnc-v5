@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_install_selfcheck.sh — v5.2-rc1.2 install/first-boot safety self-check.
+# stats_v52_install_selfcheck.sh — v5.2-rc1.3 install/first-boot safety self-check.
 # Read-only: verifies gray stats wiring, legacy-default preservation, rollback
 # availability, and diagnostic helper presence. It does not enable RC, does not
 # switch stats source, and does not touch tc/iptables/watchdog/network rules.
@@ -16,7 +16,7 @@ TS="$(date +%s 2>/dev/null || echo 0)"
 MODE=${1:-text}
 mkdir -p "$RUN" 2>/dev/null
 
-json_escape() { printf '%s' "$1"; }
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' '; }
 
 FAILS=0
 WARNS=0
@@ -80,7 +80,7 @@ VERSION_CODE="unknown"
 if [ -n "$MODULE_PROP" ]; then
   VERSION="$(awk -F= '$1=="version"{print $2; exit}' "$MODULE_PROP" 2>/dev/null)"
   VERSION_CODE="$(awk -F= '$1=="versionCode"{print $2; exit}' "$MODULE_PROP" 2>/dev/null)"
-  case "$VERSION" in v5.2.0-rc1.2) : ;; v5.2.0-rc1*) add_issue warn "module version is $VERSION, expected rc1.2 after applying this patch" ;; *) add_issue warn "module version is $VERSION, expected v5.2.0-rc1.2" ;; esac
+  case "$VERSION" in v5.2.0-rc1.3) : ;; v5.2.0-rc1*) add_issue warn "module version is $VERSION, expected rc1.3 after applying this patch" ;; *) add_issue warn "module version is $VERSION, expected v5.2.0-rc1.3" ;; esac
 else
   add_issue warn "module.prop not found under MODDIR or HNC_DIR"
 fi
@@ -156,7 +156,7 @@ RECOMMENDATION="installation wiring looks safe; keep legacy default and monitor 
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable v5.2 RC; fix failed install/self-check items or run rollback"
 
 {
-  echo "HNC v5.2-rc1.2 install/first-boot self-check"
+  echo "HNC v5.2-rc1.3 install/first-boot self-check"
   echo "status=$STATUS"
   echo "install_ready=$INSTALL_READY"
   echo "first_boot_safe=$FIRST_BOOT_SAFE"

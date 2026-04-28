@@ -224,6 +224,17 @@ if [ -x "$BIN/stats_v52_install_selfcheck.sh" ]; then
   esac
 fi
 
+STATS_V52_GRAY_REPORT_RAW=""
+STATS_V52_GRAY_REPORT_PRESENT=false
+if [ -x "$BIN/stats_v52_gray_report.sh" ]; then
+  STATS_V52_GRAY_REPORT_PRESENT=true
+  STATS_V52_GRAY_REPORT_RAW="$(sh "$BIN/stats_v52_gray_report.sh" json 2>/dev/null)"
+  case "$STATS_V52_GRAY_REPORT_RAW" in
+    *"status":"fail"*) OVERALL="fail" ;;
+    *"status":"warn"*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
 
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
@@ -292,6 +303,8 @@ cat <<JSON
     "v52_web_status_raw": "$(json_escape "$STATS_V52_WEB_STATUS_RAW")",
     "has_v52_install_selfcheck_helper": $STATS_V52_INSTALL_SELFCHECK_PRESENT,
     "v52_install_selfcheck_raw": "$(json_escape "$STATS_V52_INSTALL_SELFCHECK_RAW")"
+    ,"has_v52_gray_report_helper": $STATS_V52_GRAY_REPORT_PRESENT,
+    "v52_gray_report_raw": "$(json_escape "$STATS_V52_GRAY_REPORT_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",

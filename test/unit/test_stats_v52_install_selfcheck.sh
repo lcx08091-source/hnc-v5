@@ -13,8 +13,8 @@ chmod 755 "$TMPDIR/bin/stats_v52_install_selfcheck.sh"
 cat > "$TMPDIR/module.prop" <<'EOS'
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.2.0-rc1.2
-versionCode=520012
+version=v5.2.0-rc1.3
+versionCode=520013
 EOS
 cat > "$TMPDIR/webroot/json-health.html" <<'EOS'
 <div>v5.2 RC / 灰度状态</div>

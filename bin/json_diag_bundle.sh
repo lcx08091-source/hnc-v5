@@ -144,6 +144,11 @@ if [ -x "$BIN/stats_v52_install_selfcheck.sh" ]; then
   run_cmd stats_v52_install_selfcheck_json sh "$BIN/stats_v52_install_selfcheck.sh" json
   run_cmd stats_v52_install_selfcheck_text sh "$BIN/stats_v52_install_selfcheck.sh" text
 fi
+if [ -x "$BIN/stats_v52_gray_report.sh" ]; then
+  run_cmd stats_v52_gray_report_json sh "$BIN/stats_v52_gray_report.sh" json
+  run_cmd stats_v52_gray_report_text sh "$BIN/stats_v52_gray_report.sh" text
+  run_cmd stats_v52_gray_report_markdown sh "$BIN/stats_v52_gray_report.sh" markdown
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -173,6 +178,10 @@ copy_if_exists "$RUN/stats_v52_device_check.json" "$OUT/run/stats_v52_device_che
 copy_if_exists "$RUN/stats_v52_device_check.txt" "$OUT/run/stats_v52_device_check.txt"
 copy_if_exists "$RUN/stats_v52_install_selfcheck.json" "$OUT/run/stats_v52_install_selfcheck.json"
 copy_if_exists "$RUN/stats_v52_install_selfcheck.txt" "$OUT/run/stats_v52_install_selfcheck.txt"
+copy_if_exists "$RUN/stats_v52_gray_report.json" "$OUT/run/stats_v52_gray_report.json"
+copy_if_exists "$RUN/stats_v52_gray_report.txt" "$OUT/run/stats_v52_gray_report.txt"
+copy_if_exists "$RUN/stats_v52_gray_report.md" "$OUT/run/stats_v52_gray_report.md"
+copy_if_exists "$RUN/stats_v52_gray_report_bundle.path" "$OUT/run/stats_v52_gray_report_bundle.path"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
