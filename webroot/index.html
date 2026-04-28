@@ -673,6 +673,57 @@ body.ptr-tracking .container { transition: none; }
   line-height: 1.5;
 }
 
+/* v5.2-rc1.7 · WebUI bridge/boot status card
+   用于 KSU/SukiSU bridge 不回调或 httpd 暂不可达时给出常驻可见状态，避免看起来像白屏。 */
+.bridge-status-card {
+  margin: 12px 0 12px;
+  padding: 14px 14px;
+  border-radius: 22px;
+  border: 1px solid var(--stroke-strong);
+  background: var(--glass-bg-3);
+  box-shadow: var(--glass-shadow-1);
+  display: none;
+  gap: 10px;
+  align-items: flex-start;
+  animation: fadeUp var(--dur-slow) var(--ease-spring) both;
+}
+.bridge-status-card.show { display: flex; }
+.bridge-status-icon {
+  width: 34px; height: 34px;
+  flex: 0 0 34px;
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,149,0,.13);
+  color: var(--sys-orange);
+  font-size: 18px;
+}
+.bridge-status-card.err .bridge-status-icon {
+  background: rgba(255,59,48,.12);
+  color: var(--sys-red);
+}
+.bridge-status-body { min-width: 0; flex: 1; }
+.bridge-status-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+  margin-bottom: 3px;
+}
+.bridge-status-msg {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+.bridge-status-actions { margin-top: 9px; display: flex; gap: 8px; flex-wrap: wrap; }
+.bridge-status-actions button {
+  border: 1px solid var(--stroke);
+  background: var(--glass-bg-2);
+  color: var(--text-1);
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    PULL TO REFRESH · transform-based 真·下拉刷新
    ═══════════════════════════════════════════════════════════════════ */
@@ -2861,6 +2912,32 @@ body.kb-open .container {
     }).catch(e => { dbg('kexec JSON err: ' + e.message); return fallback || {}; });
   }
 
+  /* rc1.7 · JS 层硬超时封装
+   * KSU/SukiSU bridge 的 window.ksu.exec() 在部分环境可能不回调，
+   * 导致 kexec() Promise 永远 pending。curl --max-time 只能限制 curl 进程本身，
+   * 无法限制 bridge 层回调的到达。因此所有首屏关键请求需要在 JS 层另加超时。 */
+  function withTimeout(promise, ms, label) {
+    return new Promise(function(resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function() {
+        if (done) return;
+        done = true;
+        reject(new Error((label || 'request') + ' JS timeout ' + ms + 'ms'));
+      }, ms);
+      Promise.resolve(promise).then(function(v) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(v);
+      }, function(e) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
+  }
+
   /* ═══════════════════════════════════════════════════════════════
      v5.1 API BRIDGE · 通过 window.ksu.exec curl 调本地 Go httpd loopback
      ═══════════════════════════════════════════════════════════════
@@ -2888,7 +2965,7 @@ body.kb-open .container {
     // 响应体走 stdout, HTTP status 通过 exit code 反映
     const url = API_BASE + p;
     const cmd = "curl -sS --connect-timeout 1 --max-time 6 -H " + sq('Cache-Control: no-cache') + " " + sq(url);
-    const raw = await kexec(cmd);
+    const raw = await withTimeout(kexec(cmd), 8000, 'GET ' + p);
     if (!raw) return {};
     let obj;
     try { obj = JSON.parse(raw); }
@@ -2901,6 +2978,14 @@ body.kb-open .container {
       throw err;
     }
     return obj;
+  }
+
+  function apiGetSafe(path, params, fallback, timeoutMs) {
+    return withTimeout(apiGet(path, params), timeoutMs || 8000, 'GET ' + path)
+      .catch(function(e) {
+        try { dbg('apiGetSafe ' + path + ' failed: ' + (e && e.message || e), true); } catch (_) {}
+        return fallback;
+      });
   }
 
   const __apiActionInFlight = new Set();
@@ -2936,7 +3021,7 @@ body.kb-open .container {
                   "-H " + sq('X-HNC-CSRF: 1') + " " +
                   "--data " + sq(json) + " " +
                   sq(API_BASE + '/api/action');
-      const raw = await kexec(cmd);
+      const raw = await withTimeout(kexec(cmd), 9000, 'ACTION ' + action);
       let obj;
       try { obj = JSON.parse(raw || '{}'); }
       catch (e) { throw new Error('invalid JSON response: ' + String(raw).slice(0, 80)); }
@@ -4284,6 +4369,19 @@ body.kb-open .container {
      ═══════════════════════════════════════════════════════════════ */
   /* 24 小时柱状图 · v5 走 GET /api/stats?range=today
    * Go 已经做完聚合, 返回 buckets: [{label: "HH", rx, tx}, ...] */
+  function renderBarsPlaceholder(text) {
+    const bars = $('#bars');
+    const axis = $('#bar-axis');
+    if (!bars || !axis) return;
+    bars.innerHTML = `<div style="
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-3); font-size: 12px;
+      padding: 40px 0;
+    ">${esc(text || '等待后端连接 · 统计图稍后刷新')}</div>`;
+    axis.innerHTML = '';
+  }
+
   async function renderBars() {
     const bars = $('#bars');
     const axis = $('#bar-axis');
@@ -5268,6 +5366,22 @@ body.kb-open .container {
 
   document.addEventListener('click', (e) => {
 
+    /* v5.2-rc1.7 · bridge retry: 只重试 health + 强制刷新，不切换任何配置 */
+    if (e.target.closest('[data-action="bridge-retry"]')) {
+      e.preventDefault();
+      showBridgeStatus('warn', '正在重试连接后端', '正在重新请求 /api/health；若 bridge 不回调，约 8 秒后会返回超时。');
+      apiGet('/api/health').then(function(){
+        hideBridgeStatus();
+        toast('后端已连接，正在刷新设备', 'ok');
+        return requestForceRefresh();
+      }).catch(function(err){
+        dbg('bridge retry failed: ' + (err && err.message || err), true);
+        showBridgeStatus('err', '后端连接仍失败', '重试失败：' + ((err && err.message) || err || 'unknown') + '。建议查看日志或重启 hnc_httpd/模块。');
+        toast('后端仍不可达', 'err');
+      });
+      return;
+    }
+
     /* Modal OK/Cancel */
     if (e.target.closest('[data-action="modal-ok"]')) {
       if (typeof window.__modalOk === 'function') window.__modalOk();
@@ -5863,13 +5977,15 @@ body.kb-open .container {
 
   /* ═══════════════════════════════════════════════════════════════
      INIT · v5.1 通过 KSU WebUI curl 桥接到本地 Go httpd
-     v5.2-rc1.6: init 改回当前 script 内直接启动，避免 setTimeout(0) 在部分 WebView 上不调度导致白屏
+     v5.2-rc1.7: init 改回当前 script 内直接启动，避免 setTimeout(0) 在部分 WebView 上不调度导致白屏
      WebView 仍保留静态空壳，但不再把 init 推迟到 timer task
      ═══════════════════════════════════════════════════════════════ */
-  /* v5.2-rc1.6 · WebUI booting 状态兜底
+  /* v5.2-rc1.7 · WebUI booting 状态兜底
    * 所有 init 成功/失败/提前 return 路径都必须最终移除 booting。
    * rc1.6 关键修复：finishBootVisual() 不再依赖双 requestAnimationFrame；
-   * booting class 立即移除，避免部分 ColorOS/WebView rAF/timer 调度异常时一直白屏。 */
+   * booting class 立即移除，避免部分 ColorOS/WebView rAF/timer 调度异常时一直白屏。
+   * rc1.7 关键修复：首屏骨架渲染前置到 /api/health 之前；
+   * health check 加 JS 层 withTimeout 硬超时，防止 bridge 不回调导致永久 pending。 */
   let __hncBootFinished = false;
   function finishBootVisual() {
     if (__hncBootFinished) return;
@@ -5877,6 +5993,57 @@ body.kb-open .container {
     try { document.documentElement.classList.remove('booting'); } catch (_) {}
     try { document.documentElement.setAttribute('data-boot-finished', '1'); } catch (_) {}
   }
+  function showBridgeStatus(kind, title, message) {
+    try {
+      const root = document.querySelector('#page-devices .container');
+      if (!root) return;
+      let card = document.getElementById('bridge-status-card');
+      if (!card) {
+        card = document.createElement('div');
+        card.id = 'bridge-status-card';
+        card.className = 'bridge-status-card';
+        card.innerHTML = '<div class="bridge-status-icon">!</div>' +
+          '<div class="bridge-status-body"><div class="bridge-status-title"></div>' +
+          '<div class="bridge-status-msg"></div>' +
+          '<div class="bridge-status-actions"><button type="button" data-action="bridge-retry">重试连接</button>' +
+          '<button type="button" data-action="manual-refresh">刷新设备</button></div></div>';
+        const line = document.getElementById('freshness-line');
+        if (line && line.parentNode) line.parentNode.insertBefore(card, line.nextSibling);
+        else root.insertBefore(card, root.firstChild);
+      }
+      card.className = 'bridge-status-card show ' + (kind === 'err' ? 'err' : 'warn');
+      const t = card.querySelector('.bridge-status-title');
+      const m = card.querySelector('.bridge-status-msg');
+      if (t) t.textContent = title || '正在连接后端';
+      if (m) m.textContent = message || 'WebUI 正在等待 KernelSU/SukiSU bridge 回调。';
+      const fl = document.getElementById('freshness-line');
+      if (fl) { fl.textContent = title || '正在连接后端'; fl.classList.add(kind === 'err' ? 'err' : 'stale'); }
+    } catch (_) {}
+  }
+  function hideBridgeStatus() {
+    try {
+      const card = document.getElementById('bridge-status-card');
+      if (card) card.classList.remove('show');
+    } catch (_) {}
+  }
+  function waitForFirstPaintBeforeBridge() {
+    return new Promise(function(resolve) {
+      var done = false;
+      function once(source) {
+        if (done) return;
+        done = true;
+        try { window.__hnc_bridge_yield = source || 'unknown'; } catch (_) {}
+        resolve(source || 'unknown');
+      }
+      try {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(function(){ once('raf'); });
+        }
+      } catch (_) {}
+      try { setTimeout(function(){ once('timer160'); }, 160); } catch (_) {}
+    });
+  }
+
   setTimeout(() => {
     try {
       if (document.documentElement.classList.contains('booting')) {
@@ -5903,24 +6070,40 @@ body.kb-open .container {
       finishBootVisual();
       return;
     }
-    // P1-4 修: health 失败时 return, 不继续跑后续 init, 不假报 "系统就绪"
-    try { await apiGet('/api/health'); }
-    catch (e) {
-      dbg('init: httpd unreachable: ' + e.message);
-      toast('Go httpd 不可达 · 检查模块是否启用, 或重启设备。' + e.message, 'err');
-      // 渲染空态让用户看到结构, 避免白屏
-      renderDeviceList();
-      renderBars();
-      finishBootVisual();
-      return;
+
+    // rc1.7 · 首屏骨架前置 — 在 /api/health 之前立即渲染
+    // 根因: window.ksu.exec() 在 SukiSU/ColorOS 部分环境可能不回调，
+    // kexec() Promise 永远 pending，导致 await apiGet('/api/health') 卡死，
+    // renderDeviceList/renderBars/finishBootVisual 全部跳过 → 白屏。
+    // 修复: 先渲染空骨架 + 移除 booting，再异步做 health check。
+    // 即使 bridge 完全卡死，用户也能看到完整 UI 骨架和导航栏。
+    initStatsSourceSelect();
+    loadTemplatesFromStorage();
+    renderDeviceList();   // 空骨架，先让用户看到结构
+    renderBarsPlaceholder('等待后端连接 · 统计图稍后刷新');
+    showBridgeStatus('warn', '正在连接 HNC 后端', '首屏已经完成渲染；正在等待 KernelSU/SukiSU bridge 调用本地 httpd。若长时间无响应，可点“重试连接”。');
+    finishBootVisual();   // 立即移除 booting，不等 health
+    __t.skeleton = performance.now();
+
+    // rc1.7 final · 先让 WebView 有机会 paint，再进行首次 bridge 调用。
+    // 若 window.ksu.exec 在当前 WebView 内同步阻塞，至少不会挡住首屏骨架和状态卡显示。
+    await waitForFirstPaintBeforeBridge();
+    __t.bridge_yield = performance.now();
+
+    let __healthOk = false;
+    try {
+      await apiGet('/api/health');
+      __healthOk = true;
+      hideBridgeStatus();
+    } catch (e) {
+      dbg('init: health failed/timeout: ' + e.message, true);
+      showBridgeStatus('err', '后端连接失败或 bridge 超时', 'WebUI 已保持可操作。可能是 hnc_httpd 未就绪，或 KSU/SukiSU bridge 没有回调。可稍等后点“重试连接”，或重启模块/手机。');
+      toast('Go httpd 不可达或超时 · 可进入日志/设置诊断', 'err');
     }
     __t.health = performance.now();
 
-    // 1. 加载模板 + 初次渲染
-    initStatsSourceSelect();
-    loadTemplatesFromStorage();
-    renderDeviceList();   // 先空列表(带空态), 避免白屏
-    renderBars();
+    // health 不通时跳过数据拉取，保留骨架供用户导航
+    if (!__healthOk) return;
 
     requestAnimationFrame(() => {
       const active = $('.nav-item.active');
