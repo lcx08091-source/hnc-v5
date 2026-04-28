@@ -203,6 +203,28 @@ if [ -x "$BIN/stats_v52_rc1_switch.sh" ]; then
   esac
 fi
 
+STATS_V52_WEB_STATUS_RAW=""
+STATS_V52_WEB_STATUS_PRESENT=false
+if [ -x "$BIN/stats_v52_web_status.sh" ]; then
+  STATS_V52_WEB_STATUS_PRESENT=true
+  STATS_V52_WEB_STATUS_RAW="$(sh "$BIN/stats_v52_web_status.sh" json 2>/dev/null)"
+  case "$STATS_V52_WEB_STATUS_RAW" in
+    *"severity":"fail"*) OVERALL="fail" ;;
+    *"severity":"warn"*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+STATS_V52_INSTALL_SELFCHECK_RAW=""
+STATS_V52_INSTALL_SELFCHECK_PRESENT=false
+if [ -x "$BIN/stats_v52_install_selfcheck.sh" ]; then
+  STATS_V52_INSTALL_SELFCHECK_PRESENT=true
+  STATS_V52_INSTALL_SELFCHECK_RAW="$(sh "$BIN/stats_v52_install_selfcheck.sh" json 2>/dev/null)"
+  case "$STATS_V52_INSTALL_SELFCHECK_RAW" in
+    *"status":"fail"*) OVERALL="fail" ;;
+    *"status":"warn"*) [ "$OVERALL" = ok ] && OVERALL="warn" ;;
+  esac
+fi
+
+
 # Refresh json_health files if doctor exists, but status is read-only.
 [ -x "$BIN/json_doctor.sh" ] && sh "$BIN/json_doctor.sh" status >/dev/null 2>&1
 
@@ -265,7 +287,11 @@ cat <<JSON
     "has_v52_device_check_helper": $STATS_V52_DEVICE_CHECK_PRESENT,
     "v52_device_check_raw": "$(json_escape "$STATS_V52_DEVICE_CHECK_RAW")",
     "has_v52_rc1_switch_helper": $STATS_V52_RC1_SWITCH_PRESENT,
-    "v52_rc1_switch_raw": "$(json_escape "$STATS_V52_RC1_SWITCH_RAW")"
+    "v52_rc1_switch_raw": "$(json_escape "$STATS_V52_RC1_SWITCH_RAW")",
+    "has_v52_web_status_helper": $STATS_V52_WEB_STATUS_PRESENT,
+    "v52_web_status_raw": "$(json_escape "$STATS_V52_WEB_STATUS_RAW")",
+    "has_v52_install_selfcheck_helper": $STATS_V52_INSTALL_SELFCHECK_PRESENT,
+    "v52_install_selfcheck_raw": "$(json_escape "$STATS_V52_INSTALL_SELFCHECK_RAW")"
   },
   "paths": {
     "json_health_json": "$(json_escape "$RUN/json_health.json")",

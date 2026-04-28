@@ -140,6 +140,10 @@ if [ -x "$BIN/stats_v52_device_check.sh" ]; then
   run_cmd stats_v52_device_check_json sh "$BIN/stats_v52_device_check.sh" json
   run_cmd stats_v52_device_check_text sh "$BIN/stats_v52_device_check.sh" text
 fi
+if [ -x "$BIN/stats_v52_install_selfcheck.sh" ]; then
+  run_cmd stats_v52_install_selfcheck_json sh "$BIN/stats_v52_install_selfcheck.sh" json
+  run_cmd stats_v52_install_selfcheck_text sh "$BIN/stats_v52_install_selfcheck.sh" text
+fi
 mkdir -p "$OUT/stats_tail" 2>/dev/null
 [ -f "$DATA/stats_raw.jsonl" ] && tail -200 "$DATA/stats_raw.jsonl" > "$OUT/stats_tail/stats_raw.tail.jsonl" 2>/dev/null
 [ -f "$DATA/stats_daily.jsonl" ] && tail -200 "$DATA/stats_daily.jsonl" > "$OUT/stats_tail/stats_daily.tail.jsonl" 2>/dev/null
@@ -167,6 +171,8 @@ copy_if_exists "$RUN/stats_v52_diag_bundle.json" "$OUT/run/stats_v52_diag_bundle
 copy_if_exists "$RUN/stats_v52_diag_bundle.txt" "$OUT/run/stats_v52_diag_bundle.txt"
 copy_if_exists "$RUN/stats_v52_device_check.json" "$OUT/run/stats_v52_device_check.json"
 copy_if_exists "$RUN/stats_v52_device_check.txt" "$OUT/run/stats_v52_device_check.txt"
+copy_if_exists "$RUN/stats_v52_install_selfcheck.json" "$OUT/run/stats_v52_install_selfcheck.json"
+copy_if_exists "$RUN/stats_v52_install_selfcheck.txt" "$OUT/run/stats_v52_install_selfcheck.txt"
 
 # Generate TC snapshot if helper exists; do not fail bundle if it is absent.
 if [ -x "$BIN/tc_state_snapshot.sh" ]; then
@@ -236,7 +242,8 @@ done
   echo '  "has_stats_v52_rc_smoke": '$([ -x "$BIN/stats_v52_rc_smoke.sh" ] && echo true || echo false)', '
   echo "  \"has_stats_v52_diag_bundle\": $([ -x "$BIN/stats_v52_diag_bundle.sh" ] && echo true || echo false),"
   echo "  \"has_stats_v52_device_check\": $([ -x "$BIN/stats_v52_device_check.sh" ] && echo true || echo false),"
-  echo "  \"has_stats_v52_rc1_switch\": $([ -x "$BIN/stats_v52_rc1_switch.sh" ] && echo true || echo false)"
+  echo "  \"has_stats_v52_rc1_switch\": $([ -x "$BIN/stats_v52_rc1_switch.sh" ] && echo true || echo false),"
+  echo "  \"has_stats_v52_install_selfcheck\": $([ -x "$BIN/stats_v52_install_selfcheck.sh" ] && echo true || echo false)"
   echo "}"
 } > "$OUT/manifest.json"
 
