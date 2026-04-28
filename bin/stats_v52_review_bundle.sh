@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_review_bundle.sh — v5.2-rc1.12 scrubbed gray-review bundle exporter.
+# stats_v52_review_bundle.sh — v5.2-rc1.13 scrubbed gray-review bundle exporter.
 # Read-only: generates a sanitized bundle that can be sent to Claude/Gemini/GPT.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
 
@@ -34,44 +34,33 @@ redact_stream() {
     -e 's/[A-Za-z0-9._%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9.-][A-Za-z0-9.-]*\.[A-Za-z][A-Za-z]*/<email>/g'
 }
 
-run_helper_timeout_raw() {
-  h="$1"; mode="$2"; missing_fallback="$3"; timeout_fallback="${4:-$3}"; empty_fallback="${5:-$3}"; limit="${6:-$HELPER_TIMEOUT}"
-  if [ ! -f "$BIN/$h" ]; then
-    printf '%s' "$missing_fallback"
+run_helper_direct_raw() {
+  h="$1"; mode="$2"; missing_fallback="$3"; empty_fallback="$4"
+  if [ ! -f "$BIN/$h" ] || [ ! -r "$BIN/$h" ]; then
+    printf '%b' "$missing_fallback"
     return 0
   fi
-  tmp="$RUN/.review_${h}_${mode}_$$.out"
-  done="$RUN/.review_${h}_${mode}_$$.done"
-  rm -f "$tmp" "$done" 2>/dev/null
-  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null; echo $? >"$done" ) &
-  pid=$!
-  ( sleep "$limit" 2>/dev/null || sleep 8; [ -f "$done" ] || kill "$pid" 2>/dev/null; sleep 1; [ -f "$done" ] || kill -9 "$pid" 2>/dev/null ) &
-  watchdog=$!
-  wait "$pid" 2>/dev/null
-  kill "$watchdog" 2>/dev/null || true
-  if [ -s "$tmp" ]; then
-    cat "$tmp"
-  elif [ -f "$done" ]; then
-    printf '%s' "$empty_fallback"
+  out="$(sh "$BIN/$h" "$mode" 2>/dev/null)"
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
   else
-    printf '%s' "$timeout_fallback"
+    printf '%b' "$empty_fallback"
   fi
-  rm -f "$tmp" "$done" 2>/dev/null
 }
 
 helper_json() {
   h="$1"
-  run_helper_timeout_raw "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"timeout\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}" | redact_stream
+  run_helper_direct_raw "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}" | redact_stream
 }
 
 helper_text() {
   h="$1"
-  run_helper_timeout_raw "$h" text "missing helper: $h\n" "timeout helper: $h\n" "empty helper output: $h\n" | redact_stream
+  run_helper_direct_raw "$h" text "missing helper: $h\n" "empty helper output: $h\n" | redact_stream
 }
 
 helper_markdown() {
   h="$1"
-  run_helper_timeout_raw "$h" markdown "# missing helper: $h\n" "# timeout helper: $h\n" "# empty helper output: $h\n" | redact_stream
+  run_helper_direct_raw "$h" markdown "# missing helper: $h\n" "# empty helper output: $h\n" | redact_stream
 }
 
 str_key_of() {
@@ -141,7 +130,7 @@ RECOMMENDATION="send this scrubbed bundle to reviewers; keep legacy stats defaul
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable or widen v5.2 stats; keep legacy default and fix failed/missing review inputs first"
 
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.12 scrubbed review bundle status
+HNC v5.2-rc1.13 scrubbed review bundle status
 status=$STATUS
 reason=$REASON
 recommendation=$RECOMMENDATION
@@ -170,7 +159,7 @@ paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.12 脱敏灰度审查包
+# HNC v5.2-rc1.13 脱敏灰度审查包
 
 ## 结论
 
@@ -226,7 +215,7 @@ cat > "$OUT_JSON" <<JSON
 JSON
 
 make_bundle() {
-  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.12-review-$STAMP"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.13-review-$STAMP"
   mkdir -p "$BUNDLE_DIR/cmd" "$BUNDLE_DIR/run" 2>/dev/null || return 1
   cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
   cp -af "$OUT_MD" "$BUNDLE_DIR/review.md" 2>/dev/null

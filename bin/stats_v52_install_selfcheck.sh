@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_install_selfcheck.sh — v5.2-rc1.12 install/first-boot safety self-check.
+# stats_v52_install_selfcheck.sh — v5.2-rc1.13 install/first-boot safety self-check.
 # Read-only: verifies gray stats wiring, legacy-default preservation, rollback
 # availability, and diagnostic helper presence. It does not enable RC, does not
 # switch stats source, and does not touch tc/iptables/watchdog/network rules.
@@ -34,34 +34,22 @@ add_issue() {
   if [ -n "$ISSUES" ]; then ISSUES="$ISSUES; $level:$msg"; else ISSUES="$level:$msg"; fi
 }
 
-run_helper_timeout() {
-  h="$1"; mode="$2"; missing_fallback="$3"; timeout_fallback="${4:-$3}"; empty_fallback="${5:-$3}"; limit="${6:-$HELPER_TIMEOUT}"
-  if [ ! -f "$BIN/$h" ]; then
-    printf '%s' "$missing_fallback"
+run_helper_json() {
+  h="$1"
+  if [ ! -f "$BIN/$h" ] || [ ! -r "$BIN/$h" ]; then
+    printf '%s' "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}"
     return 0
   fi
-  tmp="$RUN/.selfcheck_${h}_${mode}_$$.out"
-  done="$RUN/.selfcheck_${h}_${mode}_$$.done"
-  rm -f "$tmp" "$done" 2>/dev/null
-  ( sh "$BIN/$h" "$mode" >"$tmp" 2>/dev/null; echo $? >"$done" ) &
-  pid=$!
-  ( sleep "$limit" 2>/dev/null || sleep 8; [ -f "$done" ] || kill "$pid" 2>/dev/null; sleep 1; [ -f "$done" ] || kill -9 "$pid" 2>/dev/null ) &
-  watchdog=$!
-  wait "$pid" 2>/dev/null
-  kill "$watchdog" 2>/dev/null || true
-  if [ -s "$tmp" ]; then
-    cat "$tmp"
-  elif [ -f "$done" ]; then
-    printf '%s' "$empty_fallback"
+  out="$(sh "$BIN/$h" json 2>/dev/null)"
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
   else
-    printf '%s' "$timeout_fallback"
+    printf '%s' "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}"
   fi
-  rm -f "$tmp" "$done" 2>/dev/null
 }
 
 helper_json() {
-  h="$1"
-  run_helper_timeout "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"timeout\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}"
+  run_helper_json "$1"
 }
 
 status_of() {
@@ -181,7 +169,7 @@ RECOMMENDATION="installation wiring looks safe; keep legacy default and monitor 
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable v5.2 RC; fix failed install/self-check items or run rollback"
 
 {
-  echo "HNC v5.2-rc1.12 install/first-boot self-check"
+  echo "HNC v5.2-rc1.13 install/first-boot self-check"
   echo "status=$STATUS"
   echo "install_ready=$INSTALL_READY"
   echo "first_boot_safe=$FIRST_BOOT_SAFE"
