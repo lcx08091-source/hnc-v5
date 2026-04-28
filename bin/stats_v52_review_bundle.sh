@@ -1,7 +1,9 @@
 #!/system/bin/sh
-# stats_v52_review_bundle.sh — v5.2-rc1.13 scrubbed gray-review bundle exporter.
+# stats_v52_review_bundle.sh — v5.2-rc1.14 scrubbed gray-review bundle exporter.
 # Read-only: generates a sanitized bundle that can be sent to Claude/Gemini/GPT.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
+# rc1.14: consumes stats_v52_gray_report cache instead of re-running the whole
+# helper tree. This makes markdown/report generation much faster on Android.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -16,7 +18,7 @@ STAMP="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
 OUT_JSON="$RUN/stats_v52_review_bundle.json"
 OUT_TXT="$RUN/stats_v52_review_bundle.txt"
 OUT_MD="$RUN/stats_v52_review_bundle.md"
-HELPER_TIMEOUT=${HNC_HELPER_TIMEOUT:-8}
+REFRESH=${HNC_V52_REPORT_REFRESH:-0}
 mkdir -p "$RUN" 2>/dev/null
 
 json_escape() {
@@ -34,33 +36,16 @@ redact_stream() {
     -e 's/[A-Za-z0-9._%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9.-][A-Za-z0-9.-]*\.[A-Za-z][A-Za-z]*/<email>/g'
 }
 
-run_helper_direct_raw() {
-  h="$1"; mode="$2"; missing_fallback="$3"; empty_fallback="$4"
-  if [ ! -f "$BIN/$h" ] || [ ! -r "$BIN/$h" ]; then
-    printf '%b' "$missing_fallback"
+run_or_read_gray_json() {
+  if [ "$REFRESH" != 1 ] && [ -s "$RUN/stats_v52_gray_report.json" ]; then
+    cat "$RUN/stats_v52_gray_report.json" 2>/dev/null
     return 0
   fi
-  out="$(sh "$BIN/$h" "$mode" 2>/dev/null)"
-  if [ -n "$out" ]; then
-    printf '%s' "$out"
+  if [ -f "$BIN/stats_v52_gray_report.sh" ] && [ -r "$BIN/stats_v52_gray_report.sh" ]; then
+    sh "$BIN/stats_v52_gray_report.sh" json 2>/dev/null
   else
-    printf '%b' "$empty_fallback"
+    echo '{"ok":false,"status":"missing","helper":"stats_v52_gray_report.sh"}'
   fi
-}
-
-helper_json() {
-  h="$1"
-  run_helper_direct_raw "$h" json "{\"ok\":false,\"status\":\"missing\",\"helper\":\"$h\"}" "{\"ok\":false,\"status\":\"empty\",\"helper\":\"$h\"}" | redact_stream
-}
-
-helper_text() {
-  h="$1"
-  run_helper_direct_raw "$h" text "missing helper: $h\n" "empty helper output: $h\n" | redact_stream
-}
-
-helper_markdown() {
-  h="$1"
-  run_helper_direct_raw "$h" markdown "# missing helper: $h\n" "# empty helper output: $h\n" | redact_stream
 }
 
 str_key_of() {
@@ -89,32 +74,23 @@ module_version() {
 
 module_version
 
-GRAY_JSON="$(helper_json stats_v52_gray_report.sh)"
-SELF_JSON="$(helper_json stats_v52_install_selfcheck.sh)"
-WEB_JSON="$(helper_json stats_v52_web_status.sh)"
-DEVICE_JSON="$(helper_json stats_v52_device_check.sh)"
-SMOKE_JSON="$(helper_json stats_v52_rc_smoke.sh)"
-READINESS_JSON="$(helper_json stats_migration_readiness.sh)"
-COMPARE_JSON="$(helper_json stats_compare.sh)"
-RC1_JSON="$(helper_json stats_v52_rc1_switch.sh)"
-HEALTH_JSON="$(helper_json stats_health_summary.sh)"
-
+GRAY_JSON="$(run_or_read_gray_json | redact_stream)"
 GRAY_STATUS="$(str_key_of status "$GRAY_JSON" unknown)"
-SELF_STATUS="$(str_key_of status "$SELF_JSON" unknown)"
-WEB_STATUS="$(str_key_of status "$WEB_JSON" unknown)"
-WEB_SEVERITY="$(str_key_of severity "$WEB_JSON" unknown)"
-DEVICE_STATUS="$(str_key_of status "$DEVICE_JSON" unknown)"
-SMOKE_STATUS="$(str_key_of status "$SMOKE_JSON" unknown)"
-READINESS_STATUS="$(str_key_of status "$READINESS_JSON" unknown)"
-COMPARE_STATUS="$(str_key_of status "$COMPARE_JSON" unknown)"
-RC1_STATUS="$(str_key_of status "$RC1_JSON" unknown)"
-HEALTH_STATUS="$(str_key_of status "$HEALTH_JSON" unknown)"
-
 REVIEW_READY="$(bool_key_of review_ready "$GRAY_JSON")"
 GRAY_READY="$(bool_key_of gray_ready "$GRAY_JSON")"
-LEGACY_DEFAULT_PRESERVED="$(bool_key_of legacy_default_preserved "$RC1_JSON")"
-RC1_ENABLED="$(bool_key_of rc1_enabled "$RC1_JSON")"
-DEFAULT_SOURCE="$(str_key_of default_source "$RC1_JSON" legacy)"
+LEGACY_DEFAULT_PRESERVED="$(bool_key_of legacy_default_preserved "$GRAY_JSON")"
+RC1_ENABLED="$(bool_key_of rc1_enabled "$GRAY_JSON")"
+DEFAULT_SOURCE="$(str_key_of default_source "$GRAY_JSON" legacy)"
+
+SELF_STATUS="$(str_key_of selfcheck_status "$GRAY_JSON" unknown)"
+WEB_STATUS="$(str_key_of web_status "$GRAY_JSON" unknown)"
+WEB_SEVERITY="$(str_key_of web_severity "$GRAY_JSON" unknown)"
+DEVICE_STATUS="$(str_key_of device_check_status "$GRAY_JSON" unknown)"
+SMOKE_STATUS="$(str_key_of smoke_status "$GRAY_JSON" unknown)"
+READINESS_STATUS="$(str_key_of readiness_status "$GRAY_JSON" unknown)"
+COMPARE_STATUS="$(str_key_of compare_status "$GRAY_JSON" unknown)"
+RC1_STATUS="$(str_key_of rc1_switch_status "$GRAY_JSON" unknown)"
+HEALTH_STATUS="$(str_key_of health_status "$GRAY_JSON" unknown)"
 
 STATUS=pass
 REASON="scrubbed review bundle generated; legacy default preserved"
@@ -129,8 +105,15 @@ RECOMMENDATION="send this scrubbed bundle to reviewers; keep legacy stats defaul
 [ "$STATUS" = warn ] && RECOMMENDATION="send this bundle for review, but keep legacy default and do not widen gray rollout until warnings are understood"
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable or widen v5.2 stats; keep legacy default and fix failed/missing review inputs first"
 
+GRAY_MD=""
+if [ -s "$RUN/stats_v52_gray_report.md" ]; then
+  GRAY_MD="$(head -260 "$RUN/stats_v52_gray_report.md" 2>/dev/null | redact_stream)"
+else
+  GRAY_MD="# gray report markdown cache unavailable\nRun: sh /data/local/hnc/bin/stats_v52_gray_report.sh markdown"
+fi
+
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.13 scrubbed review bundle status
+HNC v5.2-rc1.14 scrubbed review bundle status
 status=$STATUS
 reason=$REASON
 recommendation=$RECOMMENDATION
@@ -153,13 +136,15 @@ compare_status=$COMPARE_STATUS
 rc1_switch_status=$RC1_STATUS
 health_summary_status=$HEALTH_STATUS
 redaction=enabled
+fast_cache=1
+refresh=$REFRESH
 paths.json=$OUT_JSON
 paths.text=$OUT_TXT
 paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.13 脱敏灰度审查包
+# HNC v5.2-rc1.14 脱敏灰度审查包
 
 ## 结论
 
@@ -189,6 +174,15 @@ cat > "$OUT_MD" <<MD
 | rc1 switch | $RC1_STATUS |
 | health summary | $HEALTH_STATUS |
 
+## 性能模式
+
+- fast_cache: 1
+- refresh: $REFRESH
+
+说明：rc1.14 默认复用灰度报告缓存，不再二次重跑全部 helper。需要强制全量刷新时可执行：
+
+\`HNC_V52_REPORT_REFRESH=1 sh /data/local/hnc/bin/stats_v52_review_bundle.sh markdown\`
+
 ## 脱敏说明
 
 本报告会尽量脱敏 IPv4、MAC、邮箱、token、password、secret、auth 等字段。它适合发给 Claude / Gemini / GPT 做交叉审查。完整原始日志仍应只留在本机。
@@ -206,29 +200,26 @@ cat > "$OUT_MD" <<MD
 ## gray_report 摘要
 
 \`\`\`text
-$(helper_markdown stats_v52_gray_report.sh | head -220)
+$GRAY_MD
 \`\`\`
 MD
 
 cat > "$OUT_JSON" <<JSON
-{"ok":true,"status":"$(json_escape "$STATUS")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","reason":"$(json_escape "$REASON")","recommendation":"$(json_escape "$RECOMMENDATION")","redaction_enabled":true,"review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"signals":{"gray_report_status":"$(json_escape "$GRAY_STATUS")","install_selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","health_summary_status":"$(json_escape "$HEALTH_STATUS")"},"paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
+{"ok":true,"status":"$(json_escape "$STATUS")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","reason":"$(json_escape "$REASON")","recommendation":"$(json_escape "$RECOMMENDATION")","redaction_enabled":true,"fast_cache":true,"refresh":$REFRESH,"review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"signals":{"gray_report_status":"$(json_escape "$GRAY_STATUS")","install_selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","health_summary_status":"$(json_escape "$HEALTH_STATUS")"},"paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
 JSON
 
 make_bundle() {
-  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.13-review-$STAMP"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.14-review-$STAMP"
   mkdir -p "$BUNDLE_DIR/cmd" "$BUNDLE_DIR/run" 2>/dev/null || return 1
   cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
   cp -af "$OUT_MD" "$BUNDLE_DIR/review.md" 2>/dev/null
   cp -af "$OUT_JSON" "$BUNDLE_DIR/review.json" 2>/dev/null
-  helper_json stats_v52_gray_report.sh > "$BUNDLE_DIR/cmd/stats_v52_gray_report.json" 2>/dev/null
-  helper_text stats_v52_gray_report.sh > "$BUNDLE_DIR/cmd/stats_v52_gray_report.txt" 2>/dev/null
-  helper_json stats_v52_install_selfcheck.sh > "$BUNDLE_DIR/cmd/stats_v52_install_selfcheck.json" 2>/dev/null
-  helper_json stats_v52_web_status.sh > "$BUNDLE_DIR/cmd/stats_v52_web_status.json" 2>/dev/null
-  helper_json stats_v52_device_check.sh > "$BUNDLE_DIR/cmd/stats_v52_device_check.json" 2>/dev/null
-  helper_json stats_v52_rc_smoke.sh > "$BUNDLE_DIR/cmd/stats_v52_rc_smoke.json" 2>/dev/null
-  helper_json stats_migration_readiness.sh > "$BUNDLE_DIR/cmd/stats_migration_readiness.json" 2>/dev/null
-  helper_json stats_compare.sh > "$BUNDLE_DIR/cmd/stats_compare.json" 2>/dev/null
-  helper_json stats_v52_rc1_switch.sh > "$BUNDLE_DIR/cmd/stats_v52_rc1_switch.json" 2>/dev/null
+  cp -af "$RUN/stats_v52_gray_report.md" "$BUNDLE_DIR/cmd/stats_v52_gray_report.md" 2>/dev/null
+  cp -af "$RUN/stats_v52_gray_report.json" "$BUNDLE_DIR/cmd/stats_v52_gray_report.json" 2>/dev/null
+  for f in stats_v52_install_selfcheck stats_v52_web_status stats_v52_device_check stats_compare stats_migration_readiness stats_v52_rc_smoke stats_v52_rc1_switch stats_v52_rc_control stats_source_diag stats_shadow_diag stats_health_summary; do
+    [ -s "$RUN/$f.json" ] && cp -af "$RUN/$f.json" "$BUNDLE_DIR/cmd/$f.json" 2>/dev/null
+    [ -s "$RUN/$f.txt" ] && cp -af "$RUN/$f.txt" "$BUNDLE_DIR/cmd/$f.txt" 2>/dev/null
+  done
   echo "$BUNDLE_DIR"
 }
 

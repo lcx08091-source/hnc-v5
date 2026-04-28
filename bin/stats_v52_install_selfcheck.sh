@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_install_selfcheck.sh — v5.2-rc1.13 install/first-boot safety self-check.
+# stats_v52_install_selfcheck.sh — v5.2-rc1.14 install/first-boot safety self-check.
 # Read-only: verifies gray stats wiring, legacy-default preservation, rollback
 # availability, and diagnostic helper presence. It does not enable RC, does not
 # switch stats source, and does not touch tc/iptables/watchdog/network rules.
@@ -169,7 +169,7 @@ RECOMMENDATION="installation wiring looks safe; keep legacy default and monitor 
 [ "$STATUS" = fail ] && RECOMMENDATION="do not enable v5.2 RC; fix failed install/self-check items or run rollback"
 
 {
-  echo "HNC v5.2-rc1.13 install/first-boot self-check"
+  echo "HNC v5.2-rc1.14 install/first-boot self-check"
   echo "status=$STATUS"
   echo "install_ready=$INSTALL_READY"
   echo "first_boot_safe=$FIRST_BOOT_SAFE"
