@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_health_summary.sh — HNC hotfix22.1 stats health summary
+# stats_health_summary.sh — HNC hotfix22.2 stats health summary
 # Read-only aggregator for staged v5.2 stats migration.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
@@ -12,9 +12,23 @@ OUT_JSON="$RUN/stats_health_summary.json"
 OUT_TXT="$RUN/stats_health_summary.txt"
 mkdir -p "$RUN" 2>/dev/null
 
-json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/
-/ /g; s/\t/ /g'
+json_escape_into() {
+  in="$1"
+  outvar="$2"
+  out=""
+  while [ -n "$in" ]; do
+    c=${in%"${in#?}"}
+    in=${in#?}
+    case "$c" in
+      \\) out="${out}\\\\"
+        ;;
+      '"') out="${out}\\\""
+        ;;
+      *) out="${out}${c}"
+        ;;
+    esac
+  done
+  eval "$outvar=\$out"
 }
 
 helper_json() {
@@ -28,23 +42,44 @@ helper_json() {
 
 status_of() {
   v="$1"
-  s="$(printf '%s' "$v" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' | head -1)"
-  [ -n "$s" ] || s="unknown"
-  echo "$s"
+  case "$v" in
+    *\"status\":\"*\"*)
+      s=${v#*\"status\":\"}
+      s=${s%%\"*}
+      [ -n "$s" ] || s="unknown"
+      echo "$s"
+      ;;
+    *) echo "unknown" ;;
+  esac
 }
+
 
 present_of() { [ -x "$BIN/$1" ] && echo true || echo false; }
 
-DIAG_STATUS="$(status_of "$(helper_json stats_diag.sh)")"
-IDENT_STATUS="$(status_of "$(helper_json stats_identity_diag.sh)")"
-RET_STATUS="$(status_of "$(helper_json stats_retention_diag.sh)")"
-SHADOW_STATUS="$(status_of "$(helper_json stats_shadow_diag.sh)")"
-SHADOW_CONTROL_STATUS="$(status_of "$(helper_json stats_shadow_control.sh)")"
-SOURCE_STATUS="$(status_of "$(helper_json stats_source_diag.sh)")"
-COMPARE_STATUS="$(status_of "$(helper_json stats_compare.sh)")"
-READINESS_STATUS="$(status_of "$(helper_json stats_migration_readiness.sh)")"
-V52_RC_STATUS="$(status_of "$(helper_json stats_v52_rc_control.sh)")"
-V52_RC_SMOKE_STATUS="$(status_of "$(helper_json stats_v52_rc_smoke.sh)")"
+status_of_into() {
+  v="$1"
+  out="$2"
+  case "$v" in
+    *\"status\":\"*\"*)
+      s=${v#*\"status\":\"}
+      s=${s%%\"*}
+      [ -n "$s" ] || s="unknown"
+      ;;
+    *) s="unknown" ;;
+  esac
+  eval "$out=\$s"
+}
+
+_j="$(helper_json stats_diag.sh)"; status_of_into "$_j" DIAG_STATUS
+_j="$(helper_json stats_identity_diag.sh)"; status_of_into "$_j" IDENT_STATUS
+_j="$(helper_json stats_retention_diag.sh)"; status_of_into "$_j" RET_STATUS
+_j="$(helper_json stats_shadow_diag.sh)"; status_of_into "$_j" SHADOW_STATUS
+_j="$(helper_json stats_shadow_control.sh)"; status_of_into "$_j" SHADOW_CONTROL_STATUS
+_j="$(helper_json stats_source_diag.sh)"; status_of_into "$_j" SOURCE_STATUS
+_j="$(helper_json stats_compare.sh)"; status_of_into "$_j" COMPARE_STATUS
+_j="$(helper_json stats_migration_readiness.sh)"; status_of_into "$_j" READINESS_STATUS
+_j="$(helper_json stats_v52_rc_control.sh)"; status_of_into "$_j" V52_RC_STATUS
+_j="$(helper_json stats_v52_rc_smoke.sh)"; status_of_into "$_j" V52_RC_SMOKE_STATUS
 
 OVERALL="ok"
 RECOMMENDATION="stats diagnostics look healthy"
@@ -97,22 +132,22 @@ HAS_V52_RC_SMOKE=$(present_of stats_v52_rc_smoke.sh)
   echo "has_stats_v52_rc_smoke=$HAS_V52_RC_SMOKE"
 } > "$OUT_TXT"
 
-EO=$(json_escape "$OVERALL")
-ER=$(json_escape "$RECOMMENDATION")
-ED=$(json_escape "$DIAG_STATUS")
-EI=$(json_escape "$IDENT_STATUS")
-ET=$(json_escape "$RET_STATUS")
-ES=$(json_escape "$SHADOW_STATUS")
-ESC=$(json_escape "$SHADOW_CONTROL_STATUS")
-ESO=$(json_escape "$SOURCE_STATUS")
-EC=$(json_escape "$COMPARE_STATUS")
-EM=$(json_escape "$READINESS_STATUS")
-EV=$(json_escape "$V52_RC_STATUS")
-EK=$(json_escape "$V52_RC_SMOKE_STATUS")
-EJ=$(json_escape "$OUT_JSON")
-EX=$(json_escape "$OUT_TXT")
-printf '{"ok":true,"status":"%s","recommendation":"%s","helpers":{"stats_diag":%s,"stats_identity_diag":%s,"stats_retention_diag":%s,"stats_shadow_diag":%s,"stats_shadow_control":%s,"stats_source_diag":%s,"stats_compare":%s,"stats_migration_readiness":%s,"stats_v52_rc_control":%s,"stats_v52_rc_smoke":%s},"components":{"stats_diag":"%s","stats_identity":"%s","stats_retention":"%s","stats_shadow":"%s","stats_shadow_control":"%s","stats_source":"%s","stats_compare":"%s","stats_migration_readiness":"%s","stats_v52_rc_control":"%s","stats_v52_rc_smoke":"%s"},"paths":{"json":"%s","text":"%s"}}
-' \
+json_escape_into "$OVERALL" EO
+json_escape_into "$RECOMMENDATION" ER
+json_escape_into "$DIAG_STATUS" ED
+json_escape_into "$IDENT_STATUS" EI
+json_escape_into "$RET_STATUS" ET
+json_escape_into "$SHADOW_STATUS" ES
+json_escape_into "$SHADOW_CONTROL_STATUS" ESC
+json_escape_into "$SOURCE_STATUS" ESO
+json_escape_into "$COMPARE_STATUS" EC
+json_escape_into "$READINESS_STATUS" EM
+json_escape_into "$V52_RC_STATUS" EV
+json_escape_into "$V52_RC_SMOKE_STATUS" EK
+json_escape_into "$OUT_JSON" EJ
+json_escape_into "$OUT_TXT" EX
+
+printf '{"ok":true,"status":"%s","recommendation":"%s","helpers":{"stats_diag":%s,"stats_identity_diag":%s,"stats_retention_diag":%s,"stats_shadow_diag":%s,"stats_shadow_control":%s,"stats_source_diag":%s,"stats_compare":%s,"stats_migration_readiness":%s,"stats_v52_rc_control":%s,"stats_v52_rc_smoke":%s},"components":{"stats_diag":"%s","stats_identity":"%s","stats_retention":"%s","stats_shadow":"%s","stats_shadow_control":"%s","stats_source":"%s","stats_compare":"%s","stats_migration_readiness":"%s","stats_v52_rc_control":"%s","stats_v52_rc_smoke":"%s"},"paths":{"json":"%s","text":"%s"}}\n' \
   "$EO" "$ER" "$HAS_DIAG" "$HAS_ID" "$HAS_RET" "$HAS_SHADOW" "$HAS_SHADOW_CONTROL" "$HAS_SOURCE" "$HAS_COMPARE" "$HAS_READINESS" "$HAS_V52_RC" "$HAS_V52_RC_SMOKE" \
   "$ED" "$EI" "$ET" "$ES" "$ESC" "$ESO" "$EC" "$EM" "$EV" "$EK" "$EJ" "$EX" > "$OUT_JSON"
 
