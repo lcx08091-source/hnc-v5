@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight hotfix22.3"
+say "HNC preflight hotfix22.4"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -65,12 +65,12 @@ else
 fi
 
 # 4. Required files
-for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh; do
+for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh; do
   if [ -e "$f" ]; then ok "required file exists: $f"; else warn "required file missing: $f"; fi
 done
 
 # 5. Executable bits, source tree check only.
-for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/tc_manager.sh bin/watchdog.sh daemon/hnc_httpd/build.sh; do
+for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/tc_manager.sh bin/watchdog.sh daemon/hnc_httpd/build.sh; do
   [ -e "$f" ] || continue
   if [ -x "$f" ]; then ok "executable: $f"; else fail "not executable: $f"; fi
 done
