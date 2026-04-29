@@ -1,9 +1,9 @@
 #!/system/bin/sh
-# stats_v52_review_bundle.sh — v5.2-rc1.14 scrubbed gray-review bundle exporter.
+# stats_v52_review_bundle.sh — v5.2-rc1.16 scrubbed shadow-review bundle exporter.
 # Read-only: generates a sanitized bundle that can be sent to Claude/Gemini/GPT.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
-# rc1.14: consumes stats_v52_gray_report cache instead of re-running the whole
-# helper tree. This makes markdown/report generation much faster on Android.
+# rc1.14: consumes stats_v52_gray_report cache instead of re-running the whole helper tree.
+# rc1.16: includes shadow raw/daily readiness and legacy/shadow comparison signals.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -50,13 +50,19 @@ run_or_read_gray_json() {
 
 str_key_of() {
   key="$1"; body="$2"; def="$3"
-  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":"\([^"]*\)".*/\1/p' | head -1)"
+  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":"\([^"]*\)".*/\1/p' )"
   [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
 bool_key_of() {
   key="$1"; body="$2"
   case "$body" in *\"$key\":true*) echo true ;; *\"$key\":false*) echo false ;; *) echo false ;; esac
+}
+
+num_key_of() {
+  key="$1"; body="$2"; def="$3"
+  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":\([0-9][0-9]*\).*/\1/p' )"
+  case "$val" in ''|*[!0-9]*) printf '%s' "$def" ;; *) printf '%s' "$val" ;; esac
 }
 
 module_version() {
@@ -91,12 +97,27 @@ READINESS_STATUS="$(str_key_of readiness_status "$GRAY_JSON" unknown)"
 COMPARE_STATUS="$(str_key_of compare_status "$GRAY_JSON" unknown)"
 RC1_STATUS="$(str_key_of rc1_switch_status "$GRAY_JSON" unknown)"
 HEALTH_STATUS="$(str_key_of health_status "$GRAY_JSON" unknown)"
+SHADOW_STATE="$(str_key_of shadow_state "$GRAY_JSON" unknown)"
+SHADOW_QUALITY="$(str_key_of shadow_quality "$GRAY_JSON" unknown)"
+COMPARE_QUALITY="$(str_key_of compare_quality "$GRAY_JSON" unknown)"
+SHADOW_RAW_LINES="$(num_key_of shadow_raw_lines "$GRAY_JSON" 0)"
+SHADOW_DAILY_SAMPLES="$(num_key_of shadow_daily_samples "$GRAY_JSON" 0)"
+SHADOW_LATEST_TS="$(num_key_of shadow_latest_ts "$GRAY_JSON" 0)"
+COMPARE_TOTAL_KEYS="$(num_key_of compare_total_keys "$GRAY_JSON" 0)"
+COMPARE_MATCHED_KEYS="$(num_key_of compare_matched_keys "$GRAY_JSON" 0)"
+COMPARE_MISMATCHED_KEYS="$(num_key_of compare_mismatched_keys "$GRAY_JSON" 0)"
+COMPARE_MISSING_IN_SHADOW="$(num_key_of compare_missing_in_shadow "$GRAY_JSON" 0)"
+COMPARE_MISSING_IN_LEGACY="$(num_key_of compare_missing_in_legacy "$GRAY_JSON" 0)"
 
 STATUS=pass
 REASON="scrubbed review bundle generated; legacy default preserved"
 case "$GRAY_STATUS:$SELF_STATUS:$DEVICE_STATUS:$SMOKE_STATUS" in
   *fail*|*blocked*|*missing*|*unknown*) STATUS=fail; REASON="one or more gray-review inputs are failed/missing/unknown" ;;
   *warn*|*not_ready*|*warmup*|*disabled*) STATUS=warn; REASON="one or more gray-review inputs are warnings or still warming up" ;;
+esac
+case "$SHADOW_STATE:$SHADOW_QUALITY:$COMPARE_QUALITY" in
+  *warn_drift*|*warn_no_devices*|*warn_no_daily_samples*) [ "$STATUS" = pass ] && STATUS=warn; REASON="shadow or compare signals need review" ;;
+  *no_shadow_data*|*unknown*|*missing*) [ "$STATUS" = pass ] && STATUS=warn; REASON="shadow data is not fully visible in gray report" ;;
 esac
 [ "$LEGACY_DEFAULT_PRESERVED" = true ] || { STATUS=fail; REASON="legacy default is not preserved"; }
 [ "$DEFAULT_SOURCE" = legacy ] || { STATUS=fail; REASON="default source is not legacy"; }
@@ -113,7 +134,7 @@ else
 fi
 
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.14 scrubbed review bundle status
+HNC v5.2-rc1.16 scrubbed review bundle status
 status=$STATUS
 reason=$REASON
 recommendation=$RECOMMENDATION
@@ -133,6 +154,17 @@ device_check_status=$DEVICE_STATUS
 smoke_status=$SMOKE_STATUS
 readiness_status=$READINESS_STATUS
 compare_status=$COMPARE_STATUS
+shadow_state=$SHADOW_STATE
+shadow_quality=$SHADOW_QUALITY
+shadow_raw_lines=$SHADOW_RAW_LINES
+shadow_daily_samples=$SHADOW_DAILY_SAMPLES
+shadow_latest_ts=$SHADOW_LATEST_TS
+compare_quality=$COMPARE_QUALITY
+compare_total_keys=$COMPARE_TOTAL_KEYS
+compare_matched_keys=$COMPARE_MATCHED_KEYS
+compare_missing_in_legacy=$COMPARE_MISSING_IN_LEGACY
+compare_missing_in_shadow=$COMPARE_MISSING_IN_SHADOW
+compare_mismatched_keys=$COMPARE_MISMATCHED_KEYS
 rc1_switch_status=$RC1_STATUS
 health_summary_status=$HEALTH_STATUS
 redaction=enabled
@@ -144,7 +176,7 @@ paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.14 脱敏灰度审查包
+# HNC v5.2-rc1.16 脱敏灰度审查包
 
 ## 结论
 
@@ -174,12 +206,26 @@ cat > "$OUT_MD" <<MD
 | rc1 switch | $RC1_STATUS |
 | health summary | $HEALTH_STATUS |
 
+## Shadow / 对比摘要
+
+- shadow_state: $SHADOW_STATE
+- shadow_quality: $SHADOW_QUALITY
+- shadow_raw_lines: $SHADOW_RAW_LINES
+- shadow_daily_samples: $SHADOW_DAILY_SAMPLES
+- shadow_latest_ts: $SHADOW_LATEST_TS
+- compare_quality: $COMPARE_QUALITY
+- compare_total_keys: $COMPARE_TOTAL_KEYS
+- compare_matched_keys: $COMPARE_MATCHED_KEYS
+- compare_missing_in_legacy: $COMPARE_MISSING_IN_LEGACY
+- compare_missing_in_shadow: $COMPARE_MISSING_IN_SHADOW
+- compare_mismatched_keys: $COMPARE_MISMATCHED_KEYS
+
 ## 性能模式
 
 - fast_cache: 1
 - refresh: $REFRESH
 
-说明：rc1.14 默认复用灰度报告缓存，不再二次重跑全部 helper。需要强制全量刷新时可执行：
+说明：rc1.16 默认复用灰度报告缓存，不再二次重跑全部 helper。需要强制全量刷新时可执行：
 
 \`HNC_V52_REPORT_REFRESH=1 sh /data/local/hnc/bin/stats_v52_review_bundle.sh markdown\`
 
@@ -205,11 +251,11 @@ $GRAY_MD
 MD
 
 cat > "$OUT_JSON" <<JSON
-{"ok":true,"status":"$(json_escape "$STATUS")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","reason":"$(json_escape "$REASON")","recommendation":"$(json_escape "$RECOMMENDATION")","redaction_enabled":true,"fast_cache":true,"refresh":$REFRESH,"review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"signals":{"gray_report_status":"$(json_escape "$GRAY_STATUS")","install_selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","health_summary_status":"$(json_escape "$HEALTH_STATUS")"},"paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
+{"ok":true,"status":"$(json_escape "$STATUS")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","reason":"$(json_escape "$REASON")","recommendation":"$(json_escape "$RECOMMENDATION")","redaction_enabled":true,"fast_cache":true,"refresh":$REFRESH,"review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"shadow_state":"$(json_escape "$SHADOW_STATE")","shadow_quality":"$(json_escape "$SHADOW_QUALITY")","shadow_raw_lines":$SHADOW_RAW_LINES,"shadow_daily_samples":$SHADOW_DAILY_SAMPLES,"shadow_latest_ts":$SHADOW_LATEST_TS,"compare_quality":"$(json_escape "$COMPARE_QUALITY")","compare_total_keys":$COMPARE_TOTAL_KEYS,"compare_matched_keys":$COMPARE_MATCHED_KEYS,"compare_missing_in_legacy":$COMPARE_MISSING_IN_LEGACY,"compare_missing_in_shadow":$COMPARE_MISSING_IN_SHADOW,"compare_mismatched_keys":$COMPARE_MISMATCHED_KEYS,"signals":{"gray_report_status":"$(json_escape "$GRAY_STATUS")","install_selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","health_summary_status":"$(json_escape "$HEALTH_STATUS")"},"paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
 JSON
 
 make_bundle() {
-  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.14-review-$STAMP"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.16-review-$STAMP"
   mkdir -p "$BUNDLE_DIR/cmd" "$BUNDLE_DIR/run" 2>/dev/null || return 1
   cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
   cp -af "$OUT_MD" "$BUNDLE_DIR/review.md" 2>/dev/null

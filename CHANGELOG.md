@@ -1,3 +1,10 @@
+# v5.2.0-rc1.16
+
+- Enhanced `stats_migration_readiness.sh` to report `shadow_state`, `shadow_quality`, raw/daily sample metrics, and legacy/shadow comparison quality.
+- Enhanced `stats_v52_gray_report.sh` and `stats_v52_review_bundle.sh` to surface shadow raw/daily visibility and comparison signals for reviewers.
+- Kept legacy stats as the default source; this release does not enable v5.2 stats RC or modify tc/iptables/watchdog/limit/delay logic.
+- Updated module/WebUI/preflight version display to rc1.16.
+
 # v5.2.0-rc1.15
 
 - `stats_shadow_sample.sh` now auto-ensures missing HNC_STATS per-device accounting rules from `devices.json` when `stats_all` is empty, then retries sampling.

@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.2.0-rc1.15
-versionCode=520025
+version=v5.2.0-rc1.16
+versionCode=520026
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.2.0-rc1.15 · shadow stats auto-ensures HNC_STATS rules when stats_all is empty · simplify v5.2 gray report helper execution to avoid Android shell timeout false positives · remember working bridge transport after first paint · delayed auto KSU bridge after first paint · WebUI sync init guard · WebUI booting white-screen guard · scrubbed review bundle export · gray observation report export · install/first-boot self-check · WebUI v5.2 RC gray status panel · staged v5.2 stats gray release · legacy stats remains default · guarded RC enable with device check · one-command rollback · v5.2 real-device stats pre-RC check · v5.2 stats diagnostic bundle · v5.2 stats RC smoke gate · stats migration readiness gate · optional shadow stats source · shadow stats opt-in control · JSON debug bundle · diag JSON health · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
+description=Android 热点带宽/延迟/黑白名单管理 · v5.2.0-rc1.16 · gray readiness/report/review now surface shadow raw-daily and legacy-shadow comparison signals · shadow stats auto-ensures HNC_STATS rules when stats_all is empty · simplify v5.2 gray report helper execution to avoid Android shell timeout false positives · remember working bridge transport after first paint · delayed auto KSU bridge after first paint · WebUI sync init guard · WebUI booting white-screen guard · scrubbed review bundle export · gray observation report export · install/first-boot self-check · WebUI v5.2 RC gray status panel · staged v5.2 stats gray release · legacy stats remains default · guarded RC enable with device check · one-command rollback · v5.2 real-device stats pre-RC check · v5.2 stats diagnostic bundle · v5.2 stats RC smoke gate · stats migration readiness gate · optional shadow stats source · shadow stats opt-in control · JSON debug bundle · diag JSON health · TC 状态快照收集 · KernelSU/SukiSU/Magisk.
 minKernelSU=11485

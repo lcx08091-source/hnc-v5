@@ -1,9 +1,9 @@
 #!/system/bin/sh
-# stats_v52_gray_report.sh — v5.2-rc1.14 fast gray observation report exporter.
+# stats_v52_gray_report.sh — v5.2-rc1.16 shadow-aware gray observation report exporter.
 # Read-only: aggregates v5.2 stats gray-release signals for human review.
 # It does not enable RC, switch stats source, or touch tc/iptables/watchdog.
-# rc1.14: uses cached helper outputs by default to avoid re-running the same
-# slow diagnostics several times in selfcheck -> gray_report -> review_bundle.
+# rc1.14: uses cached helper outputs by default to avoid repeated slow diagnostics.
+# rc1.16: surfaces shadow raw/daily readiness and legacy/shadow comparison signals.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -85,13 +85,19 @@ helper_text_full_or_cached() {
 
 str_key_of() {
   key="$1"; body="$2"; def="$3"
-  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":"\([^"]*\)".*/\1/p' | head -1)"
+  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":"\([^"]*\)".*/\1/p' )"
   [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
 bool_key_of() {
   key="$1"; body="$2"
   case "$body" in *\"$key\":true*) echo true ;; *\"$key\":false*) echo false ;; *) echo false ;; esac
+}
+
+num_key_of() {
+  key="$1"; body="$2"; def="$3"
+  val="$(printf '%s' "$body" | sed -n 's/.*"'"$key"'":\([0-9][0-9]*\).*/\1/p' )"
+  case "$val" in ''|*[!0-9]*) printf '%s' "$def" ;; *) printf '%s' "$val" ;; esac
 }
 
 mark_level() {
@@ -149,6 +155,18 @@ SOURCE_STATUS="$(str_key_of status "$SOURCE_JSON" unknown)"
 SHADOW_STATUS="$(str_key_of status "$SHADOW_JSON" unknown)"
 HEALTH_STATUS="$(str_key_of status "$HEALTH_JSON" unknown)"
 
+SHADOW_STATE="$(str_key_of shadow_state "$READINESS_JSON" unknown)"
+SHADOW_QUALITY="$(str_key_of shadow_quality "$READINESS_JSON" unknown)"
+COMPARE_QUALITY="$(str_key_of compare_quality "$READINESS_JSON" unknown)"
+SHADOW_RAW_LINES="$(num_key_of shadow_raw_lines "$READINESS_JSON" 0)"
+SHADOW_DAILY_SAMPLES="$(num_key_of shadow_daily_samples "$READINESS_JSON" 0)"
+SHADOW_LATEST_TS="$(num_key_of shadow_latest_ts "$READINESS_JSON" 0)"
+COMPARE_TOTAL_KEYS="$(num_key_of total_keys "$READINESS_JSON" 0)"
+COMPARE_MATCHED_KEYS="$(num_key_of matched_keys "$READINESS_JSON" 0)"
+COMPARE_MISMATCHED_KEYS="$(num_key_of mismatched_keys "$READINESS_JSON" 0)"
+COMPARE_MISSING_IN_SHADOW="$(num_key_of missing_in_shadow "$READINESS_JSON" 0)"
+COMPARE_MISSING_IN_LEGACY="$(num_key_of missing_in_legacy "$READINESS_JSON" 0)"
+
 SAFE_TO_ENABLE_RC="$(bool_key_of safe_to_enable_rc "$SELF_JSON")"
 FIRST_BOOT_SAFE="$(bool_key_of first_boot_safe "$SELF_JSON")"
 INSTALL_READY="$(bool_key_of install_ready "$SELF_JSON")"
@@ -168,6 +186,9 @@ case "$WEB_SEVERITY" in ok|pass) mark_level pass "web status severity $WEB_SEVER
 case "$DEVICE_STATUS" in pass|ready) mark_level pass "device check $DEVICE_STATUS" ;; warn|warmup|not_ready|disabled) mark_level warn "device check $DEVICE_STATUS" ;; fail|blocked|missing|unknown) mark_level fail "device check $DEVICE_STATUS" ;; *) mark_level warn "device check $DEVICE_STATUS" ;; esac
 case "$COMPARE_STATUS" in pass|ok|ready) mark_level pass "stats compare $COMPARE_STATUS" ;; warn|drift|disabled|warmup|not_ready|unknown) mark_level warn "stats compare $COMPARE_STATUS" ;; fail|blocked|missing) mark_level warn "stats compare $COMPARE_STATUS" ;; *) mark_level warn "stats compare $COMPARE_STATUS" ;; esac
 case "$READINESS_STATUS" in ready|pass|ok) mark_level pass "readiness $READINESS_STATUS" ;; not_ready|warmup|disabled) mark_level warn "readiness $READINESS_STATUS" ;; blocked|fail|missing|unknown) mark_level fail "readiness $READINESS_STATUS" ;; *) mark_level warn "readiness $READINESS_STATUS" ;; esac
+case "$SHADOW_STATE" in shadow_rollup_seen) mark_level pass "shadow raw/daily visible" ;; shadow_raw_seen) mark_level warn "shadow raw visible but daily rollup missing" ;; no_shadow_data|unknown) mark_level warn "shadow data not visible" ;; *) mark_level warn "shadow state $SHADOW_STATE" ;; esac
+case "$SHADOW_QUALITY" in observed|observed_zero_traffic) mark_level pass "shadow quality $SHADOW_QUALITY" ;; warmup|warn_no_devices|warn_no_daily_samples|missing|unknown) mark_level warn "shadow quality $SHADOW_QUALITY" ;; *) mark_level warn "shadow quality $SHADOW_QUALITY" ;; esac
+case "$COMPARE_QUALITY" in compared|shadow_only|shadow_only_or_legacy_empty) mark_level pass "compare quality $COMPARE_QUALITY" ;; warn_drift) mark_level warn "compare quality warn_drift" ;; not_available|unknown) mark_level warn "compare quality $COMPARE_QUALITY" ;; *) mark_level warn "compare quality $COMPARE_QUALITY" ;; esac
 case "$SMOKE_STATUS" in pass|ok) mark_level pass "smoke $SMOKE_STATUS" ;; disabled|warn|warmup) mark_level warn "smoke $SMOKE_STATUS" ;; fail|blocked|missing|unknown) mark_level fail "smoke $SMOKE_STATUS" ;; *) mark_level warn "smoke $SMOKE_STATUS" ;; esac
 case "$RC1_STATUS" in pass|ok|disabled|ready) mark_level pass "rc1 switch $RC1_STATUS" ;; warn|not_ready|warmup) mark_level warn "rc1 switch $RC1_STATUS" ;; blocked|drift|fail|missing|unknown) mark_level fail "rc1 switch $RC1_STATUS" ;; *) mark_level warn "rc1 switch $RC1_STATUS" ;; esac
 
@@ -184,7 +205,7 @@ SAFE_ROLLBACK_EXPECTED=true
 [ "$FAILS" -eq 0 ] && REVIEW_READY=true
 [ "$FAILS" -eq 0 ] && [ "$SAFE_TO_ENABLE_RC" = true ] && [ "$RC_ENABLE_READY" = true ] && GRAY_READY=true
 
-RECOMMENDATION="v5.2-rc1.14 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
+RECOMMENDATION="v5.2-rc1.16 gray observation looks clean; keep legacy default while monitoring shadow stats before any wider rollout"
 [ "$OVERALL" = warn ] && RECOMMENDATION="keep legacy default; review warnings and continue gray observation before enabling or widening v5.2 stats"
 [ "$OVERALL" = fail ] && RECOMMENDATION="do not enable or widen v5.2 stats; keep legacy default and fix failed gray-check items or rollback"
 
@@ -197,7 +218,7 @@ SMOKE_TEXT="$(helper_text_full_or_cached stats_v52_rc_smoke.sh | head -80)"
 RC1_TEXT="$(helper_text_full_or_cached stats_v52_rc1_switch.sh | head -70)"
 
 cat > "$OUT_TXT" <<TXT
-HNC v5.2-rc1.14 gray observation report
+HNC v5.2-rc1.16 gray observation report
 status=$OVERALL
 review_ready=$REVIEW_READY
 gray_ready=$GRAY_READY
@@ -238,7 +259,7 @@ paths.markdown=$OUT_MD
 TXT
 
 cat > "$OUT_MD" <<MD
-# HNC v5.2-rc1.14 灰度观察报告
+# HNC v5.2-rc1.16 灰度观察报告
 
 ## 结论
 
@@ -272,6 +293,20 @@ cat > "$OUT_MD" <<MD
 | shadow diag | $SHADOW_STATUS |
 | health summary | $HEALTH_STATUS |
 
+## Shadow 数据识别
+
+- shadow_state: $SHADOW_STATE
+- shadow_quality: $SHADOW_QUALITY
+- shadow_raw_lines: $SHADOW_RAW_LINES
+- shadow_daily_samples: $SHADOW_DAILY_SAMPLES
+- shadow_latest_ts: $SHADOW_LATEST_TS
+- compare_quality: $COMPARE_QUALITY
+- compare_total_keys: $COMPARE_TOTAL_KEYS
+- compare_matched_keys: $COMPARE_MATCHED_KEYS
+- compare_missing_in_legacy: $COMPARE_MISSING_IN_LEGACY
+- compare_missing_in_shadow: $COMPARE_MISSING_IN_SHADOW
+- compare_mismatched_keys: $COMPARE_MISMATCHED_KEYS
+
 ## 安全开关
 
 - install_ready: $INSTALL_READY
@@ -286,7 +321,7 @@ cat > "$OUT_MD" <<MD
 - refresh: $REFRESH
 - full_raw: $FULL_RAW
 
-说明：rc1.14 默认复用刚刚生成的 helper 缓存，避免同一批诊断在灰度报告和审查包里重复执行。需要强制全量刷新时可执行：
+说明：rc1.16 默认复用刚刚生成的 helper 缓存，避免同一批诊断在灰度报告和审查包里重复执行。需要强制全量刷新时可执行：
 
 \`HNC_V52_REPORT_REFRESH=1 sh /data/local/hnc/bin/stats_v52_gray_report.sh markdown\`
 
@@ -340,11 +375,11 @@ $RC1_TEXT
 MD
 
 cat > "$OUT_JSON" <<JSON
-{"ok":true,"status":"$(json_escape "$OVERALL")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"rc_enabled":$RC_ENABLED,"install_ready":$INSTALL_READY,"first_boot_safe":$FIRST_BOOT_SAFE,"safe_to_enable_rc":$SAFE_TO_ENABLE_RC,"rc_enable_ready":$RC_ENABLE_READY,"fast_cache":$FAST_CACHE,"refresh":$REFRESH,"full_raw":$FULL_RAW,"failures":$FAILS,"warnings":$WARNS,"passes":$PASSES,"signals":{"selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","rc_control_status":"$(json_escape "$RC_CONTROL_STATUS")","source_status":"$(json_escape "$SOURCE_STATUS")","shadow_status":"$(json_escape "$SHADOW_STATUS")","health_status":"$(json_escape "$HEALTH_STATUS")"},"observations":"$(json_escape "$OBSERVATIONS")","recommendation":"$(json_escape "$RECOMMENDATION")","paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
+{"ok":true,"status":"$(json_escape "$OVERALL")","timestamp":$TS,"version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","review_ready":$REVIEW_READY,"gray_ready":$GRAY_READY,"legacy_default_preserved":$LEGACY_DEFAULT_PRESERVED,"default_source":"$(json_escape "$DEFAULT_SOURCE")","rc1_enabled":$RC1_ENABLED,"rc_enabled":$RC_ENABLED,"install_ready":$INSTALL_READY,"first_boot_safe":$FIRST_BOOT_SAFE,"safe_to_enable_rc":$SAFE_TO_ENABLE_RC,"rc_enable_ready":$RC_ENABLE_READY,"fast_cache":$FAST_CACHE,"refresh":$REFRESH,"full_raw":$FULL_RAW,"failures":$FAILS,"warnings":$WARNS,"passes":$PASSES,"shadow_state":"$(json_escape "$SHADOW_STATE")","shadow_quality":"$(json_escape "$SHADOW_QUALITY")","shadow_raw_lines":$SHADOW_RAW_LINES,"shadow_daily_samples":$SHADOW_DAILY_SAMPLES,"shadow_latest_ts":$SHADOW_LATEST_TS,"compare_quality":"$(json_escape "$COMPARE_QUALITY")","compare_total_keys":$COMPARE_TOTAL_KEYS,"compare_matched_keys":$COMPARE_MATCHED_KEYS,"compare_missing_in_legacy":$COMPARE_MISSING_IN_LEGACY,"compare_missing_in_shadow":$COMPARE_MISSING_IN_SHADOW,"compare_mismatched_keys":$COMPARE_MISMATCHED_KEYS,"signals":{"selfcheck_status":"$(json_escape "$SELF_STATUS")","web_status":"$(json_escape "$WEB_STATUS")","web_severity":"$(json_escape "$WEB_SEVERITY")","device_check_status":"$(json_escape "$DEVICE_STATUS")","compare_status":"$(json_escape "$COMPARE_STATUS")","readiness_status":"$(json_escape "$READINESS_STATUS")","smoke_status":"$(json_escape "$SMOKE_STATUS")","rc1_switch_status":"$(json_escape "$RC1_STATUS")","rc_control_status":"$(json_escape "$RC_CONTROL_STATUS")","source_status":"$(json_escape "$SOURCE_STATUS")","shadow_status":"$(json_escape "$SHADOW_STATUS")","health_status":"$(json_escape "$HEALTH_STATUS")"},"observations":"$(json_escape "$OBSERVATIONS")","recommendation":"$(json_escape "$RECOMMENDATION")","paths":{"json":"$(json_escape "$OUT_JSON")","text":"$(json_escape "$OUT_TXT")","markdown":"$(json_escape "$OUT_MD")"}}
 JSON
 
 make_bundle() {
-  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.14-gray-$STAMP"
+  BUNDLE_DIR="$OUT_BASE/hnc-v52-rc1.16-gray-$STAMP"
   mkdir -p "$BUNDLE_DIR/cmd" 2>/dev/null || return 1
   cp -af "$OUT_TXT" "$BUNDLE_DIR/summary.txt" 2>/dev/null
   cp -af "$OUT_MD" "$BUNDLE_DIR/report.md" 2>/dev/null
