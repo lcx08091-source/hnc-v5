@@ -1,8 +1,9 @@
 #!/system/bin/sh
-# stats_v52_gray_observe.sh — HNC v5.2-rc1.17 real-device gray observation helper.
-# Read-only by default. It does not enable v5.2 RC, switch stats source,
-# or touch tc/watchdog/limit/delay. Set HNC_V52_OBSERVE_SAMPLE=1 to run one
-# explicit shadow sample + same-day rollup before summarizing.
+# stats_v52_gray_observe.sh — HNC v5.2-rc1.18 real-device gray observation helper.
+# Observation-only helper. It does not enable v5.2 RC, switch stats source,
+# or touch tc/watchdog/limit/delay. By default it refreshes the derived
+# same-day shadow rollup when raw samples exist so daily totals are not stale.
+# Set HNC_V52_OBSERVE_SAMPLE=1 to run one explicit shadow sample first.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 
@@ -18,6 +19,10 @@ OUT_MD="$RUN/stats_v52_gray_observe.md"
 TS="$(date +%s 2>/dev/null || echo 0)"
 DO_SAMPLE=${HNC_V52_OBSERVE_SAMPLE:-0}
 DO_REFRESH=${HNC_V52_OBSERVE_REFRESH:-0}
+DO_AUTO_ROLLUP=${HNC_V52_OBSERVE_AUTO_ROLLUP:-1}
+NEED_REFRESH=0
+AUTO_ROLLUP_USED=false
+AUTO_ROLLUP_DATE=
 mkdir -p "$RUN" 2>/dev/null
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -35,7 +40,7 @@ bool() { case "$1" in true|false) echo "$1" ;; 1|yes|YES|TRUE) echo true ;; *) e
 
 run_text_helper() {
   h="$1"; out="$2"; mode_arg=${3:-text}
-  if [ "$DO_REFRESH" = 1 ] || [ "$DO_REFRESH" = true ] || [ ! -s "$out" ]; then
+  if [ "$DO_REFRESH" = 1 ] || [ "$DO_REFRESH" = true ] || [ "$NEED_REFRESH" = 1 ] || [ ! -s "$out" ]; then
     if [ -x "$BIN/$h" ]; then
       sh "$BIN/$h" "$mode_arg" > "$out.tmp" 2>/dev/null && mv -f "$out.tmp" "$out" || rm -f "$out.tmp" 2>/dev/null
     fi
@@ -47,6 +52,23 @@ maybe_sample() {
   [ -x "$BIN/stats_shadow_sample.sh" ] && sh "$BIN/stats_shadow_sample.sh" >/dev/null 2>&1 || true
   today="$(date +%Y-%m-%d 2>/dev/null)"
   case "$today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) [ -x "$BIN/stats_shadow_rollup.sh" ] && sh "$BIN/stats_shadow_rollup.sh" "$today" >/dev/null 2>&1 || true ;; esac
+  NEED_REFRESH=1
+}
+
+maybe_auto_rollup() {
+  case "$DO_AUTO_ROLLUP" in 0|false|FALSE|no|NO) return 0 ;; esac
+  case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) return 0 ;; esac
+  [ -s "$DATA/stats_shadow_raw.jsonl" ] || return 0
+  [ -x "$BIN/stats_shadow_rollup.sh" ] || return 0
+  today="$(date +%Y-%m-%d 2>/dev/null)"
+  case "$today" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+      sh "$BIN/stats_shadow_rollup.sh" "$today" >/dev/null 2>&1 || true
+      AUTO_ROLLUP_USED=true
+      AUTO_ROLLUP_DATE="$today"
+      NEED_REFRESH=1
+      ;;
+  esac
 }
 
 devices_summary() {
@@ -77,6 +99,7 @@ module_version() {
 }
 
 maybe_sample
+maybe_auto_rollup
 READINESS_TXT="$RUN/stats_migration_readiness.txt"
 GRAY_TXT="$RUN/stats_v52_gray_report.txt"
 REVIEW_TXT="$RUN/stats_v52_review_bundle.txt"
@@ -119,14 +142,16 @@ status=pass
 reason="shadow observation is usable"
 recommendation="continue real-device gray observation with legacy default preserved"
 case "$shadow_state" in shadow_rollup_seen|shadow_raw_seen) ;; *) status=fail; reason="shadow raw/daily data is not visible"; recommendation="enable shadow sampling and run rc1.15 sample/rollup checks before widening observation" ;; esac
-if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.17 real-traffic checklist"; fi
+if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.18 real-traffic checklist"; fi
 if [ "$status" != fail ]; then case "$compare_quality" in compared|match|pass|ok) ;; *) status=warn; reason="legacy/shadow comparison still needs review"; recommendation="collect more real traffic samples, then rerun gray observe/report before optional source switching" ;; esac; fi
 if [ "$legacy_default_preserved" != true ] || [ "$default_source" != legacy ] || [ "$rc1_enabled" = true ] || [ "$rc_enabled" = true ]; then status=fail; reason="legacy default or RC disabled guard is not preserved"; recommendation="rollback to legacy default before continuing gray observation"; fi
 sample_requested=false; case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) sample_requested=true ;; esac
 refresh_requested=false; case "$DO_REFRESH" in 1|true|TRUE|yes|YES) refresh_requested=true ;; esac
+auto_rollup_used=$AUTO_ROLLUP_USED
+auto_rollup_date=$AUTO_ROLLUP_DATE
 
 cat > "$OUT_TXT" <<EOF
-HNC v5.2-rc1.17 gray observation
+HNC v5.2-rc1.18 gray observation
 status=$status
 reason=$reason
 recommendation=$recommendation
@@ -164,14 +189,16 @@ devices_blocked=$DEV_BLOCKED
 devices_active=$DEV_ACTIVE
 sample_requested=$sample_requested
 refresh_requested=$refresh_requested
+auto_rollup_used=$auto_rollup_used
+auto_rollup_date=$auto_rollup_date
 EOF
 
 cat > "$OUT_JSON" <<EOF
-{"ok":true,"status":"$(json_escape "$status")","reason":"$(json_escape "$reason")","recommendation":"$(json_escape "$recommendation")","version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","module_prop":"$(json_escape "$MODULE_PROP")","legacy_default_preserved":$legacy_default_preserved,"default_source":"$(json_escape "$default_source")","rc1_enabled":$rc1_enabled,"rc_enabled":$rc_enabled,"readiness_status":"$(json_escape "$readiness_status")","gray_report_status":"$(json_escape "$gray_status")","review_bundle_status":"$(json_escape "$review_status")","shadow_state":"$(json_escape "$shadow_state")","shadow_quality":"$(json_escape "$shadow_quality")","traffic_state":"$(json_escape "$traffic_state")","shadow_raw_lines":$shadow_raw_lines,"shadow_daily_lines":$shadow_daily_lines,"shadow_daily_samples":$shadow_daily_samples,"shadow_latest_ts":$shadow_latest_ts,"sample_age_seconds":$sample_age,"shadow_raw_total_rx":$shadow_raw_total_rx,"shadow_raw_total_tx":$shadow_raw_total_tx,"shadow_daily_total_rx":$shadow_daily_total_rx,"shadow_daily_total_tx":$shadow_daily_total_tx,"compare_quality":"$(json_escape "$compare_quality")","compare_matched_keys":$compare_matched_keys,"compare_missing_in_legacy":$compare_missing_in_legacy,"compare_missing_in_shadow":$compare_missing_in_shadow,"compare_mismatched_keys":$compare_mismatched_keys,"devices_total":$DEV_TOTAL,"devices_with_ip":$DEV_WITH_IP,"devices_online":$DEV_ONLINE,"devices_blocked":$DEV_BLOCKED,"devices_active":$DEV_ACTIVE,"sample_requested":$sample_requested,"refresh_requested":$refresh_requested}
+{"ok":true,"status":"$(json_escape "$status")","reason":"$(json_escape "$reason")","recommendation":"$(json_escape "$recommendation")","version":"$(json_escape "$VERSION")","versionCode":"$(json_escape "$VERSION_CODE")","module_prop":"$(json_escape "$MODULE_PROP")","legacy_default_preserved":$legacy_default_preserved,"default_source":"$(json_escape "$default_source")","rc1_enabled":$rc1_enabled,"rc_enabled":$rc_enabled,"readiness_status":"$(json_escape "$readiness_status")","gray_report_status":"$(json_escape "$gray_status")","review_bundle_status":"$(json_escape "$review_status")","shadow_state":"$(json_escape "$shadow_state")","shadow_quality":"$(json_escape "$shadow_quality")","traffic_state":"$(json_escape "$traffic_state")","shadow_raw_lines":$shadow_raw_lines,"shadow_daily_lines":$shadow_daily_lines,"shadow_daily_samples":$shadow_daily_samples,"shadow_latest_ts":$shadow_latest_ts,"sample_age_seconds":$sample_age,"shadow_raw_total_rx":$shadow_raw_total_rx,"shadow_raw_total_tx":$shadow_raw_total_tx,"shadow_daily_total_rx":$shadow_daily_total_rx,"shadow_daily_total_tx":$shadow_daily_total_tx,"compare_quality":"$(json_escape "$compare_quality")","compare_matched_keys":$compare_matched_keys,"compare_missing_in_legacy":$compare_missing_in_legacy,"compare_missing_in_shadow":$compare_missing_in_shadow,"compare_mismatched_keys":$compare_mismatched_keys,"devices_total":$DEV_TOTAL,"devices_with_ip":$DEV_WITH_IP,"devices_online":$DEV_ONLINE,"devices_blocked":$DEV_BLOCKED,"devices_active":$DEV_ACTIVE,"sample_requested":$sample_requested,"refresh_requested":$refresh_requested,"auto_rollup_used":$auto_rollup_used,"auto_rollup_date":"$(json_escape "$auto_rollup_date")"}
 EOF
 
 cat > "$OUT_MD" <<EOF
-# HNC v5.2-rc1.17 灰度观察
+# HNC v5.2-rc1.18 灰度观察
 
 - status: $status
 - reason: $reason
@@ -191,6 +218,7 @@ cat > "$OUT_MD" <<EOF
 - sample age seconds: $sample_age
 - raw rx/tx: $shadow_raw_total_rx / $shadow_raw_total_tx
 - daily rx/tx: $shadow_daily_total_rx / $shadow_daily_total_tx
+- auto rollup: $auto_rollup_used ${auto_rollup_date:+($auto_rollup_date)}
 
 ## Legacy vs Shadow
 
@@ -208,7 +236,7 @@ cat > "$OUT_MD" <<EOF
 - blocked: $DEV_BLOCKED
 - active: $DEV_ACTIVE
 
-## rc1.17 实机灰度 checklist
+## rc1.18 实机灰度 checklist
 
 - [ ] 单设备连热点刷网页后，shadow rx/tx 增长
 - [ ] 单设备测速后，shadow/legacy 对比不出现大幅异常

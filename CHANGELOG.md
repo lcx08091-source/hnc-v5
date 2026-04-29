@@ -1,3 +1,11 @@
+# v5.2.0-rc1.18
+
+- Updated `stats_v52_gray_observe.sh` to auto-refresh same-day shadow rollup when shadow raw samples already exist, preventing ordinary observe reports from reading stale daily totals.
+- Added `auto_rollup_used` and `auto_rollup_date` fields to text/json output.
+- Added regression coverage for auto rollup without implicit shadow sampling.
+- Kept legacy stats as the default source; no v5.2 RC enablement or source switching.
+- Updated module/WebUI/preflight version display to rc1.18.
+
 # v5.2.0-rc1.17
 
 - Added `stats_v52_gray_observe.sh`, a read-only real-device gray observation helper for rc1.17 that summarizes shadow raw/daily visibility, traffic state, device state, and legacy/shadow drift.

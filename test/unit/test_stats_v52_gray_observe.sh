@@ -13,8 +13,8 @@ chmod 755 "$HNC_DIR/bin/stats_v52_gray_observe.sh"
 
 cat > "$HNC_DIR/module.prop" <<'EOF'
 id=hotspot_network_control
-version=v5.2.0-rc1.17
-versionCode=520027
+version=v5.2.0-rc1.18
+versionCode=520028
 EOF
 
 cat > "$HNC_DIR/data/devices.json" <<'JSON'
@@ -79,7 +79,7 @@ grep -q 'compare_quality=compared' "$WORK/out.txt"
 grep -q '"status":"pass"' "$WORK/out.json"
 grep -q '"traffic_state":"traffic_seen"' "$WORK/out.json"
 grep -q '"devices_blocked":1' "$WORK/out.json"
-grep -q 'rc1.17 实机灰度 checklist' "$WORK/out.md"
+grep -q 'rc1.18 实机灰度 checklist' "$WORK/out.md"
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.json" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.txt" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.md" ]
@@ -111,7 +111,9 @@ HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODD
 grep -q 'status=warn' "$WORK/warn.txt"
 grep -q 'traffic_state=zero_traffic_observed' "$WORK/warn.txt"
 
-# Explicit sample mode should call the sample and rollup helpers, while default mode does not.
+# Default mode should auto-rollup only when raw samples exist, and should not
+# implicitly run the shadow sampler. Explicit sample mode still calls both
+# sample and rollup helpers.
 cat > "$HNC_DIR/bin/stats_shadow_sample.sh" <<'SH2'
 #!/bin/sh
 echo sample >> "$HNC_DIR/run/sample_called"
@@ -121,9 +123,24 @@ cat > "$HNC_DIR/bin/stats_shadow_rollup.sh" <<'SH2'
 echo "$1" >> "$HNC_DIR/run/rollup_called"
 SH2
 chmod 755 "$HNC_DIR/bin/stats_shadow_sample.sh" "$HNC_DIR/bin/stats_shadow_rollup.sh"
-rm -f "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
-HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text >/dev/null
+
+rm -f "$HNC_DIR/data/stats_shadow_raw.jsonl" "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
+HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text > "$WORK/no_raw.txt"
 [ ! -f "$HNC_DIR/run/sample_called" ]
+[ ! -f "$HNC_DIR/run/rollup_called" ]
+grep -q 'auto_rollup_used=false' "$WORK/no_raw.txt"
+
+cat > "$HNC_DIR/data/stats_shadow_raw.jsonl" <<'JSON'
+{"schema":1,"ts":1777455337,"date":"2026-04-29","device_id":"mac:aa:bb:cc:dd:ee:01","mac":"aa:bb:cc:dd:ee:01","rx":1000,"tx":400,"ips":"192.168.43.10","ip_count":1,"source":"iptables"}
+JSON
+rm -f "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
+HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text > "$WORK/auto_rollup.txt"
+[ ! -f "$HNC_DIR/run/sample_called" ]
+[ -f "$HNC_DIR/run/rollup_called" ]
+grep -q 'auto_rollup_used=true' "$WORK/auto_rollup.txt"
+grep -q 'auto_rollup_date=' "$WORK/auto_rollup.txt"
+
+rm -f "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
 HNC_TEST_MODE=1 HNC_V52_OBSERVE_SAMPLE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text >/dev/null
 [ -f "$HNC_DIR/run/sample_called" ]
 [ -f "$HNC_DIR/run/rollup_called" ]
