@@ -1,3 +1,10 @@
+# v5.2.0-rc1.17
+
+- Added `stats_v52_gray_observe.sh`, a read-only real-device gray observation helper for rc1.17 that summarizes shadow raw/daily visibility, traffic state, device state, and legacy/shadow drift.
+- The helper writes `run/stats_v52_gray_observe.{json,txt,md}` and includes a concise rc1.17 real-device checklist.
+- Kept legacy stats as the default source; this release does not enable v5.2 stats RC or modify tc/iptables/watchdog/limit/delay logic.
+- Updated module/WebUI/preflight version display to rc1.17.
+
 # v5.2.0-rc1.16
 
 - Enhanced `stats_migration_readiness.sh` to report `shadow_state`, `shadow_quality`, raw/daily sample metrics, and legacy/shadow comparison quality.
