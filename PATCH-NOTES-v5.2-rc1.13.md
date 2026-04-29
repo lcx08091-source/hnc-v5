@@ -1,4 +1,4 @@
-# HNC v5.2.0-rc1.14
+# HNC v5.2.0-rc1.13
 
 ## Purpose
 
@@ -18,7 +18,7 @@ This patch removes the fragile background watchdog wrapper from the v5.2 gray-re
 - Treat readable helper scripts as present and execute them via `sh`.
 - Preserve existing status semantics: missing, empty, unknown, warn, fail.
 - Keep legacy stats as default and keep v5.2 RC disabled by default.
-- Bump module version to `v5.2.0-rc1.14` / `520024`.
+- Bump module version to `v5.2.0-rc1.13` / `520023`.
 
 ## Not changed
 

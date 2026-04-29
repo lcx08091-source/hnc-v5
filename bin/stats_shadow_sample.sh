@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_shadow_sample.sh — HNC hotfix21.4 shadow stats writer
+# stats_shadow_sample.sh — HNC v5.2-rc1.15 shadow stats writer
 #
 # Optional v5.2 migration stream. Disabled by default from stats_sample.sh;
 # when enabled, it writes MAC/device_id based cumulative samples into
@@ -16,6 +16,27 @@ DEVICES_FILE="$DATA/devices.json"
 IPT_MGR="$HNC_DIR/bin/iptables_manager.sh"
 STATS_ALL_CMD=${STATS_ALL_CMD:-"sh $IPT_MGR stats_all"}
 
+extract_device_ips() {
+  grep -oE '"ip"[[:space:]]*:[[:space:]]*"([0-9]{1,3}\.){3}[0-9]{1,3}"' "$DEVICES_FILE" 2>/dev/null | \
+    sed -nE 's/.*"(([0-9]{1,3}\.){3}[0-9]{1,3})".*/\1/p' | \
+    awk '$0 != "" && !seen[$0]++'
+}
+
+ensure_shadow_stats_rules() {
+  [ -f "$IPT_MGR" ] || return 1
+  local count=0
+  local ip
+  for ip in $(extract_device_ips); do
+    case "$ip" in
+      *.*.*.*) ;;
+      *) continue ;;
+    esac
+    sh "$IPT_MGR" ensure_stats "$ip" >/dev/null 2>&1 && count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] && log "stats_all empty; ensured $count shadow stats rule(s), retrying"
+  [ "$count" -gt 0 ]
+}
+
 log() {
   [ -d "$(dirname "$LOG")" ] || mkdir -p "$(dirname "$LOG")" 2>/dev/null
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] [STATS_SHADOW] $*" >> "$LOG" 2>/dev/null || true
@@ -29,6 +50,10 @@ if [ ! -f "$DEVICES_FILE" ]; then
 fi
 
 stats_out=$(eval "$STATS_ALL_CMD" 2>/dev/null)
+if [ -z "$stats_out" ]; then
+  ensure_shadow_stats_rules || true
+  stats_out=$(eval "$STATS_ALL_CMD" 2>/dev/null)
+fi
 [ -n "$stats_out" ] || exit 0
 
 ts=$(date +%s 2>/dev/null)

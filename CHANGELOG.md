@@ -1,3 +1,10 @@
+# v5.2.0-rc1.15
+
+- `stats_shadow_sample.sh` now auto-ensures missing HNC_STATS per-device accounting rules from `devices.json` when `stats_all` is empty, then retries sampling.
+- Added regression coverage for the empty-stats/allows-ensure retry path.
+- Updated module/WebUI/preflight version display to rc1.15 and fixed the rc1.13 patch-note title mismatch.
+- v5.2 stats RC remains disabled by default; legacy stats remains the active source.
+
 # hotfix20.6
 
 - Added optional C helper write bridge coverage for device_names, blacklist, and remote token revoke paths.
