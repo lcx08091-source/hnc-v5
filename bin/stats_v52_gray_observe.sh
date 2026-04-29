@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_gray_observe.sh — HNC v5.2-rc1.18 real-device gray observation helper.
+# stats_v52_gray_observe.sh — HNC v5.2-rc1.19 real-device gray observation helper.
 # Observation-only helper. It does not enable v5.2 RC, switch stats source,
 # or touch tc/watchdog/limit/delay. By default it refreshes the derived
 # same-day shadow rollup when raw samples exist so daily totals are not stale.
@@ -142,7 +142,7 @@ status=pass
 reason="shadow observation is usable"
 recommendation="continue real-device gray observation with legacy default preserved"
 case "$shadow_state" in shadow_rollup_seen|shadow_raw_seen) ;; *) status=fail; reason="shadow raw/daily data is not visible"; recommendation="enable shadow sampling and run rc1.15 sample/rollup checks before widening observation" ;; esac
-if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.18 real-traffic checklist"; fi
+if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.19 real-traffic checklist"; fi
 if [ "$status" != fail ]; then case "$compare_quality" in compared|match|pass|ok) ;; *) status=warn; reason="legacy/shadow comparison still needs review"; recommendation="collect more real traffic samples, then rerun gray observe/report before optional source switching" ;; esac; fi
 if [ "$legacy_default_preserved" != true ] || [ "$default_source" != legacy ] || [ "$rc1_enabled" = true ] || [ "$rc_enabled" = true ]; then status=fail; reason="legacy default or RC disabled guard is not preserved"; recommendation="rollback to legacy default before continuing gray observation"; fi
 sample_requested=false; case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) sample_requested=true ;; esac
@@ -151,7 +151,7 @@ auto_rollup_used=$AUTO_ROLLUP_USED
 auto_rollup_date=$AUTO_ROLLUP_DATE
 
 cat > "$OUT_TXT" <<EOF
-HNC v5.2-rc1.18 gray observation
+HNC v5.2-rc1.19 gray observation
 status=$status
 reason=$reason
 recommendation=$recommendation
@@ -198,7 +198,7 @@ cat > "$OUT_JSON" <<EOF
 EOF
 
 cat > "$OUT_MD" <<EOF
-# HNC v5.2-rc1.18 灰度观察
+# HNC v5.2-rc1.19 灰度观察
 
 - status: $status
 - reason: $reason
@@ -236,7 +236,7 @@ cat > "$OUT_MD" <<EOF
 - blocked: $DEV_BLOCKED
 - active: $DEV_ACTIVE
 
-## rc1.18 实机灰度 checklist
+## rc1.19 实机灰度 checklist
 
 - [ ] 单设备连热点刷网页后，shadow rx/tx 增长
 - [ ] 单设备测速后，shadow/legacy 对比不出现大幅异常

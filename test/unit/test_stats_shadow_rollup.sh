@@ -41,3 +41,21 @@ echo "$OUT" | grep -q '"daily_unique_devices":2'
 
 rm -rf "$TMP_BASE"
 echo "test_stats_shadow_rollup.sh: OK"
+
+# rc1.19: same-day counter reset to 0 must not erase already accumulated daily traffic.
+TMP_RESET="$ROOT_DIR/.tmp/test_stats_shadow_rollup_reset.$$"
+rm -rf "$TMP_RESET"
+mkdir -p "$TMP_RESET/data" "$TMP_RESET/run" "$TMP_RESET/logs"
+cat > "$TMP_RESET/data/stats_shadow_raw.jsonl" <<'JSON'
+{"schema":1,"ts":1777465121,"date":"2026-04-29","device_id":"mac:8a:47:4c:9f:24:54","mac":"8a:47:4c:9f:24:54","rx":227138,"tx":3952,"ips":"10.183.150.52","ip_count":1,"source":"iptables"}
+{"schema":1,"ts":1777465407,"date":"2026-04-29","device_id":"mac:8a:47:4c:9f:24:54","mac":"8a:47:4c:9f:24:54","rx":56021628,"tx":48556148,"ips":"10.183.150.52","ip_count":1,"source":"iptables"}
+{"schema":1,"ts":1777467005,"date":"2026-04-29","device_id":"mac:8a:47:4c:9f:24:54","mac":"8a:47:4c:9f:24:54","rx":201628922,"tx":149591042,"ips":"10.183.150.52","ip_count":1,"source":"iptables"}
+{"schema":1,"ts":1777476663,"date":"2026-04-29","device_id":"mac:8a:47:4c:9f:24:54","mac":"8a:47:4c:9f:24:54","rx":0,"tx":0,"ips":"10.214.37.52","ip_count":1,"source":"iptables"}
+JSON
+HNC_DIR="$TMP_RESET" HNC_TEST_MODE=1 sh "$ROOT_DIR/bin/stats_shadow_rollup.sh" 2026-04-29
+grep -q '"rx":201401784' "$TMP_RESET/data/stats_shadow_daily.jsonl"
+grep -q '"tx":149587090' "$TMP_RESET/data/stats_shadow_daily.jsonl"
+grep -q '"samples":4' "$TMP_RESET/data/stats_shadow_daily.jsonl"
+grep -q '"baseline":"first_sample+counter_reset+zero_reset_preserved"' "$TMP_RESET/data/stats_shadow_daily.jsonl"
+rm -rf "$TMP_RESET"
+echo "test_stats_shadow_rollup_reset.sh: OK"

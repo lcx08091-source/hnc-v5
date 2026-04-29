@@ -13,8 +13,8 @@ chmod 755 "$HNC_DIR/bin/stats_v52_gray_observe.sh"
 
 cat > "$HNC_DIR/module.prop" <<'EOF'
 id=hotspot_network_control
-version=v5.2.0-rc1.18
-versionCode=520028
+version=v5.2.0-rc1.19
+versionCode=520029
 EOF
 
 cat > "$HNC_DIR/data/devices.json" <<'JSON'
@@ -79,7 +79,7 @@ grep -q 'compare_quality=compared' "$WORK/out.txt"
 grep -q '"status":"pass"' "$WORK/out.json"
 grep -q '"traffic_state":"traffic_seen"' "$WORK/out.json"
 grep -q '"devices_blocked":1' "$WORK/out.json"
-grep -q 'rc1.18 实机灰度 checklist' "$WORK/out.md"
+grep -q 'rc1.19 实机灰度 checklist' "$WORK/out.md"
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.json" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.txt" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.md" ]

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_shadow_rollup.sh — HNC hotfix21.4 shadow stats daily rollup
+# stats_shadow_rollup.sh — HNC v5.2-rc1.19 shadow stats daily rollup
 #
 # This is part of the v5.2 stats migration shadow path. It only reads/writes
 # shadow stats files and never replaces the legacy stats pipeline.
@@ -60,22 +60,55 @@ function num_field(line, key,    pat, val) {
   }
   return -1
 }
-function endpoint(id, mac, rxv, txv, tsv) {
-  if (id == "") return
-  if (last_seen[id] == "" || tsv >= last_seen[id]) {
-    last_seen[id] = tsv; last_rx[id] = rxv; last_tx[id] = txv; last_mac[id] = mac
-  }
-}
-function baseline(id, mac, rxv, txv, tsv) {
+function set_base(id, mac, rxv, txv, tsv) {
   if (id == "") return
   if (base_seen[id] == "" || tsv >= base_seen[id]) {
-    base_seen[id] = tsv; base_rx[id] = rxv; base_tx[id] = txv; base_mac[id] = mac
+    base_seen[id] = tsv
+    base_rx[id] = rxv
+    base_tx[id] = txv
+    base_mac[id] = mac
   }
 }
-function firstsample(id, mac, rxv, txv, tsv) {
-  if (id == "") return
-  if (first_seen[id] == "" || tsv < first_seen[id]) {
-    first_seen[id] = tsv; first_rx[id] = rxv; first_tx[id] = txv; first_mac[id] = mac
+function add_flag(id, flag) {
+  if (id == "" || flag == "") return
+  if (baseline_flag[id] == "") baseline_flag[id] = flag
+  else if (index("+" baseline_flag[id] "+", "+" flag "+") == 0) baseline_flag[id] = baseline_flag[id] "+" flag
+}
+function begin_target(id, mac, rxv, txv, tsv) {
+  if (base_seen[id] != "") {
+    prev_rx[id] = base_rx[id]
+    prev_tx[id] = base_tx[id]
+    baseline_type[id] = "previous_day"
+  } else {
+    # With no previous-day baseline, the first same-day sample is the baseline.
+    # It must not zero an already accumulated segment when later samples reset.
+    prev_rx[id] = rxv
+    prev_tx[id] = txv
+    baseline_type[id] = "first_sample"
+    prev_set[id] = 1
+    last_seen[id] = tsv
+    last_mac[id] = mac
+    return 0
+  }
+  prev_set[id] = 1
+  return 1
+}
+function add_delta(id, cur_rx, cur_tx,    drx, dtx) {
+  drx = cur_rx - prev_rx[id]
+  dtx = cur_tx - prev_tx[id]
+
+  if (drx >= 0) total_rx[id] += drx
+  else {
+    add_flag(id, "counter_reset")
+    if (cur_rx > 0) total_rx[id] += cur_rx
+    else add_flag(id, "zero_reset_preserved")
+  }
+
+  if (dtx >= 0) total_tx[id] += dtx
+  else {
+    add_flag(id, "counter_reset")
+    if (cur_tx > 0) total_tx[id] += cur_tx
+    else add_flag(id, "zero_reset_preserved")
   }
 }
 {
@@ -89,18 +122,31 @@ function firstsample(id, mac, rxv, txv, tsv) {
   txv = num_field($0, "tx")
   tsv = num_field($0, "ts")
   if (id == "" || mac == "" || rxv < 0 || txv < 0 || tsv < 0) next
-  if (datev < target) baseline(id, mac, rxv, txv, tsv)
-  else if (datev == target) { firstsample(id, mac, rxv, txv, tsv); endpoint(id, mac, rxv, txv, tsv); samples[id]++ }
+
+  if (datev < target) {
+    set_base(id, mac, rxv, txv, tsv)
+    next
+  }
+  if (datev != target) next
+
+  samples[id]++
+  last_mac[id] = mac
+  last_seen[id] = tsv
+
+  if (prev_set[id] == "") {
+    if (!begin_target(id, mac, rxv, txv, tsv)) next
+  }
+
+  add_delta(id, rxv, txv)
+  prev_rx[id] = rxv
+  prev_tx[id] = txv
 }
 END {
-  for (id in last_seen) {
-    if (base_seen[id] != "") { brx = base_rx[id]; btx = base_tx[id]; btype = "previous_day" }
-    else { brx = first_rx[id]; btx = first_tx[id]; btype = "first_sample" }
-    drx = last_rx[id] - brx
-    dtx = last_tx[id] - btx
-    if (drx < 0) { drx = last_rx[id]; btype = btype "+counter_reset" }
-    if (dtx < 0) { dtx = last_tx[id]; btype = btype "+counter_reset" }
-    printf "{\"schema\":1,\"date\":\"%s\",\"device_id\":\"%s\",\"mac\":\"%s\",\"rx\":%d,\"tx\":%d,\"samples\":%d,\"baseline\":\"%s\",\"source\":\"shadow_rollup\",\"updated_ts\":%d}\n", target, id, last_mac[id], drx, dtx, samples[id], btype, now
+  for (id in samples) {
+    btype = baseline_type[id]
+    if (btype == "") btype = "first_sample"
+    if (baseline_flag[id] != "") btype = btype "+" baseline_flag[id]
+    printf "{\"schema\":1,\"date\":\"%s\",\"device_id\":\"%s\",\"mac\":\"%s\",\"rx\":%d,\"tx\":%d,\"samples\":%d,\"baseline\":\"%s\",\"source\":\"shadow_rollup\",\"updated_ts\":%d}\n", target, id, last_mac[id], total_rx[id], total_tx[id], samples[id], btype, now
   }
 }' "$RAW" > "$TMP_ROLL"
 

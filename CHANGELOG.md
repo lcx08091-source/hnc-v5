@@ -1,3 +1,12 @@
+# v5.2.0-rc1.19
+
+- Hardened `stats_shadow_rollup.sh` against same-day iptables counter resets.
+- Shadow daily rollup now accumulates traffic by monotonic segments instead of using only `last - baseline`.
+- A later `0/0` sample after a valid traffic segment no longer clears same-day daily totals.
+- Added a regression case matching the observed `201628922/149591042 -> 0/0` reset pattern.
+- Updated module/WebUI/preflight version display to rc1.19.
+- Safety boundary unchanged: legacy stats remains default; v5.2 RC/source switching is not enabled.
+
 # v5.2.0-rc1.18
 
 - Updated `stats_v52_gray_observe.sh` to auto-refresh same-day shadow rollup when shadow raw samples already exist, preventing ordinary observe reports from reading stale daily totals.
