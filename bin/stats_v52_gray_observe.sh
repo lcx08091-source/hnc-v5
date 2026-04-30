@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_gray_observe.sh — HNC v5.2-rc1.20 real-device gray observation helper.
+# stats_v52_gray_observe.sh — HNC v5.2-rc1.21 real-device gray observation helper.
 # Observation-only helper. It does not enable v5.2 RC, switch stats source,
 # or touch tc/watchdog/limit/delay. By default it refreshes the derived
 # same-day shadow rollup when raw samples exist so daily totals are not stale.
@@ -37,6 +37,7 @@ kv_get() {
 file_lines() { [ -f "$1" ] && wc -l < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 num() { case "$1" in ''|*[!0-9]*) echo "${2:-0}" ;; *) echo "$1" ;; esac; }
 bool() { case "$1" in true|false) echo "$1" ;; 1|yes|YES|TRUE) echo true ;; *) echo false ;; esac; }
+positive_num() { case "$1" in ""|*[!0-9]*) return 1 ;; *[1-9]*) return 0 ;; *) return 1 ;; esac; }
 
 run_text_helper() {
   h="$1"; out="$2"; mode_arg=${3:-text}
@@ -167,8 +168,10 @@ rc1_enabled="$(bool "$(kv_get "$RC_TXT" rc1_enabled false)")"
 rc_enabled="$(bool "$(kv_get "$RC_TXT" rc_enabled false)")"
 
 case "$shadow_latest_ts" in 0|'') sample_age=0 ;; *) sample_age=$((TS - shadow_latest_ts)); [ "$sample_age" -lt 0 ] && sample_age=0 ;; esac
-traffic_total=$((shadow_raw_total_rx + shadow_raw_total_tx + shadow_daily_total_rx + shadow_daily_total_tx))
-if [ "$traffic_total" -gt 0 ]; then
+# Do not add these counters with shell arithmetic. On some Android shells,
+# totals above 2 GiB can wrap a signed 32-bit intermediate and make positive
+# traffic look non-positive. Treat any positive component as traffic_seen.
+if positive_num "$shadow_raw_total_rx" || positive_num "$shadow_raw_total_tx" || positive_num "$shadow_daily_total_rx" || positive_num "$shadow_daily_total_tx"; then
   traffic_state=traffic_seen
   case "$shadow_quality" in
     observed_zero_traffic|missing|warmup|warn_no_daily_samples) shadow_quality=observed ;;
@@ -183,7 +186,7 @@ status=pass
 reason="shadow observation is usable"
 recommendation="continue real-device gray observation with legacy default preserved"
 case "$shadow_state" in shadow_rollup_seen|shadow_raw_seen) ;; *) status=fail; reason="shadow raw/daily data is not visible"; recommendation="enable shadow sampling and run rc1.15 sample/rollup checks before widening observation" ;; esac
-if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.20 real-traffic checklist"; fi
+if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.21 real-traffic checklist"; fi
 if [ "$status" != fail ]; then case "$compare_quality" in compared|match|pass|ok) ;; *) status=warn; reason="legacy/shadow comparison still needs review"; recommendation="collect more real traffic samples, then rerun gray observe/report before optional source switching" ;; esac; fi
 if [ "$legacy_default_preserved" != true ] || [ "$default_source" != legacy ] || [ "$rc1_enabled" = true ] || [ "$rc_enabled" = true ]; then status=fail; reason="legacy default or RC disabled guard is not preserved"; recommendation="rollback to legacy default before continuing gray observation"; fi
 sample_requested=false; case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) sample_requested=true ;; esac
@@ -192,7 +195,7 @@ auto_rollup_used=$AUTO_ROLLUP_USED
 auto_rollup_date=$AUTO_ROLLUP_DATE
 
 cat > "$OUT_TXT" <<EOF
-HNC v5.2-rc1.20 gray observation
+HNC v5.2-rc1.21 gray observation
 status=$status
 reason=$reason
 recommendation=$recommendation
@@ -239,7 +242,7 @@ cat > "$OUT_JSON" <<EOF
 EOF
 
 cat > "$OUT_MD" <<EOF
-# HNC v5.2-rc1.20 灰度观察
+# HNC v5.2-rc1.21 灰度观察
 
 - status: $status
 - reason: $reason
@@ -277,7 +280,7 @@ cat > "$OUT_MD" <<EOF
 - blocked: $DEV_BLOCKED
 - active: $DEV_ACTIVE
 
-## rc1.20 实机灰度 checklist
+## rc1.21 实机灰度 checklist
 
 - [ ] 单设备连热点刷网页后，shadow rx/tx 增长
 - [ ] 单设备测速后，shadow/legacy 对比不出现大幅异常

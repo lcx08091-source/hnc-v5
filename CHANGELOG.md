@@ -1,3 +1,10 @@
+# v5.2.0-rc1.21
+
+- Fixed `stats_v52_gray_observe.sh` traffic classification on Android shells that can wrap large shell-arithmetic totals around the 32-bit signed boundary.
+- Gray observe now treats any positive raw/daily rx/tx component as `traffic_seen` and normalizes stale `observed_zero_traffic` to `observed` without summing the counters.
+- Added regression coverage for the large positive raw/daily totals seen during rc1.20 real-device testing.
+- Safety boundary unchanged: legacy stats remains default; v5.2 RC/source switching is not enabled.
+
 # v5.2.0-rc1.20
 
 - Fixed gray observe auto-rollup to use the latest date present in stats_shadow_raw.jsonl instead of the device current date, preventing cross-midnight reports from rolling up the wrong day.

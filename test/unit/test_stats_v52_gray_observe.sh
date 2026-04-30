@@ -13,8 +13,8 @@ chmod 755 "$HNC_DIR/bin/stats_v52_gray_observe.sh"
 
 cat > "$HNC_DIR/module.prop" <<'EOF'
 id=hotspot_network_control
-version=v5.2.0-rc1.20
-versionCode=520030
+version=v5.2.0-rc1.21
+versionCode=520031
 EOF
 
 cat > "$HNC_DIR/data/devices.json" <<'JSON'
@@ -79,7 +79,7 @@ grep -q 'compare_quality=compared' "$WORK/out.txt"
 grep -q '"status":"pass"' "$WORK/out.json"
 grep -q '"traffic_state":"traffic_seen"' "$WORK/out.json"
 grep -q '"devices_blocked":1' "$WORK/out.json"
-grep -q 'rc1.20 实机灰度 checklist' "$WORK/out.md"
+grep -q 'rc1.21 实机灰度 checklist' "$WORK/out.md"
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.json" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.txt" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.md" ]
@@ -111,7 +111,7 @@ HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODD
 grep -q 'status=warn' "$WORK/warn.txt"
 grep -q 'traffic_state=zero_traffic_observed' "$WORK/warn.txt"
 
-# rc1.20: positive totals must override stale observed_zero_traffic readiness quality.
+# rc1.21: positive totals must override stale observed_zero_traffic readiness quality.
 cat > "$HNC_DIR/bin/stats_migration_readiness.sh" <<'SH2'
 #!/bin/sh
 cat <<'EOF'
