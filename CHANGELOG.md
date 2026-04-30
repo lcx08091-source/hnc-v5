@@ -1,3 +1,10 @@
+# v5.2.0-rc1.20
+
+- Fixed gray observe auto-rollup to use the latest date present in stats_shadow_raw.jsonl instead of the device current date, preventing cross-midnight reports from rolling up the wrong day.
+- Gray observe now normalizes stale observed_zero_traffic quality to observed when raw or daily totals are positive.
+- Added regression coverage for latest-raw-date rollup and traffic-state normalization.
+- Safety boundary unchanged: legacy stats remains default; v5.2 RC/source switching is not enabled.
+
 # v5.2.0-rc1.19
 
 - Hardened `stats_shadow_rollup.sh` against same-day iptables counter resets.

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# stats_v52_gray_observe.sh — HNC v5.2-rc1.19 real-device gray observation helper.
+# stats_v52_gray_observe.sh — HNC v5.2-rc1.20 real-device gray observation helper.
 # Observation-only helper. It does not enable v5.2 RC, switch stats source,
 # or touch tc/watchdog/limit/delay. By default it refreshes the derived
 # same-day shadow rollup when raw samples exist so daily totals are not stale.
@@ -47,11 +47,42 @@ run_text_helper() {
   fi
 }
 
+latest_raw_date() {
+  f="$DATA/stats_shadow_raw.jsonl"
+  [ -s "$f" ] || return 1
+  awk '
+function str_field(line, key,    pat, val) {
+  pat = "\"" key "\":\"[^\"]*\""
+  if (match(line, pat)) { val = substr(line, RSTART, RLENGTH); sub("^\"" key "\":\"", "", val); sub("\"$", "", val); return val }
+  return ""
+}
+function num_field(line, key,    pat, val) {
+  pat = "\"" key "\":[0-9]+"
+  if (match(line, pat)) { val = substr(line, RSTART, RLENGTH); sub(".*:", "", val); return val + 0 }
+  return 0
+}
+{
+  d = str_field($0, "date")
+  ts = num_field($0, "ts")
+  if (d ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) {
+    if (ts >= latest_ts) { latest_ts = ts; latest_date = d }
+    else if (latest_date == "") latest_date = d
+  }
+}
+END { if (latest_date != "") print latest_date }' "$f" 2>/dev/null
+}
+
 maybe_sample() {
   case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) ;; *) return 0 ;; esac
   [ -x "$BIN/stats_shadow_sample.sh" ] && sh "$BIN/stats_shadow_sample.sh" >/dev/null 2>&1 || true
-  today="$(date +%Y-%m-%d 2>/dev/null)"
-  case "$today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) [ -x "$BIN/stats_shadow_rollup.sh" ] && sh "$BIN/stats_shadow_rollup.sh" "$today" >/dev/null 2>&1 || true ;; esac
+  rollup_date="$(latest_raw_date)"
+  [ -n "$rollup_date" ] || rollup_date="$(date +%Y-%m-%d 2>/dev/null)"
+  case "$rollup_date" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+      [ -x "$BIN/stats_shadow_rollup.sh" ] && sh "$BIN/stats_shadow_rollup.sh" "$rollup_date" >/dev/null 2>&1 || true
+      AUTO_ROLLUP_DATE="$rollup_date"
+      ;;
+  esac
   NEED_REFRESH=1
 }
 
@@ -60,12 +91,13 @@ maybe_auto_rollup() {
   case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) return 0 ;; esac
   [ -s "$DATA/stats_shadow_raw.jsonl" ] || return 0
   [ -x "$BIN/stats_shadow_rollup.sh" ] || return 0
-  today="$(date +%Y-%m-%d 2>/dev/null)"
-  case "$today" in
+  rollup_date="$(latest_raw_date)"
+  [ -n "$rollup_date" ] || rollup_date="$(date +%Y-%m-%d 2>/dev/null)"
+  case "$rollup_date" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
-      sh "$BIN/stats_shadow_rollup.sh" "$today" >/dev/null 2>&1 || true
+      sh "$BIN/stats_shadow_rollup.sh" "$rollup_date" >/dev/null 2>&1 || true
       AUTO_ROLLUP_USED=true
-      AUTO_ROLLUP_DATE="$today"
+      AUTO_ROLLUP_DATE="$rollup_date"
       NEED_REFRESH=1
       ;;
   esac
@@ -136,13 +168,22 @@ rc_enabled="$(bool "$(kv_get "$RC_TXT" rc_enabled false)")"
 
 case "$shadow_latest_ts" in 0|'') sample_age=0 ;; *) sample_age=$((TS - shadow_latest_ts)); [ "$sample_age" -lt 0 ] && sample_age=0 ;; esac
 traffic_total=$((shadow_raw_total_rx + shadow_raw_total_tx + shadow_daily_total_rx + shadow_daily_total_tx))
-if [ "$traffic_total" -gt 0 ]; then traffic_state=traffic_seen; elif [ "$shadow_raw_lines" -gt 0 ] || [ "$shadow_daily_lines" -gt 0 ]; then traffic_state=zero_traffic_observed; else traffic_state=no_shadow_traffic; fi
+if [ "$traffic_total" -gt 0 ]; then
+  traffic_state=traffic_seen
+  case "$shadow_quality" in
+    observed_zero_traffic|missing|warmup|warn_no_daily_samples) shadow_quality=observed ;;
+  esac
+elif [ "$shadow_raw_lines" -gt 0 ] || [ "$shadow_daily_lines" -gt 0 ]; then
+  traffic_state=zero_traffic_observed
+else
+  traffic_state=no_shadow_traffic
+fi
 
 status=pass
 reason="shadow observation is usable"
 recommendation="continue real-device gray observation with legacy default preserved"
 case "$shadow_state" in shadow_rollup_seen|shadow_raw_seen) ;; *) status=fail; reason="shadow raw/daily data is not visible"; recommendation="enable shadow sampling and run rc1.15 sample/rollup checks before widening observation" ;; esac
-if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.19 real-traffic checklist"; fi
+if [ "$status" != fail ] && [ "$traffic_state" != traffic_seen ]; then status=warn; reason="shadow is visible but traffic is still zero or not yet observed"; recommendation="keep legacy default and run the rc1.20 real-traffic checklist"; fi
 if [ "$status" != fail ]; then case "$compare_quality" in compared|match|pass|ok) ;; *) status=warn; reason="legacy/shadow comparison still needs review"; recommendation="collect more real traffic samples, then rerun gray observe/report before optional source switching" ;; esac; fi
 if [ "$legacy_default_preserved" != true ] || [ "$default_source" != legacy ] || [ "$rc1_enabled" = true ] || [ "$rc_enabled" = true ]; then status=fail; reason="legacy default or RC disabled guard is not preserved"; recommendation="rollback to legacy default before continuing gray observation"; fi
 sample_requested=false; case "$DO_SAMPLE" in 1|true|TRUE|yes|YES) sample_requested=true ;; esac
@@ -151,7 +192,7 @@ auto_rollup_used=$AUTO_ROLLUP_USED
 auto_rollup_date=$AUTO_ROLLUP_DATE
 
 cat > "$OUT_TXT" <<EOF
-HNC v5.2-rc1.19 gray observation
+HNC v5.2-rc1.20 gray observation
 status=$status
 reason=$reason
 recommendation=$recommendation
@@ -198,7 +239,7 @@ cat > "$OUT_JSON" <<EOF
 EOF
 
 cat > "$OUT_MD" <<EOF
-# HNC v5.2-rc1.19 灰度观察
+# HNC v5.2-rc1.20 灰度观察
 
 - status: $status
 - reason: $reason
@@ -236,7 +277,7 @@ cat > "$OUT_MD" <<EOF
 - blocked: $DEV_BLOCKED
 - active: $DEV_ACTIVE
 
-## rc1.19 实机灰度 checklist
+## rc1.20 实机灰度 checklist
 
 - [ ] 单设备连热点刷网页后，shadow rx/tx 增长
 - [ ] 单设备测速后，shadow/legacy 对比不出现大幅异常

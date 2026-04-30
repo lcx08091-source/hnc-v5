@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight v5.2-rc1.19"
+say "HNC preflight v5.2-rc1.20"
 say "root=$ROOT"
 
 # 1. Patch residue check

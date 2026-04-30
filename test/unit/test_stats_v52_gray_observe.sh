@@ -13,8 +13,8 @@ chmod 755 "$HNC_DIR/bin/stats_v52_gray_observe.sh"
 
 cat > "$HNC_DIR/module.prop" <<'EOF'
 id=hotspot_network_control
-version=v5.2.0-rc1.19
-versionCode=520029
+version=v5.2.0-rc1.20
+versionCode=520030
 EOF
 
 cat > "$HNC_DIR/data/devices.json" <<'JSON'
@@ -79,7 +79,7 @@ grep -q 'compare_quality=compared' "$WORK/out.txt"
 grep -q '"status":"pass"' "$WORK/out.json"
 grep -q '"traffic_state":"traffic_seen"' "$WORK/out.json"
 grep -q '"devices_blocked":1' "$WORK/out.json"
-grep -q 'rc1.19 实机灰度 checklist' "$WORK/out.md"
+grep -q 'rc1.20 实机灰度 checklist' "$WORK/out.md"
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.json" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.txt" ]
 [ -f "$HNC_DIR/run/stats_v52_gray_observe.md" ]
@@ -111,6 +111,33 @@ HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODD
 grep -q 'status=warn' "$WORK/warn.txt"
 grep -q 'traffic_state=zero_traffic_observed' "$WORK/warn.txt"
 
+# rc1.20: positive totals must override stale observed_zero_traffic readiness quality.
+cat > "$HNC_DIR/bin/stats_migration_readiness.sh" <<'SH2'
+#!/bin/sh
+cat <<'EOF'
+status=ready
+shadow_state=shadow_rollup_seen
+shadow_quality=observed_zero_traffic
+shadow_raw_lines=11
+shadow_daily_lines=2
+shadow_daily_samples=11
+shadow_latest_ts=1777478345
+shadow_raw_total_rx=1870012253
+shadow_raw_total_tx=471750798
+shadow_daily_total_rx=574660971
+shadow_daily_total_tx=198851760
+compare_quality=warn_drift
+compare_matched_keys=0
+compare_missing_in_legacy=2
+compare_missing_in_shadow=14
+compare_mismatched_keys=0
+EOF
+SH2
+chmod 755 "$HNC_DIR/bin/stats_migration_readiness.sh"
+HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text > "$WORK/positive_override.txt"
+grep -q 'traffic_state=traffic_seen' "$WORK/positive_override.txt"
+grep -q 'shadow_quality=observed' "$WORK/positive_override.txt"
+
 # Default mode should auto-rollup only when raw samples exist, and should not
 # implicitly run the shadow sampler. Explicit sample mode still calls both
 # sample and rollup helpers.
@@ -132,13 +159,15 @@ grep -q 'auto_rollup_used=false' "$WORK/no_raw.txt"
 
 cat > "$HNC_DIR/data/stats_shadow_raw.jsonl" <<'JSON'
 {"schema":1,"ts":1777455337,"date":"2026-04-29","device_id":"mac:aa:bb:cc:dd:ee:01","mac":"aa:bb:cc:dd:ee:01","rx":1000,"tx":400,"ips":"192.168.43.10","ip_count":1,"source":"iptables"}
+{"schema":1,"ts":1777465337,"date":"2026-04-29","device_id":"mac:aa:bb:cc:dd:ee:01","mac":"aa:bb:cc:dd:ee:01","rx":2000,"tx":800,"ips":"192.168.43.10","ip_count":1,"source":"iptables"}
 JSON
 rm -f "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
 HNC_TEST_MODE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text > "$WORK/auto_rollup.txt"
 [ ! -f "$HNC_DIR/run/sample_called" ]
 [ -f "$HNC_DIR/run/rollup_called" ]
+grep -q '^2026-04-29$' "$HNC_DIR/run/rollup_called"
 grep -q 'auto_rollup_used=true' "$WORK/auto_rollup.txt"
-grep -q 'auto_rollup_date=' "$WORK/auto_rollup.txt"
+grep -q 'auto_rollup_date=2026-04-29' "$WORK/auto_rollup.txt"
 
 rm -f "$HNC_DIR/run/sample_called" "$HNC_DIR/run/rollup_called"
 HNC_TEST_MODE=1 HNC_V52_OBSERVE_SAMPLE=1 HNC_V52_OBSERVE_REFRESH=1 HNC_DIR="$HNC_DIR" HNC="$HNC_DIR" MODDIR="$HNC_DIR" sh "$HNC_DIR/bin/stats_v52_gray_observe.sh" text >/dev/null
