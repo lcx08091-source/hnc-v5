@@ -1,43 +1,84 @@
 #!/system/bin/sh
-# HNC version consistency check. Conservative: fails only on obvious stale runtime versions.
-set +e
-FAIL=0
-WARN=0
-say(){ printf '%s\n' "$*"; }
-fail(){ FAIL=$((FAIL+1)); say "[FAIL] $*"; }
-warn(){ WARN=$((WARN+1)); say "[WARN] $*"; }
-ok(){ say "[OK] $*"; }
+# HNC version consistency check
+# Checks module.prop version fields and obvious stale runtime strings.
 
-[ -f module.prop ] || { fail "module.prop missing"; exit 1; }
-VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop)"
-VC="$(awk -F= '$1=="versionCode"{print $2; exit}' module.prop)"
-say "module.prop: $VER / $VC"
+failures=0
+warnings=0
 
-if echo "$VER" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+-hotfix[0-9]+(\.[0-9]+)?$'; then
-  ok "module version format looks valid"
+ok() {
+  echo "[OK] $*"
+}
+
+warn() {
+  warnings=$((warnings + 1))
+  echo "[WARN] $*"
+}
+
+fail() {
+  failures=$((failures + 1))
+  echo "[FAIL] $*"
+}
+
+MODULE_PROP="module.prop"
+
+if [ ! -f "$MODULE_PROP" ]; then
+  fail "module.prop not found"
 else
-  warn "module version format is unexpected"
-fi
-if echo "$VC" | grep -Eq '^[0-9]+$'; then
-  ok "versionCode is numeric"
-else
-  fail "versionCode is not numeric"
+  VERSION="$(sed -n 's/^version=//p' "$MODULE_PROP" | head -1)"
+  VERSION_CODE="$(sed -n 's/^versionCode=//p' "$MODULE_PROP" | head -1)"
+
+  echo "module.prop: $VERSION / $VERSION_CODE"
+
+  if printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+(\.[0-9]+)?(-hotfix[0-9]+(\.[0-9]+)?)?$'; then
+    ok "module version format is accepted"
+  else
+    warn "module version format is unexpected"
+  fi
+
+  if printf '%s\n' "$VERSION_CODE" | grep -Eq '^[0-9]+$'; then
+    ok "versionCode is numeric"
+  else
+    fail "versionCode is not numeric"
+  fi
 fi
 
-if grep -R "hnc_httpd v5\.1\.0-rc1-hotfix4\|hotfix4 starting" -n daemon/hnc_httpd 2>/dev/null | head -20; then
-  fail "old hnc_httpd hotfix4 runtime string found"
+if [ -f daemon/hnc_httpd/hnc_httpd ]; then
+  OLD_HTTPD_HITS="$(
+    grep -aInE 'hnc_httpd v5\.1\.0-rc1-hotfix4|v5\.1\.0-rc1-hotfix4|hotfix4 starting|main\.version=v5\.1\.0-rc1-hotfix4' daemon/hnc_httpd/hnc_httpd 2>/dev/null \
+      | head -20 || true
+  )"
+
+  if [ -n "$OLD_HTTPD_HITS" ]; then
+    printf '%s\n' "$OLD_HTTPD_HITS"
+    fail "old hnc_httpd hotfix4 runtime string found"
+  else
+    ok "no hotfix4 runtime string found"
+  fi
 else
-  ok "no hotfix4 runtime string found"
+  warn "daemon/hnc_httpd/hnc_httpd not found"
 fi
 
-OLD_WEB="$(grep -R "v5\.1\.0-rc1-hotfix1[0-7]" -n webroot 2>/dev/null | grep -v 'changelog' | head -20)"
-if [ -n "$OLD_WEB" ]; then
-  warn "old WebUI version strings outside changelog:"
-  say "$OLD_WEB"
+if [ -d webroot ]; then
+  OLD_WEBUI_HITS="$(
+    grep -RIna --binary-files=text -E 'v5\.1\.0-rc1-hotfix(4|10|16\.7|17\.3)' webroot 2>/dev/null \
+      | grep -vE 'webroot/changelog\.html|webroot/json-health\.html' \
+      | head -20 || true
+  )"
+
+  if [ -n "$OLD_WEBUI_HITS" ]; then
+    printf '%s\n' "$OLD_WEBUI_HITS"
+    fail "obvious old WebUI runtime version strings found"
+  else
+    ok "no obvious old WebUI runtime version strings"
+  fi
 else
-  ok "no obvious old WebUI runtime version strings"
+  warn "webroot not found"
 fi
 
-say "summary: failures=$FAIL warnings=$WARN"
-[ "$FAIL" -eq 0 ] || exit 1
+echo "summary: failures=$failures warnings=$warnings"
+
+if [ "$failures" -gt 0 ]; then
+  exit 1
+fi
+
 exit 0
