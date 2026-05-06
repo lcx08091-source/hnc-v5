@@ -1550,6 +1550,33 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
   border-color: transparent;
   box-shadow: 0 4px 12px rgba(0, 122, 255, .26);
 }
+.qos-mode-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none !important;
+}
+.sqm-control-panel {
+  margin: -4px 12px 12px 52px;
+  padding: 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(0, 122, 255, .20);
+  background: rgba(0, 122, 255, .055);
+}
+.sqm-mode-seg {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px;
+}
+.sqm-profile-seg {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  margin-top: 6px;
+}
+.sqm-control-desc {
+  font-size: 10.5px; line-height: 1.5; color: var(--text-3);
+  margin-top: 7px;
+}
+@media (max-width: 380px) {
+  .sqm-control-panel { margin-left: 0; }
+  .sqm-mode-seg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 .input-suffix {
   position: absolute; right: 10px; top: 50%;
   transform: translateY(-50%);
@@ -2545,6 +2572,29 @@ body.kb-open .container {
           <div class="set-desc" id="diag-cap-desc">读取 run/capabilities.json，确认 iptables/tc/IFB/netem 支持状态</div>
         </div>
         <div class="set-value" id="diag-cap-value">--</div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon blue"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M8 14a4 4 0 0 1 8 0"/><path d="M12 14v5"/><path d="M7 19h10"/></svg></div>
+        <div class="set-info">
+          <div class="set-label">Smart Queue 低延迟模式</div>
+          <div class="set-desc" id="sqm-desc">默认关闭；开启后 delay-free 限速 class 会优先使用 fq_codel / CAKE leaf，真实延迟/丢包仍由 netem 接管</div>
+        </div>
+        <div class="set-value" id="sqm-status-value">关闭</div>
+      </div>
+      <div class="sqm-control-panel">
+        <div class="sqm-mode-seg">
+          <button type="button" class="qos-mode-btn" data-sqm-mode="off">关闭</button>
+          <button type="button" class="qos-mode-btn" data-sqm-mode="auto">自动</button>
+          <button type="button" class="qos-mode-btn" data-sqm-mode="fq_codel">低延迟</button>
+          <button type="button" class="qos-mode-btn" data-sqm-mode="cake">CAKE</button>
+          <button type="button" class="qos-mode-btn" data-sqm-mode="game">游戏</button>
+        </div>
+        <div class="sqm-profile-seg">
+          <button type="button" class="qos-mode-btn" data-sqm-profile="balanced">均衡</button>
+          <button type="button" class="qos-mode-btn" data-sqm-profile="game">游戏</button>
+          <button type="button" class="qos-mode-btn" data-sqm-profile="bulk">下载</button>
+        </div>
+        <div class="sqm-control-desc" id="sqm-control-desc">切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。</div>
       </div>
       <div class="set-row">
         <div class="set-icon green"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
@@ -3758,6 +3808,108 @@ body.kb-open .container {
     return cap;
   }
 
+
+  function normalizeSqmMode(v) {
+    v = String(v || '').trim().toLowerCase().replace('-', '_');
+    if (v === 'fq' || v === 'fqcodel' || v === 'lowlatency' || v === 'low_latency') return 'fq_codel';
+    if (v === 'gaming') return 'game';
+    if (['off', 'auto', 'fq_codel', 'cake', 'game'].includes(v)) return v;
+    return 'off';
+  }
+  function normalizeSqmProfile(v) {
+    v = String(v || '').trim().toLowerCase();
+    if (['balanced', 'game', 'bulk', 'custom'].includes(v)) return v;
+    return 'balanced';
+  }
+  function sqmModeLabel(mode) {
+    mode = normalizeSqmMode(mode);
+    return { off: '关闭', auto: '自动', fq_codel: '低延迟', cake: 'CAKE', game: '游戏' }[mode] || '关闭';
+  }
+  function sqmProfileLabel(profile) {
+    profile = normalizeSqmProfile(profile);
+    return { balanced: '均衡', game: '游戏', bulk: '下载', custom: '自定义' }[profile] || '均衡';
+  }
+  function applySqmStatus(st) {
+    if (!st || typeof st !== 'object') return;
+    state.sqmStatus = st;
+    if (st.mode !== undefined) state.sqmMode = normalizeSqmMode(st.mode);
+    if (st.profile !== undefined) state.sqmProfile = normalizeSqmProfile(st.profile);
+    try { localStorage.setItem('hnc.sqm-mode', state.sqmMode); } catch (_) {}
+    try { localStorage.setItem('hnc.sqm-profile', state.sqmProfile); } catch (_) {}
+    updateSqmPanel();
+  }
+  function updateSqmPanel() {
+    const st = state.sqmStatus || {};
+    const mode = normalizeSqmMode(state.sqmMode);
+    const profile = normalizeSqmProfile(state.sqmProfile);
+    const supported = st.mode_supported !== false && !(st.tc_fq_codel_supported === false && st.tc_cake_supported === false);
+    const statusEl = $('#sqm-status-value');
+    const descEl = $('#sqm-desc');
+    const detailEl = $('#sqm-control-desc');
+    if (statusEl) {
+      statusEl.textContent = mode === 'off' ? '关闭' : (st.active === false ? '未生效' : sqmModeLabel(mode));
+    }
+    let desc = '默认关闭；开启后 delay-free 限速 class 会优先使用 fq_codel / CAKE leaf，真实延迟/丢包仍由 netem 接管';
+    if (st.available === false) desc = 'SQM 状态暂不可读：' + (st.error || st.detail || '等待后端生成');
+    else if (!supported) desc = '当前 tc 未探测到 fq_codel / CAKE，保持原 HTB/netem 兼容链路';
+    else if (mode !== 'off') desc = '当前模式：' + sqmModeLabel(mode) + ' · 配置档：' + sqmProfileLabel(profile) + ' · 推荐：' + sqmModeLabel(st.recommended_mode || 'off');
+    if (descEl) descEl.textContent = desc;
+    if (detailEl) {
+      const q = st.qdisc_head ? String(st.qdisc_head).slice(0, 180) : '';
+      detailEl.textContent = q ? ('qdisc: ' + q) : '切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。';
+    }
+    $$('[data-sqm-mode]').forEach(btn => {
+      const m = normalizeSqmMode(btn.dataset.sqmMode);
+      btn.classList.toggle('active', m === mode);
+      let dis = false;
+      if (m === 'cake') dis = st.tc_cake_supported === false;
+      if (m === 'fq_codel' || m === 'game') dis = st.tc_fq_codel_supported === false;
+      if (m === 'auto') dis = st.tc_fq_codel_supported === false && st.tc_cake_supported === false;
+      btn.disabled = !!dis;
+      btn.title = dis ? '当前内核/TC 未探测到此队列算法' : '';
+    });
+    $$('[data-sqm-profile]').forEach(btn => {
+      const p = normalizeSqmProfile(btn.dataset.sqmProfile);
+      btn.classList.toggle('active', p === profile);
+    });
+  }
+  async function fetchSQM() {
+    if (!state.sqmApiUnavailable) {
+      try {
+        const st = await apiGet('/api/sqm');
+        applySqmStatus(st);
+        return st;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (/404|page not found/i.test(msg)) {
+          state.sqmApiUnavailable = true;
+          if (!state.sqmApiWarned) { dbg('/api/sqm 不存在，改用本地 sqm_manager.sh'); state.sqmApiWarned = true; }
+        } else {
+          dbg('fetchSQM err: ' + msg);
+        }
+      }
+    }
+    try {
+      const raw = await kexec('sh /data/local/hnc/bin/sqm_manager.sh status 2>/dev/null || true');
+      if (raw && raw.trim()) {
+        const st = JSON.parse(raw);
+        applySqmStatus(st);
+        return st;
+      }
+    } catch (e) { dbg('fetchSQM local err: ' + (e.message || e)); }
+    updateSqmPanel();
+    return null;
+  }
+  async function setSqmBackend(params) {
+    params = params || {};
+    const p = {};
+    if (params.mode !== undefined) p.mode = normalizeSqmMode(params.mode);
+    if (params.profile !== undefined) p.profile = normalizeSqmProfile(params.profile);
+    p.apply = 'true';
+    await apiAction('sqm_set', p);
+    await fetchSQM();
+  }
+
   function applyHotspotClosedState() {
     state.hotspotActive = false;
     state.liveOnline = 0;
@@ -3985,6 +4137,11 @@ body.kb-open .container {
     qosMode: localStorage.getItem('hnc.qos-mode') || 'compat',
     qosScale: normalizeQosScale(localStorage.getItem('hnc.qos-scale') || '100'),
     qosFallbackRequired: false,
+    sqmStatus: null,
+    sqmMode: localStorage.getItem('hnc.sqm-mode') || 'off',
+    sqmProfile: localStorage.getItem('hnc.sqm-profile') || 'balanced',
+    sqmApiUnavailable: false,
+    sqmApiWarned: false,
     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced',
     actionBusy: Object.create(null)
   };
@@ -5405,8 +5562,10 @@ body.kb-open .container {
     const mDesc = $('#diag-metrics-desc');
     const cVal = $('#diag-cap-value');
     const cDesc = $('#diag-cap-desc');
+    const sVal = $('#sqm-status-value');
     if (mVal) mVal.textContent = '读取中';
     if (cVal) cVal.textContent = '读取中';
+    if (sVal) sVal.textContent = '读取中';
     try {
       if (state.metricsApiUnavailable) throw new Error('metrics api unavailable');
       const m = await apiGet('/api/metrics');
@@ -5469,6 +5628,13 @@ body.kb-open .container {
     } catch (e) {
       if (cVal) cVal.textContent = '失败';
       if (cDesc) cDesc.textContent = 'capabilities 读取失败: ' + (e.message || e);
+    }
+    try {
+      await fetchSQM();
+    } catch (e) {
+      if (sVal) sVal.textContent = '失败';
+      const desc = $('#sqm-desc');
+      if (desc) desc.textContent = 'SQM 读取失败: ' + (e.message || e);
     }
   }
 
@@ -5960,6 +6126,34 @@ body.kb-open .container {
       return;
     }
 
+
+    /* v5.3 Smart Queue / SQM 设置 */
+    const sqmModeBtn = e.target.closest('[data-sqm-mode]');
+    if (sqmModeBtn) {
+      const mode = normalizeSqmMode(sqmModeBtn.dataset.sqmMode);
+      sqmModeBtn.disabled = true;
+      setSqmBackend({ mode }).then(() => {
+        toast('Smart Queue 已切换为' + sqmModeLabel(mode), 'ok');
+      }).catch(err => {
+        toast('SQM 切换失败: ' + (err.message || err), 'err');
+        updateSqmPanel();
+      }).finally(() => { sqmModeBtn.disabled = false; });
+      return;
+    }
+
+    const sqmProfileBtn = e.target.closest('[data-sqm-profile]');
+    if (sqmProfileBtn) {
+      const profile = normalizeSqmProfile(sqmProfileBtn.dataset.sqmProfile);
+      sqmProfileBtn.disabled = true;
+      setSqmBackend({ profile }).then(() => {
+        toast('SQM 配置档已切换为' + sqmProfileLabel(profile), 'ok');
+      }).catch(err => {
+        toast('SQM 配置失败: ' + (err.message || err), 'err');
+        updateSqmPanel();
+      }).finally(() => { sqmProfileBtn.disabled = false; });
+      return;
+    }
+
     /* 设备卡按钮操作 */
     const btn = e.target.closest('.btn[data-action]');
     if (!btn) return;
@@ -6321,10 +6515,12 @@ body.kb-open .container {
       dbg('init fetchDevices err: ' + e.message);
     });
     const capP = fetchCapabilities().catch(e => { dbg('init capabilities err: ' + e.message); });
+    const sqmP = fetchSQM().catch(e => { dbg('init sqm err: ' + e.message); });
     const cfgP = fetchConfig().then(c => { cfg = c || {}; })
       .catch(e => { dbg('init config err: ' + e.message); });
     await devicesP;
     await capP;
+    await sqmP;
     renderDeviceList();
     __t.parallel_devices = performance.now();
 

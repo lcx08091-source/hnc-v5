@@ -1,3 +1,14 @@
+<!-- v5.3.0-rc2 Smart Queue control plane -->
+<div class="cl-section">
+  <div class="cl-title">🧠 v5.3.0-rc2: Smart Queue 低延迟控制面 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-06</span></div>
+  <ul class="cl-list">
+    <li><b>新增 API</b>: <code>/api/sqm</code> 读取 <code>sqm_manager.sh status</code>，显示 SQM 模式、推荐模式、qdisc 摘要和 fq_codel/CAKE 支持状态。</li>
+    <li><b>新增写操作</b>: <code>/api/action</code> 支持 <code>sqm_set</code>，统一保存 <code>sqm_mode</code> / <code>sqm_profile</code> 并可触发 leaf qdisc 重建。</li>
+    <li><b>WebUI 接入</b>: 设置页新增 Smart Queue 面板，支持关闭、自动、低延迟、CAKE、游戏模式，以及均衡/游戏/下载配置档。</li>
+    <li><b>兼容策略</b>: 默认关闭，不改变旧版限速链路；不支持的 qdisc 会置灰，真实延迟/丢包仍由 netem 接管。</li>
+  </ul>
+</div>
+
 <!-- v5.1.0-rc1-hotfix16.9 TC unsupported fast-fail -->
 <div class="cl-section">
   <div class="cl-title">🧯 v5.1.0-rc1-hotfix16.9: TC 能力门控 / 限速延迟禁用防卡死 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-04-26</span></div>

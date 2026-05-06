@@ -81,6 +81,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/api/devices", s.apiDevices)
 	mux.HandleFunc("/api/live", s.apiLive)
 	mux.HandleFunc("/api/capabilities", s.apiCapabilities)
+	mux.HandleFunc("/api/sqm", s.apiSQMStatus) // v5.3.0-rc2 Smart Queue status
 	mux.HandleFunc("/api/metrics", s.apiMetrics)
 	mux.HandleFunc("/api/stats", s.apiStats)
 	mux.HandleFunc("/api/templates", s.apiTemplates)

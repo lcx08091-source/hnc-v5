@@ -30,9 +30,8 @@ json_top_string() {
     local key=$1 file=${2:-$RULES_FILE}
     [ -f "$file" ] || return 1
     tr -d '\n' < "$file" 2>/dev/null \
-        | grep -oE '"'"$key"'"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
-        | head -1 \
-        | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
+        | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1
 }
 
 norm_mode() {
@@ -58,8 +57,8 @@ current_mode() {
 cap_bool() {
     local key=$1
     [ -f "$CAP_FILE" ] || { echo unknown; return 0; }
-    if grep -Eq '"'"$key"'"[[:space:]]*:[[:space:]]*true' "$CAP_FILE" 2>/dev/null; then echo true; return 0; fi
-    if grep -Eq '"'"$key"'"[[:space:]]*:[[:space:]]*false' "$CAP_FILE" 2>/dev/null; then echo false; return 0; fi
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*true" "$CAP_FILE" 2>/dev/null; then echo true; return 0; fi
+    if grep -Eq "\"${key}\"[[:space:]]*:[[:space:]]*false" "$CAP_FILE" 2>/dev/null; then echo false; return 0; fi
     echo unknown
 }
 
@@ -67,8 +66,8 @@ cap_string() {
     local key=$1
     [ -f "$CAP_FILE" ] || return 1
     tr -d '\n' < "$CAP_FILE" 2>/dev/null \
-        | grep -oE '"'"$key"'"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
-        | head -1 | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
+        | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1
 }
 
 recommended_mode() {
@@ -98,7 +97,7 @@ mode_available() {
 write_mode() {
     local mode=$1
     echo "$mode" > "$SQM_MODE_FILE" 2>/dev/null || return 1
-    if [ -x "$HNC_DIR/bin/json_set.sh" ]; then
+    if [ -z "$HNC_TEST_MODE" ] && [ -x "$HNC_DIR/bin/json_set.sh" ]; then
         HNC="$HNC_DIR" sh "$HNC_DIR/bin/json_set.sh" top sqm_mode "$mode" >/dev/null 2>&1 || true
     fi
     log "mode set to $mode"
@@ -181,7 +180,7 @@ case "$cmd" in
         profile=$(printf '%s' "$2" | tr -d '\r\n ' | tr 'A-Z' 'a-z')
         case "$profile" in balanced|game|bulk|custom) ;; *) profile=balanced ;; esac
         echo "$profile" > "$SQM_PROFILE_FILE" 2>/dev/null || exit 1
-        if [ -x "$HNC_DIR/bin/json_set.sh" ]; then
+        if [ -z "$HNC_TEST_MODE" ] && [ -x "$HNC_DIR/bin/json_set.sh" ]; then
             HNC="$HNC_DIR" sh "$HNC_DIR/bin/json_set.sh" top sqm_profile "$profile" >/dev/null 2>&1 || true
         fi
         log "profile set to $profile"
