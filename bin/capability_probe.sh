@@ -29,9 +29,19 @@ find_bin() {
 
 TC_BIN=$(find_bin)
 IP_BIN=$(command -v ip 2>/dev/null || echo ip)
-DUMMY="hnc_probe_dummy_$$"
-PEER="hnc_probe_peer_$$"
-IFB="hnc_probe_ifb_$$"
+# rc1.22 webfix4: Linux IFNAMSIZ limits ifname to 15 chars (16 with NUL).
+# Old names "hnc_probe_dummy_$$" etc were 16-21 chars and got rejected by
+# `ip link add` ("dev not a valid ifname"), making capability_probe wrongly
+# conclude IFB/HTB/netem/mirred are all unsupported even when the kernel
+# fully supports them. Use compact prefixes; PID's last 5 digits keep names
+# unique within reasonable concurrency.
+__shortpid=$$
+case "$__shortpid" in
+    ?????*) __shortpid=$(printf '%s' "$__shortpid" | tail -c 5) ;;
+esac
+DUMMY="hnc_p_d_${__shortpid}"
+PEER="hnc_p_p_${__shortpid}"
+IFB="hnc_p_i_${__shortpid}"
 TMPERR="$RUN/cap_probe_err.$$"
 
 cleanup() {
@@ -67,13 +77,21 @@ reset_ingress() {
     "$TC_BIN" qdisc del dev "$DUMMY" ingress >/dev/null 2>&1 || true
 }
 ensure_ingress_parent() {
+    # rc1.22 webfix5: prefer 'ingress' qdisc over 'clsact' for filter probes.
+    # Older Android iproute2 (e.g. ss171113 on ColorOS) doesn't accept
+    # 'parent ffff:' (the ingress shorthand) when the actual qdisc is clsact;
+    # it returns "RTNETLINK answers: Invalid argument" or
+    # "Unknown action \"noact\", hence option \"drop\" is unparsable",
+    # making mirred/u32/matchall/flower probes spuriously fail even though
+    # the kernel fully supports them. ingress qdisc with parent ffff: is the
+    # most compatible combination across iproute2 versions.
     reset_ingress
-    if run_tc qdisc add dev "$DUMMY" clsact; then
-        echo clsact
-        return 0
-    fi
     if run_tc qdisc add dev "$DUMMY" ingress; then
         echo ingress
+        return 0
+    fi
+    if run_tc qdisc add dev "$DUMMY" clsact; then
+        echo clsact
         return 0
     fi
     echo none
@@ -100,6 +118,9 @@ fi
 # Defaults: null means unknown/unsafe to decide. Existing HNC gates only disable on explicit false.
 TC_HTB=null; TC_HTB_ERR=""
 TC_TBF=null; TC_TBF_ERR=""
+TC_FQ_CODEL=null; TC_FQ_CODEL_ERR=""
+TC_CAKE=null; TC_CAKE_ERR=""
+TC_CAKE_AUTORATE=null; TC_CAKE_AUTORATE_ERR=""
 TC_NETEM=null; TC_NETEM_ERR=""
 TC_INGRESS=null; TC_CLSACT=null; TC_U32=null; TC_FLOWER=null; TC_MATCHALL=null; TC_POLICE=null; TC_MIRRED=null
 TC_U32_ERR=""; TC_FLOWER_ERR=""; TC_MATCHALL_ERR=""; TC_POLICE_ERR=""; TC_MIRRED_ERR=""
@@ -107,6 +128,16 @@ TC_U32_ERR=""; TC_FLOWER_ERR=""; TC_MATCHALL_ERR=""; TC_POLICE_ERR=""; TC_MIRRED
 if [ "$DUMMY_CREATE" = true ] && [ "$TC_BINARY_OK" = true ]; then
     if probe_root_qdisc handle 1: htb default 9999; then TC_HTB=true; else TC_HTB=false; TC_HTB_ERR=$(last_err); fi
     if probe_root_qdisc tbf rate 1mbit burst 32kbit latency 400ms; then TC_TBF=true; else TC_TBF=false; TC_TBF_ERR=$(last_err); fi
+    # v5.3 Smart Queue foundation: detect low-latency qdiscs on dummy only.
+    # CAKE/fq_codel are optional; never use them unless a later layer explicitly enables SQM.
+    if probe_root_qdisc fq_codel; then TC_FQ_CODEL=true; else TC_FQ_CODEL=false; TC_FQ_CODEL_ERR=$(last_err); fi
+    if probe_root_qdisc cake; then TC_CAKE=true; else TC_CAKE=false; TC_CAKE_ERR=$(last_err); fi
+    if [ "$TC_CAKE" = true ]; then
+        if probe_root_qdisc cake autorate-ingress; then TC_CAKE_AUTORATE=true; else TC_CAKE_AUTORATE=false; TC_CAKE_AUTORATE_ERR=$(last_err); fi
+    else
+        TC_CAKE_AUTORATE=false
+        TC_CAKE_AUTORATE_ERR="$TC_CAKE_ERR"
+    fi
     if probe_root_qdisc netem delay 50ms; then TC_NETEM=true; else TC_NETEM=false; TC_NETEM_ERR=$(last_err); fi
     "$TC_BIN" qdisc del dev "$DUMMY" root >/dev/null 2>&1 || true
 
@@ -168,10 +199,24 @@ UPLINK_POLICE_SUPPORTED=false
 
 DOWNLINK_MODE=unknown
 if [ "$TC_HTB" = true ]; then DOWNLINK_MODE=htb; elif [ "$TC_TBF" = true ]; then DOWNLINK_MODE=tbf_global; elif [ "$TC_HTB" = false ]; then DOWNLINK_MODE=unsupported; fi
+# v5.2.1 D-1: 当 qos_fallback_required=true 时, downlink_mode 改为 root_htb.
+# 背景: webroot/index.html:3702 和 tc_manager.sh:127 都判 downlink_mode == 'root_htb'
+# 来决定是否走 fallback, 但 capability_probe 之前从来不写这个值. 那两处判定一直
+# 是死代码, 仅靠旁边的 qos_fallback_required 字段救场. D-1 让 enum 真正对齐:
+# fallback 模式下输出 root_htb (语义: 走 root htb 而不是 mq child htb).
+if [ -s "$RUN/tc_qos_fallback" ] && [ "$DOWNLINK_MODE" = "htb" ]; then
+    DOWNLINK_MODE=root_htb
+fi
 UPLINK_MODE=unsupported
 if [ "$UPLINK_SUPPORTED" = true ]; then UPLINK_MODE=ifb_htb; elif [ "$UPLINK_POLICE_SUPPORTED" = true ]; then UPLINK_MODE=police; fi
 DELAY_MODE=unknown
 if [ "$TC_NETEM" = true ] && [ "$TC_HTB" = true ]; then DELAY_MODE=netem; elif [ "$TC_NETEM" = false ] || [ "$TC_HTB" = false ]; then DELAY_MODE=unsupported; fi
+SQM_SUPPORTED=false
+SQM_RECOMMENDED_MODE=off
+if [ "$TC_FQ_CODEL" = true ] || [ "$TC_CAKE" = true ]; then
+    SQM_SUPPORTED=true
+    if [ "$TC_CAKE" = true ]; then SQM_RECOMMENDED_MODE=cake; else SQM_RECOMMENDED_MODE=fq_codel; fi
+fi
 
 IFACE=""
 [ -f "$RUN/iface.cache" ] && IFACE=$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')
@@ -209,6 +254,16 @@ cat > "$TMP" <<EOF_JSON
   "tc_htb_error": "$(json_escape "$TC_HTB_ERR")",
   "tc_tbf_supported": $TC_TBF,
   "tc_tbf_error": "$(json_escape "$TC_TBF_ERR")",
+  "tc_fq_codel": $TC_FQ_CODEL,
+  "tc_fq_codel_supported": $TC_FQ_CODEL,
+  "tc_fq_codel_error": "$(json_escape "$TC_FQ_CODEL_ERR")",
+  "tc_cake": $TC_CAKE,
+  "tc_cake_supported": $TC_CAKE,
+  "tc_cake_error": "$(json_escape "$TC_CAKE_ERR")",
+  "tc_cake_autorate_ingress_supported": $TC_CAKE_AUTORATE,
+  "tc_cake_autorate_ingress_error": "$(json_escape "$TC_CAKE_AUTORATE_ERR")",
+  "sqm_supported": $SQM_SUPPORTED,
+  "sqm_recommended_mode": "$(json_escape "$SQM_RECOMMENDED_MODE")",
   "tc_netem": $TC_NETEM,
   "tc_netem_supported": $TC_NETEM,
   "tc_netem_error": "$(json_escape "$TC_NETEM_ERR")",
@@ -242,8 +297,28 @@ mv -f "$TMP" "$OUT" 2>/dev/null || cp -f "$TMP" "$OUT" 2>/dev/null
 chmod 644 "$OUT" 2>/dev/null || true
 
 {
-    log "tc=$TC_BIN version=$TC_VERSION dummy=$DUMMY_CREATE htb=$TC_HTB tbf=$TC_TBF netem=$TC_NETEM ifb=$IFB_CREATE mirred=$TC_MIRRED police=$TC_POLICE"
-    log "modes: downlink=$DOWNLINK_MODE uplink=$UPLINK_MODE delay=$DELAY_MODE qos=$QOS_MODE fallback=$QOS_FALLBACK_REQUIRED iface=$IFACE qdisc=$REAL_QDISC"
+    log "tc=$TC_BIN version=$TC_VERSION dummy=$DUMMY_CREATE htb=$TC_HTB tbf=$TC_TBF fq_codel=$TC_FQ_CODEL cake=$TC_CAKE cake_autorate=$TC_CAKE_AUTORATE netem=$TC_NETEM ifb=$IFB_CREATE mirred=$TC_MIRRED police=$TC_POLICE"
+    log "modes: downlink=$DOWNLINK_MODE uplink=$UPLINK_MODE delay=$DELAY_MODE sqm=$SQM_RECOMMENDED_MODE qos=$QOS_MODE fallback=$QOS_FALLBACK_REQUIRED iface=$IFACE qdisc=$REAL_QDISC"
 } | tee "$RAW" 2>/dev/null
+
+
+# rc1.22 webfix6: clear stale "unsupported" markers when probe re-confirms support.
+# These markers are written by tc_manager.sh / watchdog.sh on first failure and
+# never cleared; once they exist runtime checks short-circuit to "unsupported"
+# even if subsequent probes confirm capability is fine. Clear them here so a
+# successful re-probe heals all dependent code paths.
+if [ "$UPLINK_SUPPORTED" = true ]; then
+    rm -f "$RUN/uplink_unsupported" "$RUN/uplink_fail_count" "$RUN/uplink_unsupported_logged" 2>/dev/null || true
+fi
+if [ "$TC_HTB" = true ] && [ "$TC_NETEM" = true ]; then
+    rm -f "$RUN/tc_netem_unsupported_logged" "$RUN/tc_htb_unsupported_logged" 2>/dev/null || true
+fi
+if [ "$DOWNLINK_MODE" = "htb" ]; then
+    # 真正精确模式 (mq child htb 等高精度路径) confirmed; 清 root-htb fallback marker.
+    # v5.2.1 D-1 修复后, "精确模式" = downlink_mode=="htb" (非 root_htb / htb_root / tbf_global).
+    # 之前这里判 "!= root_htb && != htb_root", 由于 probe 从不写 root_htb, 条件永远成立,
+    # 每次 probe 都清 fallback marker — 把 fallback 状态意外重置. 现在显式只有 htb 时才清.
+    rm -f "$RUN/tc_qos_fallback" 2>/dev/null || true
+fi
 
 exit 0

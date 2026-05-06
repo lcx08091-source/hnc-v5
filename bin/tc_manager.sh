@@ -81,6 +81,12 @@ QOS_MODE_FILE="$HNC_DIR/run/tc_qos_mode"
 QOS_FALLBACK_MARKER="$HNC_DIR/run/tc_qos_fallback"
 QOS_SCALE_FILE="$HNC_DIR/run/tc_qos_scale"
 
+# v5.3 Smart Queue / SQM foundation. Default is off to keep v5.2.1 behavior.
+# When enabled, delay-free device classes use fq_codel/CAKE leaf qdisc instead of
+# the old netem-0ms placeholder. Any real delay/jitter/loss still forces netem.
+SQM_MODE_FILE="$HNC_DIR/run/sqm_mode"
+SQM_PROFILE_FILE="$HNC_DIR/run/sqm_profile"
+
 json_top_string() {
     local key=$1 file=${2:-$RULES_FILE}
     [ -f "$file" ] || return 1
@@ -150,6 +156,96 @@ qos_mark_root_fallback() {
     echo root_htb > "$QOS_FALLBACK_MARKER" 2>/dev/null || true
 }
 qos_clear_root_fallback() { rm -f "$QOS_FALLBACK_MARKER" 2>/dev/null || true; }
+
+sqm_mode_raw() {
+    local v
+    v=$(cat "$SQM_MODE_FILE" 2>/dev/null | head -1 | tr -d '\r\n ' | tr 'A-Z' 'a-z')
+    [ -n "$v" ] || v=$(json_top_string sqm_mode | tr -d '\r\n ' | tr 'A-Z' 'a-z')
+    case "$v" in
+        off|disable|disabled|0|false|no|"") echo off ;;
+        fq|fq-codel|fqcodel|fq_codel|lowlatency|low-latency) echo fq_codel ;;
+        cake) echo cake ;;
+        game|gaming) echo game ;;
+        auto|smart|sqm) echo auto ;;
+        *) echo off ;;
+    esac
+}
+
+sqm_mode() { sqm_mode_raw; }
+
+cap_string_value() {
+    local key=$1
+    [ -f "$CAP_FILE" ] || return 1
+    tr -d '\n' < "$CAP_FILE" 2>/dev/null \
+        | grep -oE '"'"$key"'"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
+        | head -1 \
+        | sed 's/^[^:]*:[[:space:]]*"//; s/"$//'
+}
+
+sqm_cap_bool() { cap_bool_value "$1" 2>/dev/null || echo unknown; }
+
+sqm_preferred_leaf() {
+    local mode cake fqc rec
+    mode=$(sqm_mode)
+    [ "$mode" = "off" ] && { echo off; return 0; }
+    cake=$(sqm_cap_bool tc_cake_supported)
+    fqc=$(sqm_cap_bool tc_fq_codel_supported)
+    case "$mode" in
+        cake)
+            [ "$cake" = "false" ] && { echo off; return 0; }
+            echo cake ;;
+        fq_codel|game)
+            [ "$fqc" = "false" ] && { echo off; return 0; }
+            echo fq_codel ;;
+        auto)
+            rec=$(cap_string_value sqm_recommended_mode 2>/dev/null || echo "")
+            if [ "$rec" = "cake" ] && [ "$cake" != "false" ]; then echo cake; return 0; fi
+            if [ "$fqc" != "false" ]; then echo fq_codel; return 0; fi
+            [ "$cake" != "false" ] && { echo cake; return 0; }
+            echo off ;;
+        *) echo off ;;
+    esac
+}
+
+leaf_qdisc_kind() {
+    local dev=$1 class_id=$2
+    tc qdisc show dev "$dev" 2>/dev/null | awk -v p="parent 1:$class_id" '$0 ~ p {print $2; exit}'
+}
+
+leaf_has_active_netem() {
+    local dev=$1 class_id=$2 line delay loss
+    line=$(tc qdisc show dev "$dev" parent "1:$class_id" 2>/dev/null | grep netem | head -1)
+    [ -n "$line" ] || return 1
+    delay=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="delay") {print $(i+1); exit}}')
+    loss=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="loss") {print $(i+1); exit}}' | tr -d '%')
+    case "$delay" in ""|0ms|0us|0s) delay=0 ;; *) return 0 ;; esac
+    awk -v v="${loss:-0}" 'BEGIN{exit !(v+0 > 0)}' && return 0
+    return 1
+}
+
+sqm_leaf_replace() {
+    local dev=$1 class_id=$2 leaf_handle=$3 kind=${4:-}
+    [ -n "$kind" ] || kind=$(sqm_preferred_leaf)
+    case "$kind" in
+        fq_codel)
+            tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" fq_codel target 5ms interval 100ms quantum 1514 limit 1024 2>/dev/null && return 0
+            tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" fq_codel 2>/dev/null && return 0
+            ;;
+        cake)
+            # CAKE is optional and not universally present on Android. Keep options minimal.
+            tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" cake besteffort 2>/dev/null && return 0
+            tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" cake 2>/dev/null && return 0
+            ;;
+    esac
+    return 1
+}
+
+netem_leaf_replace_zero() {
+    local dev=$1 class_id=$2 leaf_handle=$3
+    tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" netem delay 0ms limit 100 2>/dev/null && return 0
+    tc qdisc del dev "$dev" parent "1:$class_id" 2>/dev/null || true
+    tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" netem delay 0ms limit 100 2>/dev/null
+}
 
 cap_bool_value() {
     local key=$1
@@ -534,15 +630,25 @@ ensure_device_class() {
         fi
     fi
 
-    # 3. leaf netem: 只保证 leaf 存在；已存在时绝不改写参数。
-    # hotfix16.4: MIUI14 上 set_delay 的 ifb0 路径可能失败。旧逻辑在 ensure 阶段
-    # 会把已存在 leaf change 成 delay 0ms 占位，随后 ifb0 失败短路，真实 delay 没机会写入。
-    # 现在已存在 leaf 时保持原样；缺失时才创建 0ms placeholder。
-    if leaf_has_netem "$dev" "$class_id"; then
-        : # keep existing leaf as-is; set_netem_only will update real parameters
+    # 3. leaf qdisc: v5.3 adds optional SQM leaf for delay-free classes.
+    # Existing active netem must be preserved; real delay/jitter/loss still wins over SQM.
+    local leaf_kind; leaf_kind=$(sqm_preferred_leaf)
+    if leaf_has_active_netem "$dev" "$class_id"; then
+        : # keep real netem as-is; set_netem_only owns delay parameters.
+    elif [ "$leaf_kind" != "off" ]; then
+        if sqm_leaf_replace "$dev" "$class_id" "$leaf_handle" "$leaf_kind"; then
+            log "  Set leaf ${leaf_handle}: $leaf_kind for SQM mode=$(sqm_mode)"
+        else
+            log_error "ensure_device_class: SQM leaf $leaf_kind failed dev=$dev class=1:$class_id; fallback netem-0ms"
+            if ! netem_leaf_replace_zero "$dev" "$class_id" "$leaf_handle"; then
+                log_error "ensure_device_class: fallback netem leaf failed dev=$dev class=1:$class_id"
+                return 1
+            fi
+        fi
+    elif leaf_has_netem "$dev" "$class_id"; then
+        : # keep existing netem-0ms placeholder in default/off mode.
     else
-        if tc qdisc add dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" \
-            netem delay 0ms limit 100 2>/dev/null; then
+        if netem_leaf_replace_zero "$dev" "$class_id" "$leaf_handle"; then
             log "  Created leaf netem ${leaf_handle}: (delay 0ms placeholder)"
         else
             log_error "ensure_device_class: leaf netem add failed dev=$dev class=1:$class_id"
@@ -607,9 +713,17 @@ set_netem_only() {
     fi
     args="$args limit 100"  # v3.3.5: 同 ensure_device_class，避免 buffer bloat
 
-    # 幂等：优先 change；失败则 del+add
+    # v5.3: clearing delay can safely return to SQM leaf if the user enabled it.
+    if ! gt0 "$delay_ms" && ! gt0 "$jitter_ms" && ! gt0 "$loss"; then
+        local leaf_kind; leaf_kind=$(sqm_preferred_leaf)
+        if [ "$leaf_kind" != "off" ]; then
+            sqm_leaf_replace "$dev" "$class_id" "$leaf_handle" "$leaf_kind" && return 0
+        fi
+    fi
+
+    # 幂等：优先 replace，兼容当前 leaf 不是 netem 的 v5.3 SQM 情况。
     # shellcheck disable=SC2086
-    tc qdisc change dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" netem $args 2>/dev/null && return 0
+    tc qdisc replace dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" netem $args 2>/dev/null && return 0
     tc qdisc del    dev "$dev" parent "1:$class_id" 2>/dev/null || true
     # shellcheck disable=SC2086
     tc qdisc add    dev "$dev" parent "1:$class_id" handle "${leaf_handle}:" netem $args 2>/dev/null
