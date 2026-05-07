@@ -2,11 +2,12 @@ package main
 
 import "strings"
 
-// actionSQMSet · v5.3.0-rc2
+// actionSQMSet · v5.3.0-rc3
 // params:
 //
 //	mode    optional: off | fq_codel | cake | auto | game
 //	profile optional: balanced | game | bulk | custom
+//	preset  optional: off | balanced | game | weaknet | poor | extreme | custom
 //	apply   optional: true/false, whether to ask tc_manager restore to rebuild leaves
 //
 // The shell manager performs the actual persistence so Go, KSU WebUI and adb
@@ -14,10 +15,11 @@ import "strings"
 func actionSQMSet(hncDir string, p map[string]string) actionResp {
 	mode := strings.TrimSpace(strings.ToLower(p["mode"]))
 	profile := strings.TrimSpace(strings.ToLower(p["profile"]))
+	preset := strings.TrimSpace(strings.ToLower(p["preset"]))
 	apply := strings.TrimSpace(strings.ToLower(p["apply"]))
 
-	if mode == "" && profile == "" && apply == "" {
-		return actionResp{OK: false, Error: "bad params", Detail: "one of mode/profile/apply is required"}
+	if mode == "" && profile == "" && preset == "" && apply == "" {
+		return actionResp{OK: false, Error: "bad params", Detail: "one of mode/profile/preset/apply is required"}
 	}
 
 	details := []string{}
@@ -45,6 +47,19 @@ func actionSQMSet(hncDir string, p map[string]string) actionResp {
 			return actionResp{OK: false, Error: "sqm set-profile failed", Detail: strings.TrimSpace(out)}
 		}
 		details = append(details, "profile="+profile)
+	}
+
+	if preset != "" {
+		switch preset {
+		case "off", "balanced", "game", "weaknet", "weak-net", "weak", "poor", "bad", "extreme", "custom":
+		default:
+			return actionResp{OK: false, Error: "bad params", Detail: "invalid sqm preset"}
+		}
+		rc, out := runBin(hncDir, "sqm_manager.sh", "set-preset", preset)
+		if rc != 0 {
+			return actionResp{OK: false, Error: "sqm set-preset failed", Detail: strings.TrimSpace(out)}
+		}
+		details = append(details, "preset="+preset)
 	}
 
 	switch apply {

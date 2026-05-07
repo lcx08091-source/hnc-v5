@@ -1,3 +1,14 @@
+<!-- v5.3.0-rc3 Smart Queue gray preset diagnostics -->
+<div class="cl-section">
+  <div class="cl-title">🧠 v5.3.0-rc3: Smart Queue 灰度增强 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-06</span></div>
+  <ul class="cl-list">
+    <li><b>预设增强</b>: 新增均衡、游戏、弱网、较差 SQM 预设，弱网预设只填入单设备输入框，不会全局强制制造丢包。</li>
+    <li><b>状态细化</b>: <code>/api/sqm</code> 返回 schema 2，增加 <code>preset</code>、<code>presets</code>、<code>recommended_leaf</code>、<code>detected_leaf</code>、<code>reason</code>。</li>
+    <li><b>诊断增强</b>: 新增 <code>bin/sqm_gray_diag.sh</code>，一键导出 SQM 状态、capabilities、qdisc/class/filter 和日志尾部。</li>
+    <li><b>WebUI 接入</b>: 设置页新增 SQM 诊断按钮，设备卡新增“填入预设”按钮，方便游戏/弱网灰度测试。</li>
+  </ul>
+</div>
+
 <!-- v5.3.0-rc2 Smart Queue control plane -->
 <div class="cl-section">
   <div class="cl-title">🧠 v5.3.0-rc2: Smart Queue 低延迟控制面 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-06</span></div>

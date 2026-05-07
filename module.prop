@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.3.0-rc2
-versionCode=530002
+version=v5.3.0-rc3
+versionCode=530003
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc2 · Smart Queue/SQM 低延迟控制面: 新增 /api/sqm 与 sqm_set action · WebUI 设置页 SQM 模式/配置档开关 · 支持远程与本机统一写入 · 默认关闭不影响原链路 · KernelSU/SukiSU/Magisk
+description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc3 · Smart Queue/SQM 灰度增强: 新增游戏/弱网预设、SQM 状态细化、一键灰度诊断脚本 · fq_codel/CAKE 能力安全降级 · 默认关闭不影响原链路 · KernelSU/SukiSU/Magisk
 minKernelSU=11485

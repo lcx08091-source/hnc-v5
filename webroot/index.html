@@ -1569,6 +1569,14 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
   margin-top: 6px;
 }
+.sqm-preset-seg {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+  margin-top: 6px;
+}
+.sqm-mini-actions {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+}
+.sqm-mini-actions .btn { min-height: 30px; padding: 0 10px; font-size: 11px; }
 .sqm-control-desc {
   font-size: 10.5px; line-height: 1.5; color: var(--text-3);
   margin-top: 7px;
@@ -1576,6 +1584,7 @@ body.batch-mode .card-body-wrapper { grid-template-rows: 0fr !important; }
 @media (max-width: 380px) {
   .sqm-control-panel { margin-left: 0; }
   .sqm-mode-seg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sqm-preset-seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .input-suffix {
   position: absolute; right: 10px; top: 50%;
@@ -2594,7 +2603,16 @@ body.kb-open .container {
           <button type="button" class="qos-mode-btn" data-sqm-profile="game">游戏</button>
           <button type="button" class="qos-mode-btn" data-sqm-profile="bulk">下载</button>
         </div>
-        <div class="sqm-control-desc" id="sqm-control-desc">切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。</div>
+        <div class="sqm-preset-seg">
+          <button type="button" class="qos-mode-btn" data-sqm-preset="balanced">均衡</button>
+          <button type="button" class="qos-mode-btn" data-sqm-preset="game">游戏</button>
+          <button type="button" class="qos-mode-btn" data-sqm-preset="weaknet">弱网</button>
+          <button type="button" class="qos-mode-btn" data-sqm-preset="poor">较差</button>
+        </div>
+        <div class="sqm-mini-actions">
+          <button type="button" class="btn btn-ghost" data-action="sqm-gray-diag">生成 SQM 诊断</button>
+        </div>
+        <div class="sqm-control-desc" id="sqm-control-desc">切换后会请求后端重建 leaf qdisc；弱网预设只保存并填入单设备输入框，不会全局强制制造丢包。</div>
       </div>
       <div class="set-row">
         <div class="set-icon green"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
@@ -3829,19 +3847,48 @@ body.kb-open .container {
     profile = normalizeSqmProfile(profile);
     return { balanced: '均衡', game: '游戏', bulk: '下载', custom: '自定义' }[profile] || '均衡';
   }
+  function normalizeSqmPreset(v) {
+    v = String(v || '').trim().toLowerCase().replace('-', '');
+    if (v === 'weak' || v === 'weaknet' || v === 'drift') return 'weaknet';
+    if (v === 'bad' || v === 'poor') return 'poor';
+    if (['off', 'balanced', 'game', 'extreme', 'custom'].includes(v)) return v;
+    return 'off';
+  }
+  function sqmPresetLabel(preset) {
+    preset = normalizeSqmPreset(preset);
+    return { off: '关闭', balanced: '均衡', game: '游戏', weaknet: '弱网', poor: '较差', extreme: '极差', custom: '自定义' }[preset] || '关闭';
+  }
+  function sqmPresetDetail(id) {
+    id = normalizeSqmPreset(id);
+    const fromApi = (state.sqmPresets || []).find(p => normalizeSqmPreset(p.id) === id);
+    if (fromApi) return fromApi;
+    const fallback = {
+      balanced: { id: 'balanced', down_mbps: 0, up_mbps: 0, delay_ms: 0, jitter_ms: 0, loss_pct: 0, note: '均衡低延迟' },
+      game: { id: 'game', down_mbps: 10, up_mbps: 10, delay_ms: 20, jitter_ms: 5, loss_pct: 0, note: '游戏优先' },
+      weaknet: { id: 'weaknet', down_mbps: 1, up_mbps: 0.5, delay_ms: 200, jitter_ms: 50, loss_pct: 3, note: '弱网测试' },
+      poor: { id: 'poor', down_mbps: 0.5, up_mbps: 0.25, delay_ms: 350, jitter_ms: 90, loss_pct: 6, note: '较差网络' },
+      extreme: { id: 'extreme', down_mbps: 0.2, up_mbps: 0.1, delay_ms: 800, jitter_ms: 150, loss_pct: 10, note: '极差实验' },
+      off: { id: 'off', down_mbps: 0, up_mbps: 0, delay_ms: 0, jitter_ms: 0, loss_pct: 0, note: '关闭' }
+    };
+    return fallback[id] || fallback.off;
+  }
   function applySqmStatus(st) {
     if (!st || typeof st !== 'object') return;
     state.sqmStatus = st;
     if (st.mode !== undefined) state.sqmMode = normalizeSqmMode(st.mode);
     if (st.profile !== undefined) state.sqmProfile = normalizeSqmProfile(st.profile);
+    if (st.preset !== undefined) state.sqmPreset = normalizeSqmPreset(st.preset);
+    if (Array.isArray(st.presets)) state.sqmPresets = st.presets;
     try { localStorage.setItem('hnc.sqm-mode', state.sqmMode); } catch (_) {}
     try { localStorage.setItem('hnc.sqm-profile', state.sqmProfile); } catch (_) {}
+    try { localStorage.setItem('hnc.sqm-preset', state.sqmPreset); } catch (_) {}
     updateSqmPanel();
   }
   function updateSqmPanel() {
     const st = state.sqmStatus || {};
     const mode = normalizeSqmMode(state.sqmMode);
     const profile = normalizeSqmProfile(state.sqmProfile);
+    const preset = normalizeSqmPreset(state.sqmPreset);
     const supported = st.mode_supported !== false && !(st.tc_fq_codel_supported === false && st.tc_cake_supported === false);
     const statusEl = $('#sqm-status-value');
     const descEl = $('#sqm-desc');
@@ -3852,11 +3899,12 @@ body.kb-open .container {
     let desc = '默认关闭；开启后 delay-free 限速 class 会优先使用 fq_codel / CAKE leaf，真实延迟/丢包仍由 netem 接管';
     if (st.available === false) desc = 'SQM 状态暂不可读：' + (st.error || st.detail || '等待后端生成');
     else if (!supported) desc = '当前 tc 未探测到 fq_codel / CAKE，保持原 HTB/netem 兼容链路';
-    else if (mode !== 'off') desc = '当前模式：' + sqmModeLabel(mode) + ' · 配置档：' + sqmProfileLabel(profile) + ' · 推荐：' + sqmModeLabel(st.recommended_mode || 'off');
+    else if (mode !== 'off') desc = '当前模式：' + sqmModeLabel(mode) + ' · 配置档：' + sqmProfileLabel(profile) + ' · 预设：' + sqmPresetLabel(preset) + ' · 推荐：' + sqmModeLabel(st.recommended_mode || 'off');
     if (descEl) descEl.textContent = desc;
     if (detailEl) {
       const q = st.qdisc_head ? String(st.qdisc_head).slice(0, 180) : '';
-      detailEl.textContent = q ? ('qdisc: ' + q) : '切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。';
+      const meta = st.detected_leaf ? ('检测到 leaf: ' + st.detected_leaf + ' · ') : '';
+      detailEl.textContent = q ? (meta + 'qdisc: ' + q) : (st.reason || '切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。');
     }
     $$('[data-sqm-mode]').forEach(btn => {
       const m = normalizeSqmMode(btn.dataset.sqmMode);
@@ -3871,6 +3919,11 @@ body.kb-open .container {
     $$('[data-sqm-profile]').forEach(btn => {
       const p = normalizeSqmProfile(btn.dataset.sqmProfile);
       btn.classList.toggle('active', p === profile);
+    });
+    $$('[data-sqm-preset]').forEach(btn => {
+      const p = normalizeSqmPreset(btn.dataset.sqmPreset);
+      btn.classList.toggle('active', p === preset);
+      btn.title = (sqmPresetDetail(p).note || '');
     });
   }
   async function fetchSQM() {
@@ -3905,9 +3958,26 @@ body.kb-open .container {
     const p = {};
     if (params.mode !== undefined) p.mode = normalizeSqmMode(params.mode);
     if (params.profile !== undefined) p.profile = normalizeSqmProfile(params.profile);
+    if (params.preset !== undefined) p.preset = normalizeSqmPreset(params.preset);
     p.apply = 'true';
     await apiAction('sqm_set', p);
     await fetchSQM();
+  }
+
+  function fillCardWithSqmPreset(card, presetId) {
+    const detail = sqmPresetDetail(presetId || state.sqmPreset);
+    if (!card || !detail) return false;
+    const down = card.querySelector('input[data-field="down"]');
+    const up = card.querySelector('input[data-field="up"]');
+    const dly = card.querySelector('input[data-field="delay"]');
+    const jit = card.querySelector('input[data-field="jitter"]');
+    const loss = card.querySelector('input[data-field="loss"]');
+    if (down && !down.disabled && Number(detail.down_mbps || 0) > 0) down.value = mbpsToMBsStr(Number(detail.down_mbps || 0));
+    if (up && !up.disabled && Number(detail.up_mbps || 0) > 0) up.value = mbpsToMBsStr(Number(detail.up_mbps || 0));
+    if (dly && !dly.disabled) dly.value = detail.delay_ms || '';
+    if (jit && !jit.disabled) jit.value = detail.jitter_ms || '';
+    if (loss && !loss.disabled) loss.value = detail.loss_pct || '';
+    return true;
   }
 
   function applyHotspotClosedState() {
@@ -4140,6 +4210,8 @@ body.kb-open .container {
     sqmStatus: null,
     sqmMode: localStorage.getItem('hnc.sqm-mode') || 'off',
     sqmProfile: localStorage.getItem('hnc.sqm-profile') || 'balanced',
+    sqmPreset: localStorage.getItem('hnc.sqm-preset') || 'off',
+    sqmPresets: [],
     sqmApiUnavailable: false,
     sqmApiWarned: false,
     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced',
@@ -4404,6 +4476,7 @@ body.kb-open .container {
               ${delayDisabled ? '<div class="input-hint warn">当前内核/TC 不支持 netem/HTB，延迟/抖动/丢包不可用；已禁用注入按钮。</div>' : ''}
               <div class="btn-row">
                 <button class="btn btn-warn" data-action="apply-delay"${applyDelayAttr}>注入延迟</button>
+                <button class="btn btn-ghost" data-action="fill-sqm-preset"${delayDisAttr}>填入预设</button>
                 <button class="btn btn-ghost" data-action="clear-delay">清除</button>
               </div>
             </div>
@@ -6154,6 +6227,28 @@ body.kb-open .container {
       return;
     }
 
+    const sqmPresetBtn = e.target.closest('[data-sqm-preset]');
+    if (sqmPresetBtn) {
+      const preset = normalizeSqmPreset(sqmPresetBtn.dataset.sqmPreset);
+      sqmPresetBtn.disabled = true;
+      setSqmBackend({ preset }).then(() => {
+        toast('SQM 预设已切换为' + sqmPresetLabel(preset), 'ok');
+      }).catch(err => {
+        toast('SQM 预设失败: ' + (err.message || err), 'err');
+        updateSqmPanel();
+      }).finally(() => { sqmPresetBtn.disabled = false; });
+      return;
+    }
+
+    if (e.target.closest('[data-action="sqm-gray-diag"]')) {
+      kexec('su -c "sh /data/local/hnc/bin/sqm_gray_diag.sh 2>/dev/null"').then(raw => {
+        toast('SQM 诊断已生成', 'ok');
+        dbg('sqm-gray-diag: ' + String(raw || '').trim());
+        fetchSQM();
+      }).catch(err => toast('SQM 诊断失败: ' + (err.message || err), 'err'));
+      return;
+    }
+
     /* 设备卡按钮操作 */
     const btn = e.target.closest('.btn[data-action]');
     if (!btn) return;
@@ -6200,6 +6295,13 @@ body.kb-open .container {
       });
       return;
     }
+    if (action === 'fill-sqm-preset') {
+      const card = btn.closest('.device-card');
+      if (fillCardWithSqmPreset(card, state.sqmPreset || 'game')) toast('已填入 ' + sqmPresetLabel(state.sqmPreset) + ' 预设，请按需再点击应用', 'ok');
+      else toast('预设填入失败', 'err');
+      return;
+    }
+
     if (action === 'apply-delay') {
       const card = btn.closest('.device-card');
       const mac = card.dataset.mac;

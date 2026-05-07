@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// apiSQMStatus · v5.3.0-rc2
+// apiSQMStatus · v5.3.0-rc3
 // Read-only Smart Queue / SQM status endpoint. It intentionally delegates to
 // bin/sqm_manager.sh so local WebUI, remote WebUI and shell diagnostics share one
 // source of truth. The endpoint is lightweight and never mutates tc state.
