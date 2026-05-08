@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC v5.3.0-rc3 · SQM gray diagnostic bundle
+# HNC v5.3.0-rc5 · SQM gray diagnostic bundle
 # Read-only except for writing a local report under /data/local/hnc/run.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:/data/adb/magisk:/data/adb/ksu/bin:$PATH
@@ -26,7 +26,7 @@ section() { echo; echo "===== $* ====="; }
 redact() { sed -E 's/([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}/XX:XX:XX:XX:XX:XX/g; s/([0-9]{1,3}\.){3}[0-9]{1,3}/x.x.x.x/g'; }
 
 {
-    echo "HNC SQM gray diagnostic · v5.3.0-rc3"
+    echo "HNC SQM gray diagnostic · v5.3.0-rc5"
     echo "time=$TS"
     echo "hnc_dir=$HNC_DIR"
     echo "iface=$IFACE"

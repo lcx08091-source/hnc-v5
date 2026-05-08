@@ -2,7 +2,7 @@ package main
 
 import "strings"
 
-// actionSQMSet · v5.3.0-rc3
+// actionSQMSet · v5.3.0-rc5
 // params:
 //
 //	mode    optional: off | fq_codel | cake | auto | game

@@ -1,0 +1,89 @@
+#!/system/bin/sh
+# HNC v5.3.0-rc5 · flashable artifact sanity checker
+# Detect GitHub Actions outer ZIP wrappers and stale hnc_httpd binaries before install.
+
+set +e
+ZIP="$1"
+FAIL=0
+WARN=0
+TMPBASE="${TMPDIR:-/tmp}"
+[ -d "$TMPBASE" ] || TMPBASE="."
+TMP="$TMPBASE/hnc_artifact_check.$$"
+say(){ printf '%s\n' "$*"; }
+ok(){ say "[OK] $*"; }
+warn(){ WARN=$((WARN+1)); say "[WARN] $*"; }
+fail(){ FAIL=$((FAIL+1)); say "[FAIL] $*"; }
+cleanup(){ rm -rf "$TMP" "$TMP".* 2>/dev/null; }
+trap cleanup EXIT INT TERM
+usage(){ cat <<'EOF_USAGE'
+Usage: sh bin/artifact_sanity_check.sh <HNC-module.zip>
+Checks direct flashability, nested ZIPs, required files, hnc_httpd ELF arch, embedded version and v5.3 SQM symbols.
+EOF_USAGE
+}
+[ -z "$ZIP" ] || [ "$ZIP" = "-h" ] || [ "$ZIP" = "--help" ] && { usage; [ -z "$ZIP" ] && exit 2 || exit 0; }
+[ -f "$ZIP" ] || { fail "artifact not found: $ZIP"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
+command -v unzip >/dev/null 2>&1 || { fail "unzip not found; cannot inspect artifact"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
+
+say "HNC artifact sanity check v5.3.0-rc5"
+say "artifact=$ZIP"
+unzip -t "$ZIP" >"$TMP.unzip_test" 2>&1
+[ $? -eq 0 ] && ok "zip integrity OK" || { fail "zip integrity failed"; cat "$TMP.unzip_test"; }
+unzip -l "$ZIP" > "$TMP.list" 2>/dev/null
+awk 'NR>3 && $0 !~ /---------/ {print $4}' "$TMP.list" | sed '/^$/d' > "$TMP.entries"
+TOTAL_ENTRIES=$(wc -l < "$TMP.entries" 2>/dev/null | tr -d ' ')
+ROOT_MODULE=$(grep -x 'module.prop' "$TMP.entries" | head -1)
+ANY_MODULE=$(grep -E '(^|/)module\.prop$' "$TMP.entries" | head -1)
+NESTED_ZIPS=$(grep -E '\.zip$' "$TMP.entries" | sed '/^$/d')
+NESTED_COUNT=$(printf '%s\n' "$NESTED_ZIPS" | sed '/^$/d' | wc -l | tr -d ' ')
+
+if [ -n "$ROOT_MODULE" ]; then
+  ok "module.prop is at ZIP root; package is directly flashable"
+else
+  fail "module.prop is not at ZIP root; do not flash this ZIP directly"
+  if [ "$TOTAL_ENTRIES" = "1" ] && [ "$NESTED_COUNT" = "1" ]; then
+    fail "this looks like a GitHub Actions outer wrapper containing an inner module ZIP: $NESTED_ZIPS"
+  elif [ -n "$ANY_MODULE" ]; then
+    fail "module.prop exists only under a subdirectory: $ANY_MODULE"
+  else
+    fail "module.prop missing from artifact"
+  fi
+fi
+[ "$NESTED_COUNT" -gt 0 ] && fail "artifact contains nested ZIP(s); use the inner module ZIP or fix packaging: $(printf '%s' "$NESTED_ZIPS" | tr '\n' ' ')" || ok "artifact has no nested ZIP"
+grep -E '\.rej$|\.orig$' "$TMP.entries" >/dev/null && fail "artifact contains .rej/.orig patch residue" || ok "artifact has no .rej/.orig residue"
+grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)$' "$TMP.entries" >/dev/null && fail "artifact may contain private key/secret files" || ok "artifact has no obvious private key/secret files"
+for req in webroot/index.html webroot/json-health.html bin/sqm_manager.sh bin/capability_probe.sh daemon/hnc_httpd/hnc_httpd; do
+  grep -x "$req" "$TMP.entries" >/dev/null && ok "required file exists: $req" || fail "required file missing at ZIP root path: $req"
+done
+
+VER=""; VC=""
+if [ -n "$ROOT_MODULE" ]; then
+  unzip -p "$ZIP" module.prop > "$TMP.module.prop" 2>/dev/null
+  VER=$(awk -F= '$1=="version"{print $2; exit}' "$TMP.module.prop" 2>/dev/null)
+  VC=$(awk -F= '$1=="versionCode"{print $2; exit}' "$TMP.module.prop" 2>/dev/null)
+  say "module.prop version=$VER versionCode=$VC"
+  [ -n "$VER" ] && ok "module.prop version is present" || fail "module.prop version missing"
+  echo "$VC" | grep -Eq '^[0-9]+$' && ok "module.prop versionCode is numeric" || fail "module.prop versionCode is not numeric"
+fi
+if grep -x 'daemon/hnc_httpd/hnc_httpd' "$TMP.entries" >/dev/null; then
+  mkdir -p "$TMP.extract" 2>/dev/null
+  unzip -p "$ZIP" daemon/hnc_httpd/hnc_httpd > "$TMP.extract/hnc_httpd" 2>/dev/null
+  if [ -s "$TMP.extract/hnc_httpd" ]; then
+    ok "hnc_httpd binary can be extracted"
+    if command -v od >/dev/null 2>&1; then
+      MACHINE=$(od -An -tx1 -j18 -N2 "$TMP.extract/hnc_httpd" 2>/dev/null | awk '{print $1 " " $2}')
+      case "$MACHINE" in "b7 00") ok "hnc_httpd is AArch64 ELF: machine=$MACHINE" ;; "28 00") warn "hnc_httpd is 32-bit ARM ELF: machine=$MACHINE; expected arm64 package?" ;; *) fail "hnc_httpd is not Android ARM/AArch64 ELF, machine=$MACHINE" ;; esac
+    else warn "od not available; skipped hnc_httpd ELF machine check"; fi
+    if command -v strings >/dev/null 2>&1; then
+      strings "$TMP.extract/hnc_httpd" > "$TMP.httpd.strings" 2>/dev/null
+      [ -n "$VER" ] && { grep -F "$VER" "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd embeds module version $VER" || fail "hnc_httpd does not embed module version $VER; Go binary may be stale"; }
+      case "$VER" in v5.3.*)
+        grep -F '/api/sqm' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains /api/sqm" || fail "hnc_httpd missing /api/sqm symbol/string"
+        grep -F 'apiSQMStatus' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains apiSQMStatus" || fail "hnc_httpd missing apiSQMStatus"
+        grep -F 'actionSQMSet' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains actionSQMSet" || fail "hnc_httpd missing actionSQMSet" ;;
+      esac
+    else warn "strings not available; skipped hnc_httpd version/API symbol checks"; fi
+  else fail "hnc_httpd extraction failed or produced empty file"; fi
+fi
+say "summary: failures=$FAIL warnings=$WARN"
+[ "$FAIL" -eq 0 ] || exit 1
+exit 0

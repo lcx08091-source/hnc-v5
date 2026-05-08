@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight v5.3.0-rc1"
+say "HNC preflight v5.3.0-rc5"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -174,9 +174,32 @@ if [ -n "$ARTIFACT" ]; then
     TMPBASE="${TMPDIR:-$ROOT/.tmp}"
     mkdir -p "$TMPBASE" 2>/dev/null || TMPBASE="$ROOT"
     ZIPTMP="$TMPBASE/hnc_zip_test.$$"
-    unzip -t "$ARTIFACT" >"$ZIPTMP" 2>&1
+    CHECK_ARTIFACT="$ARTIFACT"
+
+    # v5.3.0-rc5: accept GitHub Actions outer wrapper downloads for inspection,
+    # but always validate the actual inner flashable module ZIP. This avoids the
+    # false workflow where the outer artifact passes upload but users accidentally
+    # try to flash it.
+    if [ -f bin/artifact_pick_flashable.sh ]; then
+      PICK_DIR="$TMPBASE/hnc_flashable_pick.$$"
+      PICK_OUT="$TMPBASE/hnc_flashable_pick.$$.log"
+      sh bin/artifact_pick_flashable.sh "$ARTIFACT" "$PICK_DIR" > "$PICK_OUT" 2>&1
+      PICK_RC=$?
+      cat "$PICK_OUT"
+      PICKED="$(awk -F= '$1=="flashable_artifact"{print $2}' "$PICK_OUT" | tail -1)"
+      if [ "$PICK_RC" = "0" ] && [ -n "$PICKED" ] && [ -f "$PICKED" ]; then
+        CHECK_ARTIFACT="$PICKED"
+        [ "$CHECK_ARTIFACT" = "$ARTIFACT" ] && ok "artifact is directly flashable" || warn "using extracted inner flashable artifact for checks: $CHECK_ARTIFACT"
+      else
+        fail "artifact flashable picker failed rc=$PICK_RC"
+      fi
+    else
+      warn "bin/artifact_pick_flashable.sh missing; wrapper auto-detection skipped"
+    fi
+
+    unzip -t "$CHECK_ARTIFACT" >"$ZIPTMP" 2>&1
     if [ $? -eq 0 ]; then ok "artifact zip integrity OK"; else fail "artifact zip integrity failed"; cat "$ZIPTMP"; fi
-    LIST="$(unzip -l "$ARTIFACT" 2>/dev/null)"
+    LIST="$(unzip -l "$CHECK_ARTIFACT" 2>/dev/null)"
     echo "$LIST" | grep -E '\.rej|\.orig' >/dev/null && fail "artifact contains .rej/.orig" || ok "artifact has no .rej/.orig"
     echo "$LIST" | grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)' >/dev/null && fail "artifact may contain secrets" || ok "artifact has no obvious secrets"
     echo "$LIST" | grep -E 'daemon/hnc_httpd/hnc_httpd$' >/dev/null && ok "artifact contains hnc_httpd" || fail "artifact missing daemon/hnc_httpd/hnc_httpd"
@@ -188,7 +211,7 @@ if [ -n "$ARTIFACT" ]; then
     # x86 hnc_json_c accidentally gets packaged into the Android module.
     MOD_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)module\.prop$' | head -1)"
     if [ -n "$MOD_ENTRY" ]; then
-      unzip -p "$ARTIFACT" "$MOD_ENTRY" > "$ZIPTMP.module.prop" 2>/dev/null
+      unzip -p "$CHECK_ARTIFACT" "$MOD_ENTRY" > "$ZIPTMP.module.prop" 2>/dev/null
       ZIP_VER="$(awk -F= '$1=="version"{print $2; exit}' "$ZIPTMP.module.prop" 2>/dev/null)"
       ZIP_VC="$(awk -F= '$1=="versionCode"{print $2; exit}' "$ZIPTMP.module.prop" 2>/dev/null)"
       SRC_VER="$(awk -F= '$1=="version"{print $2; exit}' module.prop 2>/dev/null)"
@@ -202,7 +225,7 @@ if [ -n "$ARTIFACT" ]; then
 
     C_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)bin/hnc_json_c$' | head -1)"
     if [ -n "$C_ENTRY" ]; then
-      unzip -p "$ARTIFACT" "$C_ENTRY" > "$ZIPTMP.hnc_json_c" 2>/dev/null
+      unzip -p "$CHECK_ARTIFACT" "$C_ENTRY" > "$ZIPTMP.hnc_json_c" 2>/dev/null
       if [ -s "$ZIPTMP.hnc_json_c" ] && command -v od >/dev/null 2>&1; then
         CM="$(od -An -tx1 -j18 -N2 "$ZIPTMP.hnc_json_c" 2>/dev/null | awk '{print $1 " " $2}')"
         case "$CM" in
@@ -217,7 +240,19 @@ if [ -n "$ARTIFACT" ]; then
     fi
 
     echo "$LIST" | awk '{print $4}' | grep -E '\.zip$' >/dev/null && warn "artifact contains nested zip; verify this is not an Actions outer wrapper" || ok "artifact has no nested zip"
-    rm -f "$ZIPTMP" "$ZIPTMP.module.prop" "$ZIPTMP.hnc_json_c"
+
+    # v5.3.0-rc5: strict sanity runs on CHECK_ARTIFACT, which is either the
+    # original direct module ZIP or the extracted inner module ZIP.
+    if [ -x bin/artifact_sanity_check.sh ]; then
+      say "running bin/artifact_sanity_check.sh on $CHECK_ARTIFACT"
+      sh bin/artifact_sanity_check.sh "$CHECK_ARTIFACT"
+      RC=$?
+      if [ "$RC" = "0" ]; then ok "artifact sanity check passed"; else fail "artifact sanity check failed rc=$RC"; fi
+    else
+      warn "bin/artifact_sanity_check.sh missing; strict artifact sanity gate skipped"
+    fi
+
+    rm -f "$ZIPTMP" "$ZIPTMP.module.prop" "$ZIPTMP.hnc_json_c" "$PICK_OUT" 2>/dev/null || true
   fi
 fi
 

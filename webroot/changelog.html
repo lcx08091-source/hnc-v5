@@ -1,3 +1,25 @@
+<!-- v5.3.0-rc5 release gate and gray closeout -->
+<div class="cl-section">
+  <div class="cl-title">🧪 v5.3.0-rc5: 发布链路 / 灰度收口 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-08</span></div>
+  <ul class="cl-list">
+    <li><b>Actions 双层 ZIP 自动识别</b>: 新增 <code>bin/artifact_pick_flashable.sh</code>，可自动提取外层 artifact 里的真正可刷模块包。</li>
+    <li><b>实机最小自检</b>: 新增 <code>bin/rc_selfcheck_v53.sh</code>，一键检查 <code>hnc_httpd</code> 版本、<code>/api/sqm</code>、SQM 能力和当前 qdisc。</li>
+    <li><b>测试残留清理</b>: 新增 <code>bin/hnc_cleanup_test_rules_v53.sh</code>，默认 dry-run，只允许清理 <code>parent 1:&lt;classid&gt;</code> 下的 netem leaf，不碰 root qdisc。</li>
+    <li><b>CI 收口</b>: <code>ci_preflight --artifact</code> 会先定位真实 flashable ZIP，再执行严格产物校验。</li>
+  </ul>
+</div>
+
+<!-- v5.3.0-rc4 artifact sanity gate -->
+<div class="cl-section">
+  <div class="cl-title">📦 v5.3.0-rc4: 安装包/编译产物门禁 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-07</span></div>
+  <ul class="cl-list">
+    <li><b>双层 ZIP 防误刷</b>: 新增 <code>bin/artifact_sanity_check.sh</code>，直接检测 GitHub Actions 外层包套内层模块包的情况。</li>
+    <li><b>Go 二进制校验</b>: 检查 <code>hnc_httpd</code> 是否为 Android ARM/AArch64 ELF，并确认内嵌当前 <code>module.prop</code> 版本。</li>
+    <li><b>SQM 符号校验</b>: v5.3 包会额外检查 <code>/api/sqm</code>、<code>apiSQMStatus</code>、<code>actionSQMSet</code> 是否编进后端。</li>
+    <li><b>CI 接入</b>: <code>ci_preflight --artifact</code> 会调用严格门禁，避免 WebUI 是新版但后端仍是旧二进制。</li>
+  </ul>
+</div>
+
 <!-- v5.3.0-rc3 Smart Queue gray preset diagnostics -->
 <div class="cl-section">
   <div class="cl-title">🧠 v5.3.0-rc3: Smart Queue 灰度增强 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-06</span></div>
