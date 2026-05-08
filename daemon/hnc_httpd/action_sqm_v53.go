@@ -2,16 +2,17 @@ package main
 
 import "strings"
 
-// actionSQMSet · v5.3.0-rc5
+// actionSQMSet · v5.3.0-rc7
 // params:
 //
 //	mode    optional: off | fq_codel | cake | auto | game
 //	profile optional: balanced | game | bulk | custom
 //	preset  optional: off | balanced | game | weaknet | poor | extreme | custom
-//	apply   optional: true/false, whether to ask tc_manager restore to rebuild leaves
+//	apply   optional: true/false, whether to ask sqm_manager for incremental default-leaf apply
 //
 // The shell manager performs the actual persistence so Go, KSU WebUI and adb
 // diagnostics keep identical semantics. Invalid values are rejected before shell.
+// v5.3.0-rc7: apply is no longer a full tc_manager restore; it is an incremental leaf replace.
 func actionSQMSet(hncDir string, p map[string]string) actionResp {
 	mode := strings.TrimSpace(strings.ToLower(p["mode"]))
 	profile := strings.TrimSpace(strings.ToLower(p["profile"]))

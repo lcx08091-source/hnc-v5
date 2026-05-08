@@ -2,6 +2,7 @@
 # HNC v5.3 Smart Queue / SQM manager
 # Low-risk controller for fq_codel/CAKE leaf mode. It never rewrites system BPF,
 # never replaces the hotspot root qdisc directly, and defaults to off.
+# v5.3.0-rc7: apply is incremental and only touches the default HTB leaf (1:9999).
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:/data/adb/magisk:/data/adb/ksu/bin:$PATH
 
@@ -191,6 +192,84 @@ write_mode() {
     log "mode set to $mode"
 }
 
+# v5.3.0-rc7: choose the actual leaf qdisc to apply. CAKE is never attempted
+# unless capability_probe confirmed it; unsupported CAKE falls back to fq_codel.
+effective_leaf_for_apply() {
+    local mode cake fqc rec
+    mode=$(current_mode)
+    cake=$(cap_bool tc_cake_supported)
+    fqc=$(cap_bool tc_fq_codel_supported)
+    case "$mode" in
+        off) echo off ;;
+        cake)
+            if [ "$cake" = true ]; then echo cake; elif [ "$fqc" != false ]; then echo fq_codel; else echo off; fi ;;
+        fq_codel|game)
+            if [ "$fqc" != false ]; then echo fq_codel; else echo off; fi ;;
+        auto)
+            rec=$(recommended_mode)
+            if [ "$rec" = cake ] && [ "$cake" = true ]; then echo cake; return 0; fi
+            if [ "$fqc" != false ]; then echo fq_codel; return 0; fi
+            if [ "$cake" = true ]; then echo cake; return 0; fi
+            echo off ;;
+        *) echo off ;;
+    esac
+}
+
+leaf_has_active_netem_on_parent() {
+    local iface=$1 parent=$2 line delay loss
+    line=$($TC_BIN qdisc show dev "$iface" 2>/dev/null | grep "parent $parent" | grep netem | head -1)
+    [ -n "$line" ] || return 1
+    delay=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="delay") {print $(i+1); exit}}')
+    loss=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="loss") {print $(i+1); exit}}' | tr -d '%')
+    case "$delay" in ""|0ms|0us|0s) : ;; *) return 0 ;; esac
+    awk -v v="${loss:-0}" 'BEGIN{exit !(v+0 > 0)}' && return 0
+    return 1
+}
+
+apply_default_leaf() {
+    local iface=${1:-} kind out rc=0
+    [ -n "$iface" ] || iface=$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')
+    [ -n "$iface" ] || { echo "ERROR: hotspot iface unknown" >&2; return 2; }
+
+    kind=$(effective_leaf_for_apply)
+    out=$($TC_BIN qdisc show dev "$iface" 2>/dev/null || true)
+    echo "$out" | grep -q 'qdisc htb 1:' || { echo "ERROR: HTB root 1: not found on $iface; skip incremental SQM apply" >&2; return 3; }
+    $TC_BIN class show dev "$iface" 2>/dev/null | grep -q 'class htb 1:9999' || { echo "ERROR: default class 1:9999 not found on $iface; skip incremental SQM apply" >&2; return 4; }
+
+    # Do not overwrite a real netem default leaf. Device-specific netem classes are
+    # separate, but this guard protects unusual fallback layouts.
+    if leaf_has_active_netem_on_parent "$iface" '1:9999'; then
+        log "apply skipped iface=$iface parent=1:9999 reason=active-netem-preserved"
+        echo "WARN: default parent 1:9999 has active netem; SQM leaf preserved" >&2
+        return 0
+    fi
+
+    case "$kind" in
+        fq_codel)
+            $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: fq_codel target 5ms interval 100ms quantum 1514 limit 1024 2>/dev/null                 || $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: fq_codel 2>/dev/null                 || rc=$? ;;
+        cake)
+            $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: cake besteffort 2>/dev/null                 || $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: cake 2>/dev/null                 || rc=$?
+            if [ "${rc:-0}" -ne 0 ] && [ "$(cap_bool tc_fq_codel_supported)" != false ]; then
+                rc=0
+                $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: fq_codel target 5ms interval 100ms quantum 1514 limit 1024 2>/dev/null                     || $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: fq_codel 2>/dev/null                     || rc=$?
+                kind=fq_codel
+            fi ;;
+        off)
+            $TC_BIN qdisc replace dev "$iface" parent 1:9999 handle 9999: netem delay 0ms limit 100 2>/dev/null                 || { $TC_BIN qdisc del dev "$iface" parent 1:9999 2>/dev/null || true; $TC_BIN qdisc add dev "$iface" parent 1:9999 handle 9999: netem delay 0ms limit 100 2>/dev/null; }                 || rc=$? ;;
+        *)
+            echo "ERROR: unsupported leaf '$kind'" >&2
+            return 5 ;;
+    esac
+
+    if [ "${rc:-0}" -ne 0 ]; then
+        log "incremental apply failed iface=$iface kind=$kind rc=$rc"
+        echo "ERROR: incremental qdisc replace failed iface=$iface kind=$kind" >&2
+        return "$rc"
+    fi
+    log "incremental apply ok iface=$iface parent=1:9999 handle=9999 kind=$kind"
+    return 0
+}
+
 status_json() {
     local iface=${1:-} mode rec cake fqc autorate supported active qdisc profile preset leaf detected reason lastdiag
     [ -n "$iface" ] || iface=$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')
@@ -261,11 +340,11 @@ Commands:
   get-preset              Print current preset
   set-preset <preset>     Persist preset: off | balanced | game | weaknet | poor | extreme | custom
   recommended             Print recommended mode from capabilities.json
-  apply [iface]           Safe refresh: run tc_manager.sh restore to rebuild leaves
+  apply [iface]           Incrementally replace default leaf qdisc parent 1:9999
 
 Notes:
   - Default mode is off; v5.2.1 behavior is preserved.
-  - fq_codel/cake only affects delay-free per-device class leaves.
+  - fq_codel/cake only affects delay-free leaves; apply only touches default class 1:9999.
   - Any real netem delay/jitter/loss still forces netem.
 EOF_USAGE
 }
@@ -311,10 +390,9 @@ case "$cmd" in
         status_json ;;
     apply)
         iface=${2:-$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')}
-        [ -x "$HNC_DIR/bin/tc_manager.sh" ] || { echo "ERROR: tc_manager.sh not found" >&2; exit 1; }
-        HNC_DIR="$HNC_DIR" sh "$HNC_DIR/bin/tc_manager.sh" restore >/dev/null 2>&1 || rc=$?
+        apply_default_leaf "$iface" || rc=$?
         rc=${rc:-0}
-        log "apply requested iface=$iface rc=$rc"
+        log "apply requested iface=$iface rc=$rc mode=$(current_mode) leaf=$(effective_leaf_for_apply)"
         status_json "$iface"
         exit "$rc" ;;
     -h|--help|help)

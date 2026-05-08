@@ -1,3 +1,14 @@
+<!-- v5.3.0-rc7 SQM incremental apply -->
+<div class="cl-section">
+  <div class="cl-title">🧠 v5.3.0-rc7: SQM 增量应用 / 防卡顿 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-08</span></div>
+  <ul class="cl-list">
+    <li><b>不再全量 restore</b>: <code>sqm_manager.sh apply</code> 不再调用 <code>tc_manager.sh restore</code>，避免点击 SQM 按钮时重建整套 TC。</li>
+    <li><b>增量 leaf apply</b>: 只替换默认 <code>parent 1:9999 handle 9999:</code> leaf qdisc，不动 HTB root、设备 class/filter、iptables、IFB 或 BPF。</li>
+    <li><b>CAKE fallback</b>: 当前内核不支持 CAKE 时自动回退 <code>fq_codel</code>，WebUI 明确提示不支持。</li>
+    <li><b>WebUI 防连点</b>: 新增 <code>sqmBusy</code> 状态，应用过程中禁用 SQM 按钮，避免并发请求导致 WebView 卡顿。</li>
+  </ul>
+</div>
+
 <!-- v5.3.0-rc5 release gate and gray closeout -->
 <div class="cl-section">
   <div class="cl-title">🧪 v5.3.0-rc5: 发布链路 / 灰度收口 <span style="font-size:11px;color:var(--t2);font-weight:400">2026-05-08</span></div>

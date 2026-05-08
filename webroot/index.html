@@ -2612,7 +2612,7 @@ body.kb-open .container {
         <div class="sqm-mini-actions">
           <button type="button" class="btn btn-ghost" data-action="sqm-gray-diag">生成 SQM 诊断</button>
         </div>
-        <div class="sqm-control-desc" id="sqm-control-desc">切换后会请求后端重建 leaf qdisc；弱网预设只保存并填入单设备输入框，不会全局强制制造丢包。</div>
+        <div class="sqm-control-desc" id="sqm-control-desc">切换后只增量刷新默认 leaf qdisc，不再全量重建 TC；弱网预设只保存并填入单设备输入框，不会全局强制制造丢包。</div>
       </div>
       <div class="set-row">
         <div class="set-icon green"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div>
@@ -3890,6 +3890,7 @@ body.kb-open .container {
     const profile = normalizeSqmProfile(state.sqmProfile);
     const preset = normalizeSqmPreset(state.sqmPreset);
     const supported = st.mode_supported !== false && !(st.tc_fq_codel_supported === false && st.tc_cake_supported === false);
+    const sqmBusy = !!state.sqmBusy;
     const statusEl = $('#sqm-status-value');
     const descEl = $('#sqm-desc');
     const detailEl = $('#sqm-control-desc');
@@ -3904,7 +3905,8 @@ body.kb-open .container {
     if (detailEl) {
       const q = st.qdisc_head ? String(st.qdisc_head).slice(0, 180) : '';
       const meta = st.detected_leaf ? ('检测到 leaf: ' + st.detected_leaf + ' · ') : '';
-      detailEl.textContent = q ? (meta + 'qdisc: ' + q) : (st.reason || '切换后会请求后端重建 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。');
+      if (sqmBusy) detailEl.textContent = 'SQM 正在增量应用默认 leaf qdisc，请稍候…';
+      else detailEl.textContent = q ? (meta + 'qdisc: ' + q) : (st.reason || '切换后只增量替换默认 leaf qdisc；不支持的 qdisc 会自动保留原 HTB/netem 兼容链路。');
     }
     $$('[data-sqm-mode]').forEach(btn => {
       const m = normalizeSqmMode(btn.dataset.sqmMode);
@@ -3913,17 +3915,22 @@ body.kb-open .container {
       if (m === 'cake') dis = st.tc_cake_supported === false;
       if (m === 'fq_codel' || m === 'game') dis = st.tc_fq_codel_supported === false;
       if (m === 'auto') dis = st.tc_fq_codel_supported === false && st.tc_cake_supported === false;
+      if (sqmBusy) dis = true;
       btn.disabled = !!dis;
-      btn.title = dis ? '当前内核/TC 未探测到此队列算法' : '';
+      if (m === 'cake' && st.tc_cake_supported === false) btn.title = '当前内核不支持 CAKE，建议使用低延迟/fq_codel';
+      else btn.title = dis ? (sqmBusy ? 'SQM 正在应用中，请稍候' : '当前内核/TC 未探测到此队列算法') : '';
     });
     $$('[data-sqm-profile]').forEach(btn => {
       const p = normalizeSqmProfile(btn.dataset.sqmProfile);
       btn.classList.toggle('active', p === profile);
+      btn.disabled = sqmBusy;
+      btn.title = sqmBusy ? 'SQM 正在应用中，请稍候' : '';
     });
     $$('[data-sqm-preset]').forEach(btn => {
       const p = normalizeSqmPreset(btn.dataset.sqmPreset);
       btn.classList.toggle('active', p === preset);
-      btn.title = (sqmPresetDetail(p).note || '');
+      btn.disabled = sqmBusy;
+      btn.title = sqmBusy ? 'SQM 正在应用中，请稍候' : (sqmPresetDetail(p).note || '');
     });
   }
   async function fetchSQM() {
@@ -3954,14 +3961,22 @@ body.kb-open .container {
     return null;
   }
   async function setSqmBackend(params) {
-    params = params || {};
-    const p = {};
-    if (params.mode !== undefined) p.mode = normalizeSqmMode(params.mode);
-    if (params.profile !== undefined) p.profile = normalizeSqmProfile(params.profile);
-    if (params.preset !== undefined) p.preset = normalizeSqmPreset(params.preset);
-    p.apply = 'true';
-    await apiAction('sqm_set', p);
-    await fetchSQM();
+    if (state.sqmBusy) throw new Error('SQM 正在应用中，请稍候');
+    state.sqmBusy = true;
+    updateSqmPanel();
+    try {
+      params = params || {};
+      const p = {};
+      if (params.mode !== undefined) p.mode = normalizeSqmMode(params.mode);
+      if (params.profile !== undefined) p.profile = normalizeSqmProfile(params.profile);
+      if (params.preset !== undefined) p.preset = normalizeSqmPreset(params.preset);
+      p.apply = 'true'; // rc7: backend apply is incremental leaf replace, not full tc restore
+      await apiAction('sqm_set', p);
+      await fetchSQM();
+    } finally {
+      state.sqmBusy = false;
+      updateSqmPanel();
+    }
   }
 
   function fillCardWithSqmPreset(card, presetId) {
@@ -4214,6 +4229,7 @@ body.kb-open .container {
     sqmPresets: [],
     sqmApiUnavailable: false,
     sqmApiWarned: false,
+    sqmBusy: false,
     refreshMode: localStorage.getItem('hnc.refresh-mode') || 'balanced',
     actionBusy: Object.create(null)
   };
@@ -6210,7 +6226,7 @@ body.kb-open .container {
       }).catch(err => {
         toast('SQM 切换失败: ' + (err.message || err), 'err');
         updateSqmPanel();
-      }).finally(() => { sqmModeBtn.disabled = false; });
+      }).finally(() => { updateSqmPanel(); });
       return;
     }
 
@@ -6223,7 +6239,7 @@ body.kb-open .container {
       }).catch(err => {
         toast('SQM 配置失败: ' + (err.message || err), 'err');
         updateSqmPanel();
-      }).finally(() => { sqmProfileBtn.disabled = false; });
+      }).finally(() => { updateSqmPanel(); });
       return;
     }
 
@@ -6236,7 +6252,7 @@ body.kb-open .container {
       }).catch(err => {
         toast('SQM 预设失败: ' + (err.message || err), 'err');
         updateSqmPanel();
-      }).finally(() => { sqmPresetBtn.disabled = false; });
+      }).finally(() => { updateSqmPanel(); });
       return;
     }
 
