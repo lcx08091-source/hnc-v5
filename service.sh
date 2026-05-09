@@ -16,6 +16,7 @@ RUN=$HNC_DIR/run
 mkdir -p $HNC_DIR/logs $RUN
 # hotfix16.4: clear stale uplink degraded marker on service start; watchdog will re-probe.
 rm -f $RUN/uplink_unsupported $RUN/uplink_fail_count $RUN/uplink_unsupported_logged 2>/dev/null || true
+rm -rf $RUN/hnc_json.lock 2>/dev/null || true
 
 # rc3.1 修 N-15R: 记下自己路径让 cleanup.sh restart 时能找到我们
 # (KSU / SukiSU / Magisk 的 MODDIR 路径不一样, 不能硬编码)

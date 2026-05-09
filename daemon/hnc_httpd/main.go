@@ -3,11 +3,12 @@
 // 绑定到热点接口(ap0 / wlan2 等) 的 IP,不绑 0.0.0.0
 //
 // 部署约定:
-//   二进制位于 $HNC_DIR/daemon/hnc_httpd/hnc_httpd (prebuilt arm64)
-//   由 service.sh 在 rules.json.remote_enabled=true 时 fork 启动
-//   pid 文件 $HNC_DIR/run/httpd.pid
-//   证书 $HNC_DIR/data/httpd_cert.pem + httpd_key.pem (首次自签)
-//   日志 $HNC_DIR/logs/httpd.log
+//
+//	二进制位于 $HNC_DIR/daemon/hnc_httpd/hnc_httpd (prebuilt arm64)
+//	由 service.sh 在 rules.json.remote_enabled=true 时 fork 启动
+//	pid 文件 $HNC_DIR/run/httpd.pid
+//	证书 $HNC_DIR/data/httpd_cert.pem + httpd_key.pem (首次自签)
+//	日志 $HNC_DIR/logs/httpd.log
 //
 // 安全不变量:
 //   - NEVER 绑定 0.0.0.0 / :: 任何公共地址
@@ -29,13 +30,19 @@ import (
 )
 
 var (
-	flagBind    = flag.String("bind", "", "bind address, e.g. 192.168.43.1 (required)")
-	flagPort    = flag.Int("port", 8443, "HTTPS port")
-	flagHTTPPort = flag.Int("http-port", 8080, "HTTP port for redirect to HTTPS (0 = disable)")
+	flagBind         = flag.String("bind", "", "bind address, e.g. 192.168.43.1 (required)")
+	flagPort         = flag.Int("port", 8443, "HTTPS port")
+	flagHTTPPort     = flag.Int("http-port", 8080, "HTTP port for redirect to HTTPS (0 = disable)")
 	flagLoopbackPort = flag.Int("loopback-port", 8444, "loopback plain HTTP port for local KSU WebUI (0 = disable)")
-	flagHNCDir  = flag.String("hnc-dir", "/data/local/hnc", "HNC installation root")
-	flagNoTLS   = flag.Bool("no-tls", false, "disable TLS (for Patch 1 development only)")
-	flagVersion = flag.Bool("version", false, "print version and exit")
+	flagHNCDir       = flag.String("hnc-dir", "/data/local/hnc", "HNC installation root")
+	flagNoTLS        = flag.Bool("no-tls", false, "disable TLS (for Patch 1 development only)")
+	flagVersion      = flag.Bool("version", false, "print version and exit")
+
+	// rc11: when a remote listener is bound to 0.0.0.0 while rules.json still
+	// says auth_required=false, force remote cookie auth in-process instead of
+	// merely logging a warning. Loopback KSU requests without Origin/Referer keep
+	// their local bypass in middleware.
+	forceRemoteAuth bool
 )
 
 // rc5.1.1 修 X-G2: 之前硬编码 "v4.1.0-rc3.1.14", 每次发版都要手动改.
@@ -94,7 +101,8 @@ func main() {
 		ip := net.ParseIP(*flagBind)
 		if ip != nil && ip.To4() != nil && ip.To4().IsUnspecified() {
 			if !readAuthRequired(*flagHNCDir) {
-				log.Printf("SECURITY WARN: bind=0.0.0.0 with auth_required=false — control plane is exposed to ANY device on hotspot LAN. Open WebUI, enable '鉴权' toggle to require pairing.")
+				forceRemoteAuth = true
+				log.Printf("SECURITY: bind=0.0.0.0 with auth_required=false — forcing cookie auth for remote clients in this process. Local KSU loopback bypass remains available.")
 			}
 		}
 	}

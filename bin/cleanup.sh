@@ -151,7 +151,7 @@ rm -f "$HNC_DIR/run/hostname_cache" 2>/dev/null  # 缓存可以删
 rm -rf "$HNC_DIR/run/v6" 2>/dev/null              # v3.4.0：v6_sync 快照目录
 # v3.5.0 P2-5: 清理 device_detect.sh 留下的临时文件(进程异常退出后残留)
 rm -f "$RUN"/scan_tmp.* "$RUN"/scan_arp.* "$RUN"/.gc_* "$RUN"/.lock_check_* 2>/dev/null
-rm -rf "$RUN/json.lock" 2>/dev/null               # P0-2 锁残留
+rm -rf "$RUN/json.lock" "$RUN/hnc_json.lock" 2>/dev/null  # P0-2 锁残留 + rc11 hnc_json stale lock
 # v3.9.1: stats 临时文件 + 日期标记(stats_raw / stats_daily 是用户数据,不删)
 rm -f "$RUN"/stats_map.* "$RUN"/rollup_names.* "$RUN"/rollup_agg.* 2>/dev/null
 rm -f "$RUN"/stats_last_date 2>/dev/null

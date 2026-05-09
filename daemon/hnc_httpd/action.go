@@ -617,6 +617,32 @@ func validateRate(r string) error {
 	return nil
 }
 
+// runExe execs a binary helper directly from <hncDir>/bin/<name>.
+// Do not route ELF helpers through "sh"; Android will report syntax/ELF errors
+// and callers may silently lose important side effects such as offload notify.
+func runExe(hncDir, name string, args ...string) (int, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path := filepath.Join(hncDir, "bin", name)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = []string{
+		"HNC_DIR=" + hncDir,
+		"HNC=" + hncDir,
+		"PATH=/system/bin:/system/xbin:/vendor/bin:/usr/bin:/bin",
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode(), string(out)
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return 124, "timeout after 5s"
+		}
+		return -1, err.Error() + "\n" + string(out)
+	}
+	return 0, string(out)
+}
+
 // runBin exec "sh <hncDir>/bin/<script>" with args, 返回 (rc, combined_output)
 // 绝对不做 shell 字符串拼接, args 直接作为 argv 传入
 func runBin(hncDir, script string, args ...string) (int, string) {

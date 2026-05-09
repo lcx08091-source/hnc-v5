@@ -3051,7 +3051,6 @@ body.kb-open .container {
   }
   function __hncRememberBridgeTransport(reason) {
     try { localStorage.setItem(HNC_TRANSPORT_HINT_KEY, 'bridge'); } catch (_) {}
-    try { localStorage.setItem('hnc.transport_hint_reason.v1', String(reason || 'bridge')); } catch (_) {}
   }
   function __hncForgetBridgeTransport() {
     try { localStorage.removeItem(HNC_TRANSPORT_HINT_KEY); } catch (_) {}

@@ -43,7 +43,7 @@ const CookieName = "hnc_token"
 
 // isPublicPath 不需要 auth 的路径
 func isPublicPath(p string) bool {
-	if p == "/pair" || p == "/api/pair/verify" {
+	if p == "/pair" || p == "/api/pair/verify" || p == "/api/health" || p == "/api/pairing/status" {
 		return true
 	}
 	if strings.HasPrefix(p, "/static/") {
@@ -144,7 +144,7 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 			// 无 cookie:按 remote_auth_required 决定
 			// v4.0 Patch 3.a: /api/action 是写操作,永不放行匿名
 			// 即使 remote_auth_required=false 也强制要 cookie
-			if !readAuthRequired(s.hncDir) && !isWritePath(r.URL.Path) && !isSensitiveReadPath(r.URL.Path) {
+			if !readAuthRequired(s.hncDir) && !forceRemoteAuth && !isWritePath(r.URL.Path) && !isSensitiveReadPath(r.URL.Path) {
 				// 过渡期且非写操作: 放行
 				next.ServeHTTP(w, r)
 				return
@@ -181,7 +181,23 @@ func isWritePath(p string) bool {
 // /api/logs 会暴露 MAC/IP/hostname/SSID/操作时间线；远程访问即使 auth_required=false
 // 也必须要求 cookie。本机 KSU loopback 且无 Origin/Referer 仍由上方 loopback bypass 放行。
 func isSensitiveReadPath(p string) bool {
-	return p == "/api/logs"
+	switch p {
+	case "/api/logs",
+		"/api/devices",
+		"/api/live",
+		"/api/capabilities",
+		"/api/tokens",
+		"/api/config",
+		"/api/stats",
+		"/api/templates",
+		"/api/metrics",
+		"/api/iface_info",
+		"/api/offload_status",
+		"/api/sqm":
+		return true
+	default:
+		return false
+	}
 }
 
 // respondUnauthorized 拒绝无效/缺失 token 的请求

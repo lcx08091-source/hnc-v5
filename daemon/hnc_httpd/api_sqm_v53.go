@@ -28,14 +28,11 @@ func (s *server) apiSQMStatus(w http.ResponseWriter, r *http.Request) {
 		"HNC=" + s.hncDir,
 		"PATH=/system/bin:/system/xbin:/vendor/bin:/usr/bin:/bin",
 	}
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
-		if ee, ok := err.(*exec.ExitError); ok {
+		if ee, ok := err.(*exec.ExitError); ok && detail == "" {
 			detail = strings.TrimSpace(string(ee.Stderr))
-			if detail == "" {
-				detail = strings.TrimSpace(string(out))
-			}
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			detail = "timeout after 4s"

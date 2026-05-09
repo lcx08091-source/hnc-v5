@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.3.0-rc10
-versionCode=530010
+version=v5.3.0-rc11
+versionCode=530011
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc10 · SQM 热点未开启状态修复: 接口不存在时只保存设置不报错，/api/sqm 返回 iface_present/can_apply，WebUI 友好提示待生效 · KernelSU/SukiSU/Magisk
+description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc11 · 稳定性与安全修复: 修 hnc_ipc 二进制执行、hnc_json stale lock、远程只读鉴权收紧与 0.0.0.0 强制鉴权 · KernelSU/SukiSU/Magisk
 minKernelSU=11485

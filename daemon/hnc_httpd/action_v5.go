@@ -78,7 +78,7 @@ func notifyOffloadLimit(hncDir, mac string, enabled bool) {
 	if enabled {
 		flag = "1"
 	}
-	if rc, out := runBin(hncDir, "hnc_ipc", "OFFLOAD_NOTIFY_LIMIT", mac, flag); rc != 0 {
+	if rc, out := runExe(hncDir, "hnc_ipc", "OFFLOAD_NOTIFY_LIMIT", mac, flag); rc != 0 {
 		log.Printf("WARN: OFFLOAD_NOTIFY_LIMIT mac=%s flag=%s failed rc=%d out=%q", mac, flag, rc, out)
 	}
 }

@@ -49,15 +49,51 @@ Notes:
 USAGE
 }
 
+log_lock_stale() {
+  mkdir -p "$HNC_BASE/logs" 2>/dev/null || true
+  printf '[%s] hnc_json: reclaim stale lock: %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)" "$1" \
+    >> "$HNC_BASE/logs/hnc_json.log" 2>/dev/null || true
+}
+
+reclaim_stale_lock() {
+  [ -d "$LOCKDIR" ] || return 1
+  lp="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+  if [ -n "$lp" ] && ! kill -0 "$lp" 2>/dev/null; then
+    log_lock_stale "dead pid=$lp path=$LOCKDIR"
+    rm -rf "$LOCKDIR" 2>/dev/null || true
+    return 0
+  fi
+  now="$(date +%s 2>/dev/null || echo 0)"
+  ts="$(cat "$LOCKDIR/ts" 2>/dev/null || echo 0)"
+  case "$now:$ts" in
+    *[!0-9:]*|0:*) : ;;
+    *)
+      age=$((now - ts))
+      if [ "$age" -ge 30 ]; then
+        log_lock_stale "age=${age}s pid=${lp:-unknown} path=$LOCKDIR"
+        rm -rf "$LOCKDIR" 2>/dev/null || true
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
 acquire_lock() {
   mkdir -p "$HNC_BASE/run" 2>/dev/null || true
   i=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     i=$((i+1))
+    reclaim_stale_lock >/dev/null 2>&1 || true
+    if [ "$i" -gt 20 ] && [ ! -f "$LOCKDIR/pid" ]; then
+      log_lock_stale "missing pid after ${i} tries path=$LOCKDIR"
+      rm -rf "$LOCKDIR" 2>/dev/null || true
+    fi
     [ "$i" -gt 50 ] && { echo "hnc_json: lock timeout: $LOCKDIR" >&2; return 1; }
     sleep 0.1
   done
   echo $$ > "$LOCKDIR/pid" 2>/dev/null || true
+  date +%s > "$LOCKDIR/ts" 2>/dev/null || true
   trap 'rm -rf "$LOCKDIR" 2>/dev/null || true' EXIT INT TERM
 }
 
