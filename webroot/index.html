@@ -3439,6 +3439,43 @@ body.kb-open .container {
     return true;
   }
   async function addBlacklistBackend(mac) {
+    // v5.3.0-rc8 P0: defense-in-depth before blacklisting gateway-like devices.
+    // If stale/incorrect discovery ever exposes upstream wlan0 or .1/.254 entries
+    // as hotspot clients, a blind MAC DROP can cut the user's own network.
+    try {
+      const dev = (state.devices || []).find(d => (d.mac || '').toLowerCase() === (mac || '').toLowerCase());
+      if (dev) {
+        const ip = String(dev.ip || '');
+        const iface = String(dev.iface || '').toLowerCase();
+        const isGatewayLike = /\.1$|\.254$/.test(ip);
+        const isUpstreamIface = iface === 'wlan0';
+        if (isGatewayLike || isUpstreamIface) {
+          const reason = isUpstreamIface
+            ? `这台设备的接口是 ${iface}，看起来不像热点客户端（可能是你自己连接的上游 Wi‑Fi 设备）`
+            : `这台设备的 IP 是 ${ip}，看起来像路由器网关地址`;
+          const ok = await new Promise(resolve => {
+            showModal(`
+              <div class="modal-title">⚠️ 确认屏蔽</div>
+              <div class="modal-body" style="line-height:1.6">
+                <p>${reason}。</p>
+                <p>屏蔽它会让 iptables DROP 这个 MAC 的所有流量。<b>如果它真是你自己网络里的设备，你会立刻断网。</b></p>
+                <p>你确定要继续屏蔽 <code>${mac}</code> 吗？</p>
+              </div>
+              <div class="modal-actions">
+                <button class="btn" onclick="window.__bl_confirm(false)">取消</button>
+                <button class="btn btn-danger" onclick="window.__bl_confirm(true)">仍要屏蔽</button>
+              </div>
+            `);
+            window.__bl_confirm = (v) => { hideModal(); delete window.__bl_confirm; resolve(v); };
+          });
+          if (!ok) {
+            throw new Error('用户取消屏蔽（设备看起来不像热点客户端）');
+          }
+        }
+      }
+    } catch (e) {
+      if (String(e && e.message || '').includes('用户取消')) throw e;
+    }
     await apiAction('bl_add', { mac });
     return true;
   }

@@ -65,7 +65,7 @@ sync_runtime_from_moddir() {
     fi
 
     chmod 755 "$HNC_DIR/bin/"*.sh 2>/dev/null || true
-    for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve; do
+    for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve hnc_json; do
         [ -f "$HNC_DIR/bin/$_b" ] && chmod 755 "$HNC_DIR/bin/$_b" 2>/dev/null || true
     done
 }

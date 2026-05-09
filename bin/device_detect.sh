@@ -340,7 +340,7 @@ do_scan_shell() {
     : > "$TMP"
     # v3.5.0 P2-3: 进程异常退出时清理临时文件,避免 /run 累积垃圾
     # v3.6.1 P1-shellrace: 加 devices.json.tmp.$$ 清理(以防 printf/mv 之间死亡)
-    trap 'rm -f "$TMP" "$ARP_TMP" "${DEVICES_FILE}.tmp.$$" 2>/dev/null' EXIT INT TERM
+    trap 'rm -f "$TMP" "$ARP_TMP" "${TMP}.newmacs" "${TMP}.oldblocks" "${DEVICES_FILE}.tmp.$$" 2>/dev/null' EXIT INT TERM
 
     # 写 ARP 扫描结果到临时文件(这一步即使在 subshell 也无所谓,因为它本来就在命令替换里)
     awk 'NR>1 && $3!="0x0" && $4!="00:00:00:00:00:00" && $1~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $6!~/^(lo|rmnet|dummy|v4-|tun|p2p)/ {print $1"|"$4"|"$6}' /proc/net/arp 2>/dev/null > "$ARP_TMP"
@@ -415,9 +415,42 @@ do_scan_shell() {
         json="${json}\"${mac}\":{\"ip\":\"$ip\",\"mac\":\"$mac\",\"hostname\":\"$hn_json\",\"hostname_src\":\"$hn_src\",\"iface\":\"$dev\",\"rx_bytes\":$rx,\"tx_bytes\":$tx,\"status\":\"$status\",\"last_seen\":$ts}"
         first=0
     done < "$TMP"
+
+    # v5.3.0-rc8 P0: tolerant merge for recently-seen devices.
+    # ARP entries can be garbage-collected while iptables/tc rules and user UI
+    # expectations are still valid. Preserve devices seen within GRACE_SEC as
+    # status=stale so daemon actions can still resolve the MAC/device entry.
+    local GRACE_SEC=180
+    if [ -f "$DEVICES_FILE" ]; then
+        awk -F'|' '{print tolower($2)}' "$TMP" 2>/dev/null | sort -u > "${TMP}.newmacs"
+        grep -oE '"[0-9a-fA-F:]{17}":\{[^}]*"last_seen":[0-9]+[^}]*\}' "$DEVICES_FILE" 2>/dev/null \
+            > "${TMP}.oldblocks" || : > "${TMP}.oldblocks"
+        if [ -s "${TMP}.oldblocks" ]; then
+            while IFS= read -r block; do
+                [ -z "$block" ] && continue
+                local old_mac old_ls age entry_body
+                old_mac=$(printf '%s' "$block" | grep -oE '^"[0-9a-fA-F:]{17}"' | tr -d '"' | tr 'A-Z' 'a-z')
+                [ -z "$old_mac" ] && continue
+                old_ls=$(printf '%s' "$block" | grep -oE '"last_seen":[0-9]+' | grep -oE '[0-9]+$')
+                [ -z "$old_ls" ] && continue
+                age=$(( ts - old_ls ))
+                [ "$age" -lt 0 ] && continue
+                [ "$age" -gt "$GRACE_SEC" ] && continue
+                if grep -qx "$old_mac" "${TMP}.newmacs" 2>/dev/null; then
+                    continue
+                fi
+                entry_body=$(printf '%s' "$block" | sed 's/^"[0-9a-fA-F:]\{17\}"://')
+                entry_body=$(printf '%s' "$entry_body" | sed 's/"status":"[^"]*"/"status":"stale"/')
+                [ $first -eq 0 ] && json="$json,"
+                json="${json}\"${old_mac}\":${entry_body}"
+                first=0
+            done < "${TMP}.oldblocks"
+        fi
+        rm -f "${TMP}.oldblocks" "${TMP}.newmacs" 2>/dev/null
+    fi
     json="${json}}"
 
-    rm -f "$TMP"
+    rm -f "$TMP" "${TMP}.oldblocks" "${TMP}.newmacs" 2>/dev/null
     # v3.6.1 P1-shellrace 修复:用带 PID 后缀的 tmp 文件,避免多个 shell scan
     # 并发时对 devices.json.tmp 字节级竞争写入导致 JSON 字段错位。
     #

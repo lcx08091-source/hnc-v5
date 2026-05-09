@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.3.0-rc7
-versionCode=530007
+version=v5.3.0-rc8
+versionCode=530008
 author=Claude (Anthropic AI)
-description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc7 · SQM 增量应用: 不再全量 restore，只替换默认 HTB leaf qdisc，CAKE 不支持自动回退 fq_codel，WebUI 增加防连点与能力约束 · KernelSU/SukiSU/Magisk
+description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc8 · P0 稳定性收口: 修 httpd bind drift 误杀、json fallback stderr 污染、hnc_json 权限兜底、devices stale 合并、网关屏蔽二次确认 · KernelSU/SukiSU/Magisk
 minKernelSU=11485

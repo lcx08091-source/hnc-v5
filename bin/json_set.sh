@@ -43,7 +43,12 @@ json_legacy_fallback_warn() {
     fi
     cnt=$((cnt + 1))
     echo "$cnt" > "$JSON_LEGACY_FALLBACK_COUNT" 2>/dev/null || true
-    echo "json_set: [WARN] hnc_json $op unavailable/failed, using legacy fallback; count=$cnt" >&2
+    # v5.3.0-rc8 P0: do not write fallback WARN to stderr.
+    # hnc_httpd uses CombinedOutput() on json_set.sh hot paths; stderr text can
+    # be mixed into real stdout and poison integer/JSON parsing. Keep telemetry
+    # in the log/count files only.
+    printf 'json_set: [WARN] hnc_json %s unavailable/failed, using legacy fallback; count=%s\n' "$op" "$cnt" \
+        >> "$JSON_LEGACY_FALLBACK_LOG" 2>/dev/null || true
 }
 
 # ═══════════════════════════════════════════════════════════════

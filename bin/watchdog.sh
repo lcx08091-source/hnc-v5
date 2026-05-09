@@ -611,53 +611,46 @@ ensure_httpd_running() {
 check_httpd_bind_drift() {
     [ -f "$RUN/httpd.pid" ]      || return 0
     [ -f "$RUN/httpd_bind_ip" ]  || return 0
-    local wpid bound_ip current_iface current_ip
+    local wpid bound_ip
     wpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
     [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null || return 0
     bound_ip=$(cat "$RUN/httpd_bind_ip" 2>/dev/null)
     [ -z "$bound_ip" ] && return 0
 
-    current_iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface 2>/dev/null)
-    # 热点 down 或 bootstrap 期不做 drift check(避免误杀)
-    [ -z "$current_iface" ] && return 0
-    [ "$current_iface" = "wlan0" ] && return 0
-
-    current_ip=$(ip -4 addr show "$current_iface" 2>/dev/null | \
-        awk '/inet /{split($2,a,"/");print a[1];exit}')
-    [ -z "$current_ip" ] && return 0
-
-    # hotfix13: if user turned remote access off while httpd is still bound to :8443,
-    # kill it so next ensure_httpd_running restarts loopback-only and removes the guard.
-    local remote_on_now
-    remote_on_now=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
+    local remote_on
+    remote_on=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
         "$HNC_DIR/data/rules.json" 2>/dev/null | awk -F: '{print $2}' | tr -d ' ')
-    if [ "$remote_on_now" != "true" ] && [ "$bound_ip" != "loopback-only" ]; then
-        log "httpd remote disabled: killing remote-bound httpd and removing 8443 guard"
+
+    # v5.3.0-rc8 P0: httpd is launched on 0.0.0.0 when remote is enabled.
+    # Interface IP movement is transparent to a wildcard listener, so do not
+    # kill hnc_httpd for DHCP renewal / tethering IP churn. Only relaunch for
+    # the two real configuration transitions below.
+
+    # Scenario 1: remote toggled OFF, httpd is still public.
+    if [ "$remote_on" != "true" ] && [ "$bound_ip" != "loopback-only" ]; then
+        log "httpd remote disabled by user: closing 8443 listener (loopback stays)"
         kill -9 "$wpid" 2>/dev/null
         rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
         httpd_guard_remove
         return 0
     fi
 
-    if [ "$current_ip" != "$bound_ip" ]; then
-        # rc3.1.1 修: bound_ip="loopback-only" 是占位符, 不是真 IP 漂移.
-        # 只在 remote_enabled=true 且 httpd 真绑到热点 IP 时才需要 relaunch.
-        # 之前每 60s 杀 httpd 一次 (观察到: hotspotd/watchdog 活, hnc_httpd 反复被杀)
-        if [ "$bound_ip" = "loopback-only" ]; then
-            local remote_on
-            remote_on=$(grep -o '"remote_enabled"[[:space:]]*:[[:space:]]*[a-z]*' \
-                "$HNC_DIR/data/rules.json" 2>/dev/null | awk -F: '{print $2}' | tr -d ' ')
-            # loopback-only + remote_enabled=false → 正常状态, 不杀
-            [ "$remote_on" != "true" ] && return 0
-            # loopback-only + remote_enabled=true → 热点就绪了, 杀让它绑热点 IP
-            log "httpd bind upgrade: loopback-only -> $current_ip (remote_enabled=true), relaunch"
-        else
-            log "httpd bind IP drift: $bound_ip -> $current_ip on $current_iface, killing for relaunch"
-        fi
+    # Scenario 2: remote toggled ON, httpd is loopback-only and hotspot exists.
+    if [ "$remote_on" = "true" ] && [ "$bound_ip" = "loopback-only" ]; then
+        local current_iface current_ip
+        current_iface=$(sh "$HNC_DIR/bin/device_detect.sh" iface 2>/dev/null)
+        [ -z "$current_iface" ] && return 0
+        [ "$current_iface" = "wlan0" ] && return 0
+        current_ip=$(ip -4 addr show "$current_iface" 2>/dev/null | \
+            awk '/inet /{split($2,a,"/");print a[1];exit}')
+        [ -z "$current_ip" ] && return 0
+        log "httpd bind upgrade: loopback-only -> 0.0.0.0 (remote_enabled=true, hotspot ip=$current_ip), relaunch"
         kill -9 "$wpid" 2>/dev/null
         rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
-        # 下轮 ensure_httpd_running 会用 current_ip 拉起
+        return 0
     fi
+
+    return 0
 }
 
 # ── Doze 检测 ────────────────────────────────────────────────

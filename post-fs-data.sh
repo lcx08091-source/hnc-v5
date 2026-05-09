@@ -84,7 +84,7 @@ chmod 755 $HNC_DIR/bin/*.sh
 # hnc_tc_ingress / mdns_resolve) 没 .sh 后缀, 权限不被保证是 755.
 # 真机 RMX5010 装 beta.1 后 hnc_tc_ingress 权限 644 → 不能 exec →
 # install_ingress_mirred_via_netlink 回落 → 上行限速失败.
-for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve; do
+for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve hnc_json; do
     [ -f "$HNC_DIR/bin/$_b" ] && chmod 755 "$HNC_DIR/bin/$_b"
 done
 chmod 755 $HNC_DIR/api/server.sh 2>/dev/null
