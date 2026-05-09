@@ -24,6 +24,12 @@
 #  3. Doze 模式暂停主动检查
 
 HNC_DIR=${HNC_DIR:-/data/local/hnc}
+if [ -f "$HNC_DIR/bin/hnc_constants.sh" ]; then
+    . "$HNC_DIR/bin/hnc_constants.sh"
+fi
+HNC_HTTPS_PORT=${HNC_HTTPS_PORT:-8443}
+HNC_LOOPBACK_PORT=${HNC_LOOPBACK_PORT:-8444}
+HNC_HTTP_REDIR_PORT=${HNC_HTTP_REDIR_PORT:-8080}
 RULES_FILE=$HNC_DIR/data/rules.json
 LOG=$HNC_DIR/logs/watchdog.log
 RUN=$HNC_DIR/run
@@ -509,7 +515,7 @@ check_services() {
 #   2. httpd.wanted marker 存在 + 进程没跑 → 用当前 iface + IP 拉
 #   3. 校验 iface + IP + RFC1918(跟 patch1.4 的四层校验一致)
 httpd_guard_remove() {
-    iptables -D INPUT -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport "$HNC_HTTPS_PORT" -j HNC_HTTPD_GUARD 2>/dev/null || true
     iptables -F HNC_HTTPD_GUARD 2>/dev/null || true
     iptables -X HNC_HTTPD_GUARD 2>/dev/null || true
 }
@@ -519,12 +525,12 @@ httpd_guard_install() {
     [ -z "$iface" ] && return 1
     iptables -N HNC_HTTPD_GUARD 2>/dev/null || true
     iptables -F HNC_HTTPD_GUARD 2>/dev/null || true
-    iptables -D INPUT -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
-    iptables -I INPUT 1 -p tcp --dport 8443 -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -D INPUT -p tcp --dport "$HNC_HTTPS_PORT" -j HNC_HTTPD_GUARD 2>/dev/null || true
+    iptables -I INPUT 1 -p tcp --dport "$HNC_HTTPS_PORT" -j HNC_HTTPD_GUARD 2>/dev/null || true
     iptables -A HNC_HTTPD_GUARD -i lo -j ACCEPT 2>/dev/null || true
     iptables -A HNC_HTTPD_GUARD -i "$iface" -j ACCEPT 2>/dev/null || true
     iptables -A HNC_HTTPD_GUARD -j DROP 2>/dev/null || true
-    log "httpd guard installed: 8443 allowed from hotspot iface=$iface ip=$ip/hotspot iface only; dropped elsewhere"
+    log "httpd guard installed: ${HNC_HTTPS_PORT} allowed from hotspot iface=$iface ip=$ip/hotspot iface only; dropped elsewhere"
 }
 
 # hotfix17.8: PID 复用保护。kill -0 只能证明“这个 PID 存在”,不能证明它还是 hnc_httpd。
@@ -573,7 +579,7 @@ ensure_httpd_running() {
         probe_out=$(probe_valid_hotspot) || {
             log "httpd launch deferred (remote_on): no valid hotspot yet. starting loopback-only for now."
             httpd_guard_remove
-            "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
+            "$httpd_bin" -loopback-port "$HNC_LOOPBACK_PORT" -hnc-dir "$HNC_DIR" \
                 >> "$HNC_DIR/logs/httpd.log" 2>&1 &
             echo $! > "$RUN/httpd.pid"
             echo "loopback-only" > "$RUN/httpd_bind_ip"
@@ -583,18 +589,18 @@ ensure_httpd_running() {
         httpd_iface=$(echo "$probe_out" | awk '{print $1}')
         httpd_ip=$(echo "$probe_out" | awk '{print $2}')
         httpd_guard_install "$httpd_iface" "$httpd_ip"
-        log "starting httpd on 0.0.0.0:8443 (all ifaces) + loopback:8444 (hotspot iface=$httpd_iface ip=$httpd_ip)"
-        "$httpd_bin" -bind 0.0.0.0 -port 8443 -loopback-port 8444 \
-            -hnc-dir "$HNC_DIR" -http-port 8080 \
+        log "starting httpd on 0.0.0.0:${HNC_HTTPS_PORT} (all ifaces) + loopback:${HNC_LOOPBACK_PORT} (hotspot iface=$httpd_iface ip=$httpd_ip)"
+        "$httpd_bin" -bind 0.0.0.0 -port "$HNC_HTTPS_PORT" -loopback-port "$HNC_LOOPBACK_PORT" \
+            -hnc-dir "$HNC_DIR" -http-port "$HNC_HTTP_REDIR_PORT" \
             >> "$HNC_DIR/logs/httpd.log" 2>&1 &
         echo $! > "$RUN/httpd.pid"
         echo "$httpd_ip" > "$RUN/httpd_bind_ip"
-        log "httpd launched (PID=$(cat "$RUN/httpd.pid"), bound=0.0.0.0:8443 · hotspot ip=$httpd_ip)"
+        log "httpd launched (PID=$(cat "$RUN/httpd.pid"), bound=0.0.0.0:${HNC_HTTPS_PORT} · hotspot ip=$httpd_ip)"
     else
         # 仅 loopback, 不需要热点 IP
         httpd_guard_remove
-        log "starting httpd loopback-only on 127.0.0.1:8444"
-        "$httpd_bin" -loopback-port 8444 -hnc-dir "$HNC_DIR" \
+        log "starting httpd loopback-only on 127.0.0.1:${HNC_LOOPBACK_PORT}"
+        "$httpd_bin" -loopback-port "$HNC_LOOPBACK_PORT" -hnc-dir "$HNC_DIR" \
             >> "$HNC_DIR/logs/httpd.log" 2>&1 &
         echo $! > "$RUN/httpd.pid"
         echo "loopback-only" > "$RUN/httpd_bind_ip"
@@ -628,7 +634,7 @@ check_httpd_bind_drift() {
 
     # Scenario 1: remote toggled OFF, httpd is still public.
     if [ "$remote_on" != "true" ] && [ "$bound_ip" != "loopback-only" ]; then
-        log "httpd remote disabled by user: closing 8443 listener (loopback stays)"
+        log "httpd remote disabled by user: closing ${HNC_HTTPS_PORT} listener (loopback stays)"
         kill -9 "$wpid" 2>/dev/null
         rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip"
         httpd_guard_remove
@@ -882,8 +888,8 @@ ensure_tc_uplink_healthy() {
         fi
     fi
 
-    if ! tc filter show dev "$iface" ingress 2>/dev/null | grep -q "mirred.*redirect dev ifb0" \
-       && ! tc filter show dev "$iface" parent ffff: 2>/dev/null | grep -q "mirred.*redirect dev ifb0"; then
+    if ! tc filter show dev "$iface" ingress 2>/dev/null | grep -qiE "mirred.*ifb0" \
+       && ! tc filter show dev "$iface" parent ffff: 2>/dev/null | grep -qiE "mirred.*ifb0"; then
         log "ensure_tc_uplink: $iface ingress mirred missing, repairing via tc_manager"
         sh "$HNC_DIR/bin/tc_manager.sh" ensure_ingress "$iface" >> "$LOG" 2>&1 || ok=0
     fi

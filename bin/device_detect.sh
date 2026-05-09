@@ -320,7 +320,7 @@ do_scan_shell() {
     # iptables 规则在 (因为 apply_device_rule.sh bl_add 自己 lower 后挂规则)
     # 但 UI 显示"未封锁" → split-brain. 现在 case-insensitive grep + tr 统一小写.
 
-    iface=$(get_hotspot_iface)
+    iface=$(get_hotspot_iface 2>/dev/null)
     gw=$(ip addr show "$iface" 2>/dev/null | \
         awk '/inet /{split($2,a,"/"); print a[1]; exit}')
     [ -n "$gw" ] && {
@@ -342,8 +342,15 @@ do_scan_shell() {
     # v3.6.1 P1-shellrace: 加 devices.json.tmp.$$ 清理(以防 printf/mv 之间死亡)
     trap 'rm -f "$TMP" "$ARP_TMP" "${TMP}.newmacs" "${TMP}.oldblocks" "${DEVICES_FILE}.tmp.$$" 2>/dev/null' EXIT INT TERM
 
-    # 写 ARP 扫描结果到临时文件(这一步即使在 subshell 也无所谓,因为它本来就在命令替换里)
-    awk 'NR>1 && $3!="0x0" && $4!="00:00:00:00:00:00" && $1~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $6!~/^(lo|rmnet|dummy|v4-|tun|p2p)/ {print $1"|"$4"|"$6}' /proc/net/arp 2>/dev/null > "$ARP_TMP"
+    # v5.3.0-rc9 P1: strict ARP scan whitelist.
+    # Only accept entries on the currently detected hotspot iface. The old
+    # blacklist filter could accidentally include upstream/USB/non-hotspot ARP
+    # entries and expose them as controllable hotspot clients.
+    if [ -n "$iface" ]; then
+        awk -v want="$iface" 'NR>1 && $3!="0x0" && $4!="00:00:00:00:00:00" && $1~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $6==want {print $1"|"$4"|"$6}' /proc/net/arp 2>/dev/null > "$ARP_TMP"
+    else
+        : > "$ARP_TMP"
+    fi
 
     local count=0
     local online_ips=""

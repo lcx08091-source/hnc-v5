@@ -74,7 +74,12 @@ log_error() {
     echo "[$(date '+%H:%M:%S')] [IPT] [ERROR] $*" >> "$LOG" 2>/dev/null || true
 }
 
-MARK_BASE=0x800000
+if [ -f "$HNC_DIR/bin/hnc_constants.sh" ]; then
+    . "$HNC_DIR/bin/hnc_constants.sh"
+    MARK_BASE="${HNC_MARK_BASE:-0x800000}"
+else
+    MARK_BASE=0x800000
+fi
 MARK_BLACKLIST=0xDEAD
 # CONNMARK 掩码：0xffffff 覆盖低 24 位，足以容纳 MARK_BASE(0x800000) + mark_id(1..99)
 # v3.4.1：从 0x1ffff 扩到 0xffffff，配合新 MARK_BASE 避开 Android netd 命名空间

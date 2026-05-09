@@ -33,7 +33,12 @@ LOG=$HNC_DIR/logs/v6_sync.log
 SNAP_DIR=$HNC_DIR/run/v6
 IFB_IFACE=ifb0
 PRIO_BASE=200    # v6 u32 filter 优先级 = 200 + mark_id（占 201-299 段）
-MARK_BASE=0x800000
+if [ -f "$HNC_DIR/bin/hnc_constants.sh" ]; then
+    . "$HNC_DIR/bin/hnc_constants.sh"
+    MARK_BASE="${HNC_MARK_BASE:-0x800000}"
+else
+    MARK_BASE=0x800000
+fi
 
 log() { echo "[$(date '+%H:%M:%S')] [V6] $*" >> "$LOG" 2>/dev/null; }
 

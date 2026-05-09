@@ -417,9 +417,9 @@ func actionRemoteEnabledSet(hncDir string, p map[string]string) actionResp {
 		return actionResp{OK: false, Error: "write failed", Detail: out}
 	}
 	// 写完后等 watchdog 自然触发. 返回提示给用户
-	detail := "remote access enabled · ~60s 内远程 URL 可访问"
+	detail := "remote access enabled · 约 1 分钟内远程 URL 可访问"
 	if v == "false" {
-		detail = "remote access disabled · ~60s 内 :8443 关闭"
+		detail = "remote access disabled · 约 1 分钟内 :8443 关闭"
 	}
 	return actionResp{OK: true, Detail: detail}
 }
