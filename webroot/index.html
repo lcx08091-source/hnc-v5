@@ -3932,10 +3932,11 @@ body.kb-open .container {
     const descEl = $('#sqm-desc');
     const detailEl = $('#sqm-control-desc');
     if (statusEl) {
-      statusEl.textContent = mode === 'off' ? '关闭' : (st.active === false ? '未生效' : sqmModeLabel(mode));
+      statusEl.textContent = mode === 'off' ? '关闭' : (st.iface_present === false ? '待生效' : (st.active === false ? '未生效' : sqmModeLabel(mode)));
     }
     let desc = '默认关闭；开启后 delay-free 限速 class 会优先使用 fq_codel / CAKE leaf，真实延迟/丢包仍由 netem 接管';
     if (st.available === false) desc = 'SQM 状态暂不可读：' + (st.error || st.detail || '等待后端生成');
+    else if (st.iface_present === false) desc = '热点未开启或热点接口不存在，SQM 设置已保存，开启热点后再应用';
     else if (!supported) desc = '当前 tc 未探测到 fq_codel / CAKE，保持原 HTB/netem 兼容链路';
     else if (mode !== 'off') desc = '当前模式：' + sqmModeLabel(mode) + ' · 配置档：' + sqmProfileLabel(profile) + ' · 预设：' + sqmPresetLabel(preset) + ' · 推荐：' + sqmModeLabel(st.recommended_mode || 'off');
     if (descEl) descEl.textContent = desc;
@@ -4009,7 +4010,7 @@ body.kb-open .container {
       if (params.preset !== undefined) p.preset = normalizeSqmPreset(params.preset);
       p.apply = 'true'; // rc7: backend apply is incremental leaf replace, not full tc restore
       await apiAction('sqm_set', p);
-      await fetchSQM();
+      return await fetchSQM();
     } finally {
       state.sqmBusy = false;
       updateSqmPanel();
@@ -6258,8 +6259,9 @@ body.kb-open .container {
     if (sqmModeBtn) {
       const mode = normalizeSqmMode(sqmModeBtn.dataset.sqmMode);
       sqmModeBtn.disabled = true;
-      setSqmBackend({ mode }).then(() => {
-        toast('Smart Queue 已切换为' + sqmModeLabel(mode), 'ok');
+      setSqmBackend({ mode }).then(st => {
+        const suffix = st && st.iface_present === false ? '（已保存，开启热点后再应用）' : '';
+        toast('Smart Queue 已切换为' + sqmModeLabel(mode) + suffix, 'ok');
       }).catch(err => {
         toast('SQM 切换失败: ' + (err.message || err), 'err');
         updateSqmPanel();
@@ -6271,8 +6273,9 @@ body.kb-open .container {
     if (sqmProfileBtn) {
       const profile = normalizeSqmProfile(sqmProfileBtn.dataset.sqmProfile);
       sqmProfileBtn.disabled = true;
-      setSqmBackend({ profile }).then(() => {
-        toast('SQM 配置档已切换为' + sqmProfileLabel(profile), 'ok');
+      setSqmBackend({ profile }).then(st => {
+        const suffix = st && st.iface_present === false ? '（已保存，开启热点后再应用）' : '';
+        toast('SQM 配置档已切换为' + sqmProfileLabel(profile) + suffix, 'ok');
       }).catch(err => {
         toast('SQM 配置失败: ' + (err.message || err), 'err');
         updateSqmPanel();
@@ -6284,8 +6287,9 @@ body.kb-open .container {
     if (sqmPresetBtn) {
       const preset = normalizeSqmPreset(sqmPresetBtn.dataset.sqmPreset);
       sqmPresetBtn.disabled = true;
-      setSqmBackend({ preset }).then(() => {
-        toast('SQM 预设已切换为' + sqmPresetLabel(preset), 'ok');
+      setSqmBackend({ preset }).then(st => {
+        const suffix = st && st.iface_present === false ? '（已保存，开启热点后再应用）' : '';
+        toast('SQM 预设已切换为' + sqmPresetLabel(preset) + suffix, 'ok');
       }).catch(err => {
         toast('SQM 预设失败: ' + (err.message || err), 'err');
         updateSqmPanel();

@@ -3,6 +3,8 @@
 # Low-risk controller for fq_codel/CAKE leaf mode. It never rewrites system BPF,
 # never replaces the hotspot root qdisc directly, and defaults to off.
 # v5.3.0-rc7: apply is incremental and only touches the default HTB leaf (1:9999).
+# v5.3.0-rc10: if the hotspot iface is absent/offline, settings are saved and
+# apply is skipped successfully instead of surfacing a generic SQM failure.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:/data/adb/magisk:/data/adb/ksu/bin:$PATH
 
@@ -28,6 +30,16 @@ find_tc() {
     command -v tc 2>/dev/null || echo tc
 }
 TC_BIN=$(find_tc)
+
+iface_exists() {
+    local iface=$1
+    [ -n "$iface" ] || return 1
+    if command -v ip >/dev/null 2>&1; then
+        ip link show dev "$iface" >/dev/null 2>&1 && return 0
+    fi
+    [ -d "/sys/class/net/$iface" ] && return 0
+    return 1
+}
 
 json_top_string() {
     local key=$1 file=${2:-$RULES_FILE}
@@ -229,7 +241,16 @@ leaf_has_active_netem_on_parent() {
 apply_default_leaf() {
     local iface=${1:-} kind out rc=0
     [ -n "$iface" ] || iface=$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')
-    [ -n "$iface" ] || { echo "ERROR: hotspot iface unknown" >&2; return 2; }
+    if [ -z "$iface" ]; then
+        log "apply skipped reason=iface-unknown; settings saved"
+        echo "WARN: hotspot iface unknown; SQM settings saved; open hotspot to apply" >&2
+        return 0
+    fi
+    if ! iface_exists "$iface"; then
+        log "apply skipped iface=$iface reason=iface-not-present; settings saved"
+        echo "WARN: hotspot iface '$iface' is not present; SQM settings saved; open hotspot to apply" >&2
+        return 0
+    fi
 
     kind=$(effective_leaf_for_apply)
     out=$($TC_BIN qdisc show dev "$iface" 2>/dev/null || true)
@@ -271,8 +292,13 @@ apply_default_leaf() {
 }
 
 status_json() {
-    local iface=${1:-} mode rec cake fqc autorate supported active qdisc profile preset leaf detected reason lastdiag
+    local iface=${1:-} mode rec cake fqc autorate supported active qdisc profile preset leaf detected reason lastdiag iface_present can_apply
     [ -n "$iface" ] || iface=$(cat "$RUN/iface.cache" 2>/dev/null | head -1 | tr -d '\r\n')
+    iface_present=false
+    can_apply=false
+    if iface_exists "$iface"; then
+        iface_present=true
+    fi
     mode=$(current_mode)
     rec=$(recommended_mode)
     cake=$(cap_bool tc_cake_supported)
@@ -280,21 +306,32 @@ status_json() {
     autorate=$(cap_bool tc_cake_autorate_ingress_supported)
     supported=false
     mode_available "$mode" && supported=true
-    [ "$mode" = off ] && active=false || active=$supported
+    if [ "$mode" = off ]; then
+        active=false
+    elif [ "$iface_present" = true ]; then
+        active=$supported
+    else
+        active=false
+    fi
     profile=$(cat "$SQM_PROFILE_FILE" 2>/dev/null | head -1 | tr -d '\r\n')
     [ -n "$profile" ] || profile=balanced
     preset=$(current_preset)
     leaf=$(recommended_mode)
     qdisc=""
     detected=none
-    if [ -n "$iface" ]; then
+    if [ "$iface_present" = true ]; then
         qdisc=$("$TC_BIN" qdisc show dev "$iface" 2>/dev/null | head -10 | tr '\r\n' ' ' | cut -c1-520)
         echo "$qdisc" | grep -q ' fq_codel ' && detected=fq_codel
         echo "$qdisc" | grep -q ' cake ' && detected=cake
         [ "$detected" = none ] && echo "$qdisc" | grep -q ' netem ' && detected=netem
         [ "$detected" = none ] && echo "$qdisc" | grep -q ' htb ' && detected=htb
+        if [ "$mode" != off ] && [ "$supported" = true ] && echo "$qdisc" | grep -q 'qdisc htb 1:'; then
+            can_apply=true
+        fi
     fi
-    if [ "$supported" = false ]; then
+    if [ "$iface_present" != true ]; then
+        reason="热点未开启或热点接口不存在，SQM 设置已保存；开启热点后再应用"
+    elif [ "$supported" = false ]; then
         reason="当前模式未被能力探测确认，保持兼容链路"
     elif [ "$mode" = off ]; then
         reason="SQM 已关闭"
@@ -304,7 +341,7 @@ status_json() {
     lastdiag=$(cat "$SQM_DIAG_LAST" 2>/dev/null | head -1)
     cat <<EOF_JSON
 {
-  "schema": 2,
+  "schema": 3,
   "mode": "$(json_escape "$mode")",
   "profile": "$(json_escape "$profile")",
   "preset": "$(json_escape "$preset")",
@@ -314,6 +351,10 @@ status_json() {
   "recommended_leaf": "$(json_escape "$leaf")",
   "detected_leaf": "$(json_escape "$detected")",
   "active": $active,
+  "available": true,
+  "iface_present": $iface_present,
+  "hotspot_active": $iface_present,
+  "can_apply": $can_apply,
   "mode_supported": $supported,
   "tc_fq_codel_supported": $fqc,
   "tc_cake_supported": $cake,
@@ -341,6 +382,7 @@ Commands:
   set-preset <preset>     Persist preset: off | balanced | game | weaknet | poor | extreme | custom
   recommended             Print recommended mode from capabilities.json
   apply [iface]           Incrementally replace default leaf qdisc parent 1:9999
+                         If iface is absent/offline, only save settings and return success.
 
 Notes:
   - Default mode is off; v5.2.1 behavior is preserved.

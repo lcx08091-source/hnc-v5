@@ -2,7 +2,7 @@ package main
 
 import "strings"
 
-// actionSQMSet · v5.3.0-rc7
+// actionSQMSet · v5.3.0-rc10
 // params:
 //
 //	mode    optional: off | fq_codel | cake | auto | game
@@ -12,7 +12,9 @@ import "strings"
 //
 // The shell manager performs the actual persistence so Go, KSU WebUI and adb
 // diagnostics keep identical semantics. Invalid values are rejected before shell.
-// v5.3.0-rc7: apply is no longer a full tc_manager restore; it is an incremental leaf replace.
+// v5.3.0-rc10: apply is still incremental; if hotspot iface is absent,
+// sqm_manager returns success with a saved-for-later status instead of surfacing
+// a generic SQM apply failure.
 func actionSQMSet(hncDir string, p map[string]string) actionResp {
 	mode := strings.TrimSpace(strings.ToLower(p["mode"]))
 	profile := strings.TrimSpace(strings.ToLower(p["profile"]))

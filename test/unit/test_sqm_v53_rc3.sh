@@ -3,7 +3,7 @@
 
 # This file is sourced by test/run_all.sh after test/lib.sh.
 
-test_start "v5.3 rc3 sqm_manager exposes presets and schema 2 status"
+test_start "v5.3 rc3/rc10 sqm_manager exposes presets and current status schema"
 mock_setup
 cat > "$HNC_TEST_DIR/run/capabilities.json" <<'JSON'
 {
@@ -15,7 +15,7 @@ cat > "$HNC_TEST_DIR/run/capabilities.json" <<'JSON'
 }
 JSON
 status=$(HNC="$HNC_TEST_DIR" HNC_DIR="$HNC_TEST_DIR" HNC_TEST_MODE=1 sh "$HNC_REPO_ROOT/bin/sqm_manager.sh" status test0)
-assert_contains "$status" '"schema": 2' "status should use rc3 schema 2" || { mock_teardown; return; }
+assert_contains "$status" '"schema": 3' "status should use current schema" || { mock_teardown; return; }
 assert_contains "$status" '"presets":' "status should include presets array" || { mock_teardown; return; }
 assert_contains "$status" '"detected_leaf"' "status should include detected leaf" || { mock_teardown; return; }
 assert_contains "$status" '"recommended_leaf": "fq_codel"' "status should report recommended leaf" || { mock_teardown; return; }

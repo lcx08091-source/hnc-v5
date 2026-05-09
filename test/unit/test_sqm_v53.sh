@@ -27,6 +27,7 @@ cat > "$HNC_TEST_DIR/run/capabilities.json" <<'JSON'
   "sqm_recommended_mode": "fq_codel"
 }
 JSON
+printf '%s\n' test0 > "$HNC_TEST_DIR/run/iface.cache"
 mode=$(HNC="$HNC_TEST_DIR" sh "$HNC_REPO_ROOT/bin/sqm_manager.sh" get-mode)
 assert_eq "off" "$mode" "SQM should default to off" || { mock_teardown; return; }
 status=$(HNC="$HNC_TEST_DIR" sh "$HNC_REPO_ROOT/bin/sqm_manager.sh" set-mode fq_codel)
