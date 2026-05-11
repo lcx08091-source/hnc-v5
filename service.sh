@@ -278,6 +278,10 @@ DPID_CONFIG="$HNC_DIR/etc/dpi_config.json"
 DPID_PID="$RUN/dpid.pid"
 DPID_GUARD_PID="$RUN/dpid_guard.pid"
 
+find_live_dpid_guard_pid() {
+    ps -ef 2>/dev/null | grep '[h]nc_dpid_guard.sh' | awk 'NR==1{print $2}'
+}
+
 if [ -x "$DPID_GUARD" ]; then
     DPID_LAUNCHER="$DPID_GUARD"
 fi
@@ -300,11 +304,17 @@ else
         if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then
             log "hnc_dpid_guard already running (PID=$gp), skip duplicate launch"
         else
-            rm -f "$DPID_GUARD_PID" 2>/dev/null || true
-            log "starting hnc_dpid guard: $DPID_GUARD"
-            nohup "$DPID_GUARD" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
-            echo $! > "$DPID_GUARD_PID"
-            log "hnc_dpid guard started (PID: $(cat $DPID_GUARD_PID))"
+            live_gp=$(find_live_dpid_guard_pid)
+            if [ -n "$live_gp" ] && kill -0 "$live_gp" 2>/dev/null; then
+                echo "$live_gp" > "$DPID_GUARD_PID" 2>/dev/null || true
+                log "hnc_dpid_guard live without pidfile (PID=$live_gp), repaired pidfile and skipped duplicate launch"
+            else
+                rm -f "$DPID_GUARD_PID" 2>/dev/null || true
+                log "starting hnc_dpid guard: $DPID_GUARD"
+                nohup "$DPID_GUARD" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+                echo $! > "$DPID_GUARD_PID"
+                log "hnc_dpid guard started (PID: $(cat $DPID_GUARD_PID))"
+            fi
         fi
     else
         dp=$(cat "$DPID_PID" 2>/dev/null)

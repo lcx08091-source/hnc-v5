@@ -443,6 +443,17 @@ ensure_dpid_running() {
         fi
     fi
 
+    # rc16: 如果 pidfile 丢了但 guard 进程真实存在，修复 pidfile，不再重复拉起。
+    if [ "$dpid_launcher" = "$dpid_guard" ]; then
+        local live_gp
+        live_gp=$(ps -ef 2>/dev/null | grep '[h]nc_dpid_guard.sh' | awk 'NR==1{print $2}')
+        if [ -n "$live_gp" ] && kill -0 "$live_gp" 2>/dev/null; then
+            echo "$live_gp" > "$dpid_guard_pid_file" 2>/dev/null || true
+            log "dpid: guard live without pidfile, repaired pidfile pid=$live_gp"
+            return 0
+        fi
+    fi
+
     # 冷却防止"反复死反复拉"
     local now; now=$(date +%s 2>/dev/null) || now=0
     local since=$((now - DPID_LAST_RESTART))

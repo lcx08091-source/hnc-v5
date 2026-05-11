@@ -1,17 +1,19 @@
 #!/system/bin/sh
-# hnc_dpid_guard.sh — HNC v5.3.0-rc13
+# hnc_dpid_guard.sh — HNC v5.3.0-rc16
 # Purpose:
 #   Keep passive DPI capture responsive when Android recreates or briefly downs
 #   the hotspot interface.  The hnc_dpid binary is intentionally side-effect
 #   free; this guard only controls its lifecycle and writes a waiting state.
 #
 # Strategy:
-#   1. Do not start hnc_dpid while the configured hotspot iface is down.
+#   1. Treat Android AP interfaces as ready when they are clearly usable, not
+#      only when operstate=up.  Some ROMs keep wlan2 in UNKNOWN/DORMANT while
+#      tethering and AF_PACKET capture already work.
 #   2. Use a fast startup retry window: 0 / 100 / 200 / 500 ms / 1 s / 1.5 s / 2 s.
 #   3. Use ip monitor link/address when available to kill/rebind immediately on
 #      interface changes; fall back to a low-frequency 3 s check.
-#   4. If dpid reports "network is down" while the iface is up, restart it once
-#      the short backoff allows the AF_PACKET socket to bind cleanly.
+#   4. If dpid reports "network is down", restart it after a short backoff; do
+#      not get stuck forever waiting for a perfect operstate.
 
 [ -z "$HNC_SKIP_PATH_HARDENING" ] && [ -z "$HNC_TEST_MODE" ] && export PATH=/system/bin:/system/xbin:/vendor/bin:/data/local/hnc/bin:$PATH
 
@@ -54,7 +56,7 @@ write_waiting_state() {
     esc_iface=$(json_escape "$iface")
     esc_reason=$(json_escape "$reason")
     cat > "$RUN/dpi_state.json.tmp" <<EOF_STATE
-{"schema_version":1,"timestamp":$now,"version":"0.1.0-rc1.2-fixed+rc13-guard","mode":"blind","interface":"$esc_iface","uptime_s":$up,"blind_reason":"$esc_reason","stats":{"packets":0,"dns_events":0,"tls_events":0,"kernel_drops":0,"ignored_packets":0,"parse_errors":0}}
+{"schema_version":1,"timestamp":$now,"version":"0.1.0-rc1.2-fixed+rc16-guard","mode":"blind","interface":"$esc_iface","uptime_s":$up,"blind_reason":"$esc_reason","stats":{"packets":0,"dns_events":0,"tls_events":0,"kernel_drops":0,"ignored_packets":0,"parse_errors":0}}
 EOF_STATE
     mv -f "$RUN/dpi_state.json.tmp" "$RUN/dpi_state.json" 2>/dev/null || true
 }
@@ -112,6 +114,51 @@ iface_up() {
     return 1
 }
 
+iface_has_ipv4() {
+    local iface="$1"
+    [ -n "$iface" ] || return 1
+    ip -4 addr show "$iface" 2>/dev/null | grep -q 'inet ' && return 0
+    return 1
+}
+
+iface_has_arp_clients() {
+    local iface="$1"
+    [ -n "$iface" ] || return 1
+    awk -v ifc="$iface" 'NR>1 && $6==ifc && $4!="00:00:00:00:00:00" {found=1} END{exit found?0:1}' /proc/net/arp 2>/dev/null
+}
+
+hotspot_hint_matches_iface() {
+    local iface="$1" hint
+    [ -n "$iface" ] || return 1
+    hint=$(cat "$RUN/hotspot_iface" 2>/dev/null | head -1)
+    [ -n "$hint" ] && [ "$hint" = "$iface" ] && return 0
+    return 1
+}
+
+iface_ready() {
+    # rc16: Android AP interfaces may report operstate=unknown/dormant even
+    # when tethering works.  Starting hnc_dpid is cheap and side-effect free, so
+    # prefer trying capture over staying in blind/waiting forever.
+    local iface="$1"
+    iface_exists "$iface" || return 1
+    iface_up "$iface" && return 0
+    iface_has_ipv4 "$iface" && return 0
+    iface_has_arp_clients "$iface" && return 0
+    hotspot_hint_matches_iface "$iface" && return 0
+    return 1
+}
+
+iface_ready_reason() {
+    local iface="$1" op carrier ip4 arp hint line
+    op=$(cat "/sys/class/net/$iface/operstate" 2>/dev/null)
+    carrier=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)
+    ip4="no"; iface_has_ipv4 "$iface" && ip4="yes"
+    arp="no"; iface_has_arp_clients "$iface" && arp="yes"
+    hint=$(cat "$RUN/hotspot_iface" 2>/dev/null | head -1)
+    line=$(ip -o link show "$iface" 2>/dev/null | head -1)
+    printf 'operstate=%s carrier=%s ipv4=%s arp_clients=%s hint=%s link=%s' "${op:-unknown}" "${carrier:-unknown}" "$ip4" "$arp" "${hint:-none}" "$line"
+}
+
 kill_child() {
     local child
     child=$(cat "$CHILD_PID_FILE" 2>/dev/null)
@@ -146,7 +193,7 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
         log "another guard already running pid=$old"
         exit 0
     fi
-    # If a previous rc13 child shell left a stale lock behind, release it.
+    # If a previous rc16 child shell left a stale lock behind, release it.
     log "stale guard lock without live guard pid; releasing"
     rm -rf "$LOCKDIR" 2>/dev/null || true
     mkdir "$LOCKDIR" 2>/dev/null || exit 0
@@ -199,13 +246,13 @@ while true; do
         log "disable_capture=true; launching real dpid once"
     else
         if ! iface_exists "$iface"; then
-            write_waiting_state "$iface" "waiting for hotspot interface $iface to appear; rc13 guard will rebind immediately on netlink event"
+            write_waiting_state "$iface" "waiting for hotspot interface $iface to appear; rc16 guard will rebind immediately on netlink event"
             log "iface $iface missing; waiting"
             sleep_s 3
             continue
         fi
-        if ! iface_up "$iface"; then
-            write_waiting_state "$iface" "waiting for hotspot interface $iface to be UP; rc13 guard fast-retry/netlink rebind active"
+        if ! iface_ready "$iface"; then
+            write_waiting_state "$iface" "waiting for hotspot interface $iface to become usable; rc16 relaxed-ready fast retry active; $(iface_ready_reason "$iface")"
             # Startup fast window, then low-frequency fallback.
             delay=$(echo "$FAST_DELAYS" | awk -v i="$fast_index" '{print $i}')
             [ -z "$delay" ] && delay=3
@@ -245,9 +292,9 @@ while true; do
             kill "$child" 2>/dev/null || true
             break
         fi
-        if [ "$disabled" != "true" ] && ! iface_up "$iface"; then
-            write_waiting_state "$iface" "hotspot interface $iface went down; rc13 guard is rebinding"
-            log "iface $iface down while running; rebind when up"
+        if [ "$disabled" != "true" ] && ! iface_ready "$iface"; then
+            write_waiting_state "$iface" "hotspot interface $iface is not currently usable; rc16 guard is rebinding; $(iface_ready_reason "$iface")"
+            log "iface $iface not ready while running; rebind when usable: $(iface_ready_reason "$iface")"
             kill "$child" 2>/dev/null || true
             break
         fi

@@ -2524,6 +2524,10 @@ body.kb-open .container {
         </div>
       </div>
       <div class="dpi-status-detail" id="dpi-status-detail" style="display:none"></div>
+      <div class="dpi-action-row">
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="dpi-refresh">刷新状态</button>
+        <button type="button" class="btn btn-primary dpi-action-btn" data-action="dpi-rebind">重新绑定 DPI</button>
+      </div>
     </div>
 
     <!-- 4 计数卡 (sniff 统计) -->
@@ -2600,7 +2604,7 @@ body.kb-open .container {
       <div class="dpi-about">
         <p>HNC DPI (<code>hnc_dpid</code>) 是被动的元数据观察 daemon, 用 AF_PACKET + cBPF 抓 <b>DNS</b> 和 <b>TLS ClientHello</b> 元数据, 不做任何主动操作 (不 NFQUEUE、不 DNS 劫持、不改 iptables/tc).</p>
         <p>当前 rc1.2-fixed 阶段只统计事件计数, 不输出每流详情. 后续 rc2+ 会扩展到流表 + 应用识别 + 规则匹配.</p>
-        <p>关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
+        <p>如果卡在“等待接口就绪”，可点上方 <b>重新绑定 DPI</b>；关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
       </div>
     </div>
 
@@ -2642,6 +2646,13 @@ body.kb-open .container {
     font-size: 12px; color: rgba(255,200,100,0.95);
     line-height: 1.5;
   }
+  .dpi-action-row {
+    display: flex; gap: 8px; margin-top: 12px;
+  }
+  .dpi-action-row .btn {
+    flex: 1; min-height: 36px; padding: 0 12px; font-size: 12px;
+  }
+  .dpi-action-row .btn[disabled] { opacity: .55; pointer-events: none; }
   .dpi-flow-stats { display: grid; gap: 10px; padding: 4px 0; }
   .dpi-flow-row { display: flex; align-items: baseline; justify-content: space-between; }
   .dpi-flow-label { font-size: 13px; }
@@ -3827,6 +3838,23 @@ body.kb-open .container {
   async function stopAllServicesBackend() { await apiAction('cleanup_all'); return true; }
   async function manualRefreshBackend()   { await apiAction('refresh'); return true; }
   async function restartServiceBackend()  { await apiAction('restart_service'); return true; }
+  async function dpiRebindBackend() {
+    // rc16: prefer Go /api/action when the rebuilt backend supports it, but
+    // fall back to direct KSU/SukiSU bridge so older/stale httpd can still be rescued.
+    try {
+      await apiAction('dpi_rebind');
+      return true;
+    } catch (e) {
+      const script = [
+        'H=/data/local/hnc',
+        'IF=$(cat "$H/run/hotspot_iface" 2>/dev/null)',
+        '[ -z "$IF" ] && IF=wlan2',
+        'if [ -x "$H/bin/dpi_rebind.sh" ]; then sh "$H/bin/dpi_rebind.sh" "$IF"; else pkill -f hnc_dpid 2>/dev/null || true; pkill -f hnc_dpid_guard.sh 2>/dev/null || true; mkdir -p "$H/etc" "$H/run"; printf "{\\\"iface\\\":\\\"%s\\\",\\\"log_level\\\":\\\"info\\\"}\\n" "$IF" > "$H/etc/dpi_config.json"; nohup "$H/bin/hnc_dpid" -config "$H/etc/dpi_config.json" >"$H/run/dpid.log" 2>&1 & echo $! > "$H/run/dpid.pid"; fi'
+      ].join('; ');
+      await kexec('sh -c ' + sq(script));
+      return true;
+    }
+  }
   async function forceStartServicesBackend() {
     // rc13: backend 已死亡时，/api/action 也不可用；直接走 KSU/SukiSU bridge 拉起 service.sh。
     const script = 'H=/data/local/hnc; mkdir -p "$H/logs" "$H/run"; MOD=$(cat "$H/run/service.path" 2>/dev/null); [ -z "$MOD" ] && MOD=/data/adb/modules/hotspot_network_control; if [ -f "$MOD/service.sh" ]; then nohup sh "$MOD/service.sh" >> "$H/logs/service.log" 2>&1 & echo "started $MOD/service.sh"; else echo "service.sh not found: $MOD" >&2; exit 2; fi';
@@ -4080,7 +4108,7 @@ body.kb-open .container {
           if (/waiting for hotspot interface|interface .* to be UP|network is down/i.test(reason)) {
             badgeMode = 'waiting';
             modeLabel = '等待接口就绪';
-            detailText = '热点接口正在切换或刚被系统重建，DPI 会自动快速重试/事件重绑。原因: ' + reason;
+            detailText = '热点接口正在切换或刚被系统重建，DPI 会自动快速重试/事件重绑；也可以点“重新绑定 DPI”立即重试。原因: ' + reason;
           } else if (/rebind|rebinding|iface changed/i.test(reason)) {
             badgeMode = 'rebinding';
             modeLabel = '重绑中';
@@ -4146,7 +4174,7 @@ body.kb-open .container {
       setDpiCap('#dpi-cap-iface',
         !!pr.ap_iface, pr.ap_iface ? (pr.ap_iface + ' (来源: ' + (pr.ap_iface_source || 'auto') + ')') : '未探到');
       setDpiCap('#dpi-cap-offload',
-        !pr.offload_hint, pr.offload_hint ? ('启用 — ' + ((pr.offload_evidence || []).join('; ') || '部分流量被内核加速放行, DPI 可能漏抓')) : '未启用');
+        !pr.offload_hint, pr.offload_hint ? ('启用 — ' + ((pr.offload_evidence || []).join('; ') || 'tethering') + '；部分流量可能绕过 DPI / tc，影响识别和限速精度') : '未启用');
       setDpiCap('#dpi-cap-conntrack',
         pr.conntrack_readable, pr.conntrack_readable ? ('可读 (' + (pr.conntrack_path || '/proc/net/nf_conntrack') + ')') : '不可读');
     } else {
@@ -6235,6 +6263,28 @@ body.kb-open .container {
       return;
     }
 
+    /* DPI 页面手动操作 */
+    if (e.target.closest('[data-action="dpi-refresh"]')) {
+      toast('正在刷新 DPI 状态…', 'ok');
+      fetchDPI();
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-rebind"]')) {
+      const btn = e.target.closest('[data-action="dpi-rebind"]');
+      if (btn) btn.disabled = true;
+      toast('正在重新绑定 DPI…', 'warn');
+      dpiRebindBackend().then(() => {
+        toast('DPI 已触发重绑，稍等 2-5 秒刷新状态', 'ok');
+        setTimeout(fetchDPI, 2500);
+        setTimeout(fetchDPI, 5500);
+      }).catch(err => {
+        toast('DPI 重绑失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => {
+        if (btn) setTimeout(() => { btn.disabled = false; }, 3000);
+      });
+      return;
+    }
+
     /* 全局操作 */
     if (e.target.closest('[data-action="manual-refresh"]')) {
       toast('正在刷新设备列表…', 'ok');
@@ -6266,7 +6316,7 @@ body.kb-open .container {
       confirmModal({
         icon: '⏹', iconClass: 'danger',
         title: '释放并重启资源?',
-        // v5.3.0-rc15: 保留普通二次确认，不再要求输入 RELEASE。
+        // v5.3.0-rc16: 保留普通二次确认，不再要求输入 RELEASE。
         message: '将清理 tc/iptables 临时规则，并重启 HNC 后端与 DPI 守护。<br>页面可能短暂断开 5-15 秒。<br><b>不会卸载模块，也不会删除配置。</b><br>日常只清限速/延迟/黑名单请用“清空所有规则”。',
         okText: '确认重启', okKind: 'btn-danger',
         onOk: () => {

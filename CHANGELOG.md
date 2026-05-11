@@ -1,3 +1,10 @@
+## v5.3.0-rc16
+
+- DPI 页面新增“刷新状态 / 重新绑定 DPI”。
+- 放宽 hnc_dpid_guard 热点接口 ready 判断，避免 wlan2 可抓包但卡在“等待接口就绪”。
+- 加强 service/watchdog 的 dpid_guard 单实例自愈。
+- 新增 rc16 启动自检脚本。
+
 
 ## v5.3.0-rc13
 

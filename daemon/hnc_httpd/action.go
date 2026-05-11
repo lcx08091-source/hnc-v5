@@ -300,6 +300,8 @@ func dispatchAction(hncDir, action string, p map[string]string, isLoopback bool)
 		return actionCleanupAll(hncDir)
 	case "restart_service":
 		return actionRestartService(hncDir)
+	case "dpi_rebind":
+		return actionDPIRebind(hncDir, p)
 	default:
 		return actionResp{OK: false, Error: "unknown action"}
 	}
@@ -654,6 +656,8 @@ func runBin(hncDir, script string, args ...string) (int, string) {
 		timeoutSec = 60
 	case "hotspot_autostart.sh":
 		timeoutSec = 30
+	case "dpi_rebind.sh":
+		timeoutSec = 30
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -695,6 +699,25 @@ func runBin(hncDir, script string, args ...string) (int, string) {
 		}
 	}
 	return rc, s
+}
+
+// actionDPIRebind · v5.3.0-rc16
+// Manually restart the passive DPI guard/capture path.  This is intentionally
+// low-risk: hnc_dpid is observe-only and does not touch tc/iptables.
+func actionDPIRebind(hncDir string, p map[string]string) actionResp {
+	iface := strings.TrimSpace(p["iface"])
+	args := []string{}
+	if iface != "" {
+		if !regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`).MatchString(iface) {
+			return actionResp{OK: false, Error: "bad params", Detail: "invalid iface"}
+		}
+		args = append(args, iface)
+	}
+	rc, out := runBin(hncDir, "dpi_rebind.sh", args...)
+	if rc != 0 {
+		return actionResp{OK: false, Error: "dpi rebind failed", Detail: strings.TrimSpace(out)}
+	}
+	return actionResp{OK: true, Detail: strings.TrimSpace(out)}
 }
 
 // writeActionResp 响应 JSON
