@@ -42,35 +42,49 @@ log "Android $(getprop ro.build.version.release) / $(getprop ro.product.brand) $
 # post-fs-data may not run during manual module restart, leaving /data/local/hnc
 # with an old hnc_httpd binary (observed hotfix4 backend with hotfix17 UI).
 sync_runtime_from_moddir() {
-    log "hotfix17.3 runtime sync: MODDIR=$MODDIR -> $HNC_DIR"
+    log "rc14 runtime sync: MODDIR=$MODDIR -> $HNC_DIR"
 
     mkdir -p "$HNC_DIR/bin" "$HNC_DIR/webroot" "$HNC_DIR/api" "$HNC_DIR/daemon/hnc_httpd" 2>/dev/null || true
     cp -rf "$MODDIR/bin/"* "$HNC_DIR/bin/" 2>/dev/null || true
     cp -rf "$MODDIR/webroot/"* "$HNC_DIR/webroot/" 2>/dev/null || true
     cp -rf "$MODDIR/api/"* "$HNC_DIR/api/" 2>/dev/null || true
 
+    # rc14: 强制刷新运行时后端，避免旧 hnc_httpd 进程继续占用 8444。
+    # 仅删除 /data/local/hnc 的运行时副本；模块目录里的正式二进制不删除。
     if [ -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" ]; then
-        if ! cmp -s "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null; then
-            cp -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
-            chmod 755 "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
-            log "runtime sync: hnc_httpd binary refreshed, killing old httpd for relaunch"
-            oldpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
-            [ -n "$oldpid" ] && kill -9 "$oldpid" 2>/dev/null || true
-            rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip" 2>/dev/null || true
+        log "runtime sync: stopping old hnc_httpd before replacing runtime binary"
+        oldpid=$(cat "$RUN/httpd.pid" 2>/dev/null)
+        [ -n "$oldpid" ] && kill -9 "$oldpid" 2>/dev/null || true
+        if command -v pidof >/dev/null 2>&1; then
+            for p in $(pidof hnc_httpd 2>/dev/null); do
+                [ -n "$p" ] && kill -9 "$p" 2>/dev/null || true
+            done
+        fi
+        rm -f "$RUN/httpd.pid" "$RUN/httpd_bind_ip" 2>/dev/null || true
+        rm -f "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+
+        cp -f "$MODDIR/daemon/hnc_httpd/hnc_httpd" "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+        chmod 755 "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
+
+        if command -v strings >/dev/null 2>&1; then
+            if strings "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null | grep -q '/api/dpi_state' \
+               && strings "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null | grep -q '/api/dpi_probe'; then
+                log "runtime sync: hnc_httpd refreshed with DPI API routes"
+            else
+                log "ERROR: refreshed hnc_httpd is missing /api/dpi_state or /api/dpi_probe"
+            fi
         else
-            chmod 755 "$HNC_DIR/daemon/hnc_httpd/hnc_httpd" 2>/dev/null || true
-            log "runtime sync: hnc_httpd binary already current"
+            log "runtime sync: strings not available; skipped DPI API route check"
         fi
     else
         log "runtime sync WARN: module hnc_httpd missing at $MODDIR/daemon/hnc_httpd/hnc_httpd"
     fi
 
     chmod 755 "$HNC_DIR/bin/"*.sh 2>/dev/null || true
-    for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve hnc_json; do
+    for _b in hotspotd hnc_ipc hnc_tc_ingress mdns_resolve hnc_json hnc_dpid; do
         [ -f "$HNC_DIR/bin/$_b" ] && chmod 755 "$HNC_DIR/bin/$_b" 2>/dev/null || true
     done
 }
-
 
 sync_runtime_from_moddir
 # hotfix13: record platform/kernel capability profile for diagnostics and UI fallback hints
@@ -262,6 +276,7 @@ DPID_GUARD="$HNC_DIR/bin/hnc_dpid_guard.sh"
 DPID_LAUNCHER="$DPID_BIN"
 DPID_CONFIG="$HNC_DIR/etc/dpi_config.json"
 DPID_PID="$RUN/dpid.pid"
+DPID_GUARD_PID="$RUN/dpid_guard.pid"
 
 if [ -x "$DPID_GUARD" ]; then
     DPID_LAUNCHER="$DPID_GUARD"
@@ -278,14 +293,28 @@ else
         log "dpid: installed default dpi_config.json to $DPID_CONFIG"
     fi
 
-    # rc13: 优先启动 dpid guard。guard 会在热点接口 DOWN/重建时
-    # 快速等待 + netlink 事件驱动重绑，避免 rc12 的 network-is-down 盲模式卡住。
-    log "starting hnc_dpid launcher: $DPID_LAUNCHER"
+    # rc14: 优先启动 dpid guard，并用独立 dpid_guard.pid 防重复。
+    # dpid.pid 只给真实 hnc_dpid child 使用，避免 guard/child 互相覆盖 pidfile。
     if [ "$DPID_LAUNCHER" = "$DPID_GUARD" ]; then
-        nohup "$DPID_LAUNCHER" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+        gp=$(cat "$DPID_GUARD_PID" 2>/dev/null)
+        if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then
+            log "hnc_dpid_guard already running (PID=$gp), skip duplicate launch"
+        else
+            rm -f "$DPID_GUARD_PID" 2>/dev/null || true
+            log "starting hnc_dpid guard: $DPID_GUARD"
+            nohup "$DPID_GUARD" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+            echo $! > "$DPID_GUARD_PID"
+            log "hnc_dpid guard started (PID: $(cat $DPID_GUARD_PID))"
+        fi
     else
-        nohup "$DPID_LAUNCHER" -config "$DPID_CONFIG" >> "$HNC_DIR/logs/dpid.log" 2>&1 &
+        dp=$(cat "$DPID_PID" 2>/dev/null)
+        if [ -n "$dp" ] && kill -0 "$dp" 2>/dev/null; then
+            log "hnc_dpid already running (PID=$dp), skip duplicate launch"
+        else
+            log "starting hnc_dpid: $DPID_BIN"
+            nohup "$DPID_BIN" -config "$DPID_CONFIG" >> "$HNC_DIR/logs/dpid.log" 2>&1 &
+            echo $! > "$DPID_PID"
+            log "hnc_dpid started (PID: $(cat $DPID_PID))"
+        fi
     fi
-    echo $! > "$DPID_PID"
-    log "hnc_dpid launcher started (PID: $(cat $DPID_PID))"
 fi

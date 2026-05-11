@@ -426,13 +426,18 @@ ensure_dpid_running() {
     local dpid_guard="$HNC_DIR/bin/hnc_dpid_guard.sh"
     local dpid_launcher="$dpid_bin"
     local dpid_pid_file="$RUN/dpid.pid"
+    local dpid_guard_pid_file="$RUN/dpid_guard.pid"
+    local watch_pid_file="$dpid_pid_file"
 
     [ ! -x "$dpid_bin" ] && return 0   # binary 不存在, 视为禁用了 DPI
-    [ -x "$dpid_guard" ] && dpid_launcher="$dpid_guard"
+    if [ -x "$dpid_guard" ]; then
+        dpid_launcher="$dpid_guard"
+        watch_pid_file="$dpid_guard_pid_file"
+    fi
 
-    # 进程还活就 OK
-    if [ -f "$dpid_pid_file" ]; then
-        local dp; dp=$(cat "$dpid_pid_file" 2>/dev/null)
+    # 进程还活就 OK。guard 场景只看 dpid_guard.pid，避免 dpid.pid child 退出导致重复拉 guard。
+    if [ -f "$watch_pid_file" ]; then
+        local dp; dp=$(cat "$watch_pid_file" 2>/dev/null)
         if [ -n "$dp" ] && kill -0 "$dp" 2>/dev/null; then
             return 0
         fi
@@ -446,16 +451,18 @@ ensure_dpid_running() {
     fi
 
     log "dpid: process gone, relaunching launcher=$dpid_launcher"
-    rm -f "$dpid_pid_file" 2>/dev/null
+    rm -f "$watch_pid_file" 2>/dev/null
     if [ "$dpid_launcher" = "$dpid_guard" ]; then
-        nohup "$dpid_launcher" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+        nohup "$dpid_guard" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+        echo $! > "$dpid_guard_pid_file"
+        log "dpid: guard relaunched (PID: $(cat "$dpid_guard_pid_file" 2>/dev/null))"
     else
-        nohup "$dpid_launcher" -config "$HNC_DIR/etc/dpi_config.json" \
+        nohup "$dpid_bin" -config "$HNC_DIR/etc/dpi_config.json" \
             >> "$HNC_DIR/logs/dpid.log" 2>&1 &
+        echo $! > "$dpid_pid_file"
+        log "dpid: relaunched (PID: $(cat "$dpid_pid_file" 2>/dev/null))"
     fi
-    echo $! > "$dpid_pid_file"
     DPID_LAST_RESTART=$now
-    log "dpid: relaunched (PID: $(cat "$dpid_pid_file" 2>/dev/null))"
     return 0
 }
 

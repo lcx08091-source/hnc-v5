@@ -22,11 +22,13 @@ LOG="$LOG_DIR/dpid_guard.log"
 REAL_BIN="$HNC_DIR/bin/hnc_dpid"
 CONFIG="$HNC_DIR/etc/dpi_config.json"
 PID_FILE="$RUN/dpid.pid"
+GUARD_PID_FILE="$RUN/dpid_guard.pid"
 CHILD_PID_FILE="$RUN/dpid.child.pid"
 MON_PID_FILE="$RUN/dpid.monitor.pid"
 EVENT_FILE="$RUN/dpid.netlink.event"
 LOCKDIR="$RUN/dpid_guard.lock"
 START_TS=$(date +%s 2>/dev/null || echo 0)
+OWNS_LOCK=0
 
 mkdir -p "$RUN" "$LOG_DIR" 2>/dev/null || true
 
@@ -122,25 +124,38 @@ kill_child() {
 }
 
 cleanup_guard() {
+    [ "${OWNS_LOCK:-0}" = "1" ] || exit 0
     local mon
     kill_child
     mon=$(cat "$MON_PID_FILE" 2>/dev/null)
     [ -n "$mon" ] && kill "$mon" 2>/dev/null || true
-    rm -f "$MON_PID_FILE" "$PID_FILE" "$CHILD_PID_FILE" 2>/dev/null || true
+    rm -f "$MON_PID_FILE" "$GUARD_PID_FILE" "$CHILD_PID_FILE" 2>/dev/null || true
+    # 兼容旧版：只在 dpid.pid 指向本 guard 时才删除，避免误删真实 child pid。
+    old_main=$(cat "$PID_FILE" 2>/dev/null)
+    [ "$old_main" = "$$" ] && rm -f "$PID_FILE" 2>/dev/null || true
     rm -rf "$LOCKDIR" 2>/dev/null || true
 }
 trap cleanup_guard EXIT INT TERM
 
+# rc14: dpid guard must be single-instance.  Do not share dpid.pid with
+# the real capture child; use dpid_guard.pid for the supervisor and keep
+# dpid.child.pid for the hnc_dpid child.
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    old=$(cat "$PID_FILE" 2>/dev/null)
+    old=$(cat "$GUARD_PID_FILE" 2>/dev/null)
     if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
         log "another guard already running pid=$old"
         exit 0
     fi
+    # If a previous rc13 child shell left a stale lock behind, release it.
+    log "stale guard lock without live guard pid; releasing"
     rm -rf "$LOCKDIR" 2>/dev/null || true
     mkdir "$LOCKDIR" 2>/dev/null || exit 0
 fi
-echo $$ > "$PID_FILE"
+OWNS_LOCK=1
+echo $$ > "$GUARD_PID_FILE"
+# Best-effort compatibility: expose the guard pid to old watchdog only when no
+# dpid.pid exists.  New rc14 watchdog reads dpid_guard.pid.
+[ ! -s "$PID_FILE" ] && echo $$ > "$PID_FILE" 2>/dev/null || true
 
 if [ ! -x "$REAL_BIN" ]; then
     write_waiting_state "" "hnc_dpid binary missing; DPI disabled"

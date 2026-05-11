@@ -6266,12 +6266,10 @@ body.kb-open .container {
       confirmModal({
         icon: '⏹', iconClass: 'danger',
         title: '释放并重启资源?',
-        // v5.3.0-rc13: 用户入口不再执行纯 cleanup all，避免把 httpd/watchdog 杀死后无法重进。
-        message: '将停止 HNC 子进程并清除 tc/iptables 规则，然后自动重新拉起 service.sh。<br><b>这是危险维护操作</b>，日常清限速请用“清空所有规则”。',
-        okText: '继续', okKind: 'btn-danger',
+        // v5.3.0-rc14: 保留普通二次确认，不再要求输入 RELEASE。
+        message: '将清理 tc/iptables 临时规则，并重启 HNC 后端与 DPI 守护。<br>页面可能短暂断开 5-15 秒。<br><b>不会卸载模块，也不会删除配置。</b><br>日常只清限速/延迟/黑名单请用“清空所有规则”。',
+        okText: '确认重启', okKind: 'btn-danger',
         onOk: () => {
-          const typed = (prompt('危险操作确认：请输入 RELEASE 后继续') || '').trim();
-          if (typed !== 'RELEASE') { toast('已取消释放资源', 'warn'); return; }
           stopAllServicesBackend().then(() => {
             toast('已触发释放并重启 · 后端约 8-15 秒恢复', 'warn');
             setTimeout(() => {

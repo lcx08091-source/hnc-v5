@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC v5.3.0-rc5 · flashable artifact sanity checker
+# HNC v5.3.0-rc14 · flashable artifact sanity checker
 # Detect GitHub Actions outer ZIP wrappers and stale hnc_httpd binaries before install.
 
 set +e
@@ -24,7 +24,7 @@ EOF_USAGE
 [ -f "$ZIP" ] || { fail "artifact not found: $ZIP"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 command -v unzip >/dev/null 2>&1 || { fail "unzip not found; cannot inspect artifact"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 
-say "HNC artifact sanity check v5.3.0-rc5"
+say "HNC artifact sanity check v5.3.0-rc14"
 say "artifact=$ZIP"
 unzip -t "$ZIP" >"$TMP.unzip_test" 2>&1
 [ $? -eq 0 ] && ok "zip integrity OK" || { fail "zip integrity failed"; cat "$TMP.unzip_test"; }
@@ -79,7 +79,11 @@ if grep -x 'daemon/hnc_httpd/hnc_httpd' "$TMP.entries" >/dev/null; then
       case "$VER" in v5.3.*)
         grep -F '/api/sqm' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains /api/sqm" || fail "hnc_httpd missing /api/sqm symbol/string"
         grep -F 'apiSQMStatus' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains apiSQMStatus" || fail "hnc_httpd missing apiSQMStatus"
-        grep -F 'actionSQMSet' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains actionSQMSet" || fail "hnc_httpd missing actionSQMSet" ;;
+        grep -F 'actionSQMSet' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains actionSQMSet" || fail "hnc_httpd missing actionSQMSet"
+        grep -F '/api/dpi_state' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains /api/dpi_state" || fail "hnc_httpd missing /api/dpi_state"
+        grep -F '/api/dpi_probe' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains /api/dpi_probe" || fail "hnc_httpd missing /api/dpi_probe"
+        grep -F 'apiDPIState' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains apiDPIState" || fail "hnc_httpd missing apiDPIState"
+        grep -F 'apiDPIProbe' "$TMP.httpd.strings" >/dev/null && ok "hnc_httpd contains apiDPIProbe" || fail "hnc_httpd missing apiDPIProbe" ;;
       esac
     else warn "strings not available; skipped hnc_httpd version/API symbol checks"; fi
   else fail "hnc_httpd extraction failed or produced empty file"; fi
