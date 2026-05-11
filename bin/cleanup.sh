@@ -18,13 +18,22 @@ log() { echo "[$(TZ=Asia/Shanghai date '+%H:%M:%S')] [CLEANUP] $1" >> $LOG; }
 # 旧行为等价于 MODE=all, 向后兼容: 无参 = all
 MODE="${1:-all}"
 case "$MODE" in
-    rules|all|restart) ;;
+    rules|all|restart|safe_release) ;;
     *)
-        echo "cleanup.sh: unknown mode '$MODE' (rules|all|restart)" >&2
+        echo "cleanup.sh: unknown mode '$MODE' (rules|all|restart|safe_release)" >&2
         exit 2
         ;;
 esac
 log "=== Cleanup started (mode=$MODE) ==="
+
+# v5.3.0-rc13 safety gate:
+# Historical WebUI/old hnc_httpd calls cleanup.sh all for the visible
+# “释放所有资源” button.  That killed hnc_httpd/watchdog and made re-entry fail.
+# Treat bare all as safe restart unless a real uninstall/full-stop path opts in.
+if [ "$MODE" = "all" ] && [ "${HNC_ALLOW_FULL_STOP:-0}" != "1" ] && [ "${HNC_UNINSTALL:-0}" != "1" ]; then
+    MODE=restart
+    log "all mode without HNC_ALLOW_FULL_STOP/HNC_UNINSTALL: using safe restart"
+fi
 
 # rc3.1.13.2 修 P1 (review §2): rules mode 下不杀 watchdog,
 # 60s 后 watchdog full_restore 把规则全恢复 = 用户清规则白清.
@@ -35,6 +44,11 @@ if [ "$MODE" = "rules" ]; then
     mkdir -p "$RUN" 2>/dev/null
     date +%s > "$RUN/cleanup_rules.marker" 2>/dev/null
     log "rules mode: set restore-suppress marker (600s)"
+fi
+
+if [ "$MODE" = "safe_release" ]; then
+    MODE=restart
+    log "safe_release alias: cleanup resources then respawn service.sh"
 fi
 
 if [ "$MODE" = "all" ] || [ "$MODE" = "restart" ]; then
@@ -55,7 +69,7 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "restart" ]; then
 # 仍活的升级 SIGKILL. SIGKILL 内核直接回收, hotspotd 没机会跑 mdns_worker stop,
 # 但反正我们要 cleanup 全清, 子进程清理路径跑完跑半都无关紧要.
 PIDS_TO_WAIT=""
-for pidfile in watchdog hotspotd detect api hotspot netmon httpd; do
+for pidfile in watchdog dpid.monitor dpid.child dpid hotspotd detect api hotspot netmon httpd; do
     PID=$(cat "$RUN/${pidfile}.pid" 2>/dev/null)
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
         kill "$PID" 2>/dev/null
@@ -146,7 +160,7 @@ fi
 log "iptables cleanup done"
 
 # ── 4. 清理临时文件（保留 data/ 目录，用户配置不删）────────
-rm -f "$RUN"/*.pid "$RUN"/netevt_* "$RUN"/arp_hash "$RUN"/hotspotd.sock 2>/dev/null
+rm -f "$RUN"/*.pid "$RUN"/netevt_* "$RUN"/arp_hash "$RUN"/hotspotd.sock "$RUN"/dpid.netlink.event 2>/dev/null
 rm -f "$HNC_DIR/run/hostname_cache" 2>/dev/null  # 缓存可以删
 rm -rf "$HNC_DIR/run/v6" 2>/dev/null              # v3.4.0：v6_sync 快照目录
 # v3.5.0 P2-5: 清理 device_detect.sh 留下的临时文件(进程异常退出后残留)
@@ -196,4 +210,8 @@ if [ "$MODE" = "restart" ]; then
 fi
 
 log "=== Cleanup complete ==="
-echo "HNC: all resources released"
+if [ "$MODE" = "restart" ]; then
+    echo "HNC: resources released and service restart scheduled"
+else
+    echo "HNC: all resources released"
+fi

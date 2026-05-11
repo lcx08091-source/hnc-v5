@@ -412,6 +412,53 @@ try_spawn_lock() {
     return 1
 }
 
+# ── v5.3.0-rc12 hnc_dpid 守护 (新增) ─────────────────────────
+# dpid 自带 crash_loop 检测 (60s 内 3 次崩 = 进 crash_loop 模式), 所以
+# 这里只做"PID 文件失效"重拉, 不做激进重启. crash_loop 模式下 daemon
+# 自己 idle 不退出, PID 仍活, 这里不会误重拉.
+#
+# 不像 hotspotd, dpid 是纯观察 daemon, 死了不影响限速/网络功能,
+# 用户也不会立刻察觉. 所以重启策略很保守: 仅在 PID 文件不存在或
+# 进程死了的情况下尝试一次重拉, 失败不重试.
+DPID_LAST_RESTART=0
+ensure_dpid_running() {
+    local dpid_bin="$HNC_DIR/bin/hnc_dpid"
+    local dpid_guard="$HNC_DIR/bin/hnc_dpid_guard.sh"
+    local dpid_launcher="$dpid_bin"
+    local dpid_pid_file="$RUN/dpid.pid"
+
+    [ ! -x "$dpid_bin" ] && return 0   # binary 不存在, 视为禁用了 DPI
+    [ -x "$dpid_guard" ] && dpid_launcher="$dpid_guard"
+
+    # 进程还活就 OK
+    if [ -f "$dpid_pid_file" ]; then
+        local dp; dp=$(cat "$dpid_pid_file" 2>/dev/null)
+        if [ -n "$dp" ] && kill -0 "$dp" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # 冷却防止"反复死反复拉"
+    local now; now=$(date +%s 2>/dev/null) || now=0
+    local since=$((now - DPID_LAST_RESTART))
+    if [ "$DPID_LAST_RESTART" -gt 0 ] && [ "$since" -lt 30 ]; then
+        return 0
+    fi
+
+    log "dpid: process gone, relaunching launcher=$dpid_launcher"
+    rm -f "$dpid_pid_file" 2>/dev/null
+    if [ "$dpid_launcher" = "$dpid_guard" ]; then
+        nohup "$dpid_launcher" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+    else
+        nohup "$dpid_launcher" -config "$HNC_DIR/etc/dpi_config.json" \
+            >> "$HNC_DIR/logs/dpid.log" 2>&1 &
+    fi
+    echo $! > "$dpid_pid_file"
+    DPID_LAST_RESTART=$now
+    log "dpid: relaunched (PID: $(cat "$dpid_pid_file" 2>/dev/null))"
+    return 0
+}
+
 check_services() {
     local restarted=0
     local now; now=$(date +%s 2>/dev/null) || now=0
@@ -1087,6 +1134,9 @@ while true; do
 
     # 子服务存活检查(hotspotd / device detect, 跟状态无关)
     check_services
+
+    # v5.3.0-rc12: dpid 存活检查
+    ensure_dpid_running
 
     # v4.0 Patch 1.6 稳定性卫生
     heartbeat

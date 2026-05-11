@@ -5,7 +5,7 @@
 HNC=/data/local/hnc
 
 # 清 tc / iptables / 停 daemon
-[ -x "$HNC/bin/cleanup.sh" ] && sh "$HNC/bin/cleanup.sh" all 2>/dev/null
+[ -x "$HNC/bin/cleanup.sh" ] && HNC_UNINSTALL=1 HNC_ALLOW_FULL_STOP=1 sh "$HNC/bin/cleanup.sh" all 2>/dev/null
 
 # 留下一个 tombstone (用户重装时不会误导)
 mkdir -p /data/local/hnc_backup

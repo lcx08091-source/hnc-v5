@@ -2365,10 +2365,10 @@ body.kb-open .container {
             <div class="go-row clickable" data-action="stop-all">
               <div class="go-icon red"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6"/></svg></div>
               <div class="go-info">
-                <div class="go-label">释放所有资源</div>
-                <div class="go-desc">停后台进程并清 tc/iptables 规则</div>
+                <div class="go-label">释放并重启资源</div>
+                <div class="go-desc">危险操作：清 tc/iptables 后自动拉起后端</div>
               </div>
-              <span class="go-action-hint danger">释放</span>
+              <span class="go-action-hint danger">重启</span>
             </div>
           </div>
         </div>
@@ -2498,6 +2498,168 @@ body.kb-open .container {
     <pre class="log-box glass" id="log-box">点击刷新按钮或切换日志文件以加载内容</pre>
   </div>
 </div>
+
+<!-- ═══ DPI (v5.3.0-rc12: 被动 DPI 元数据观察) ═══ -->
+<div id="page-dpi" class="page">
+  <div class="container">
+
+    <!-- 状态卡: dpid 模式 + 接口 + offload 提示 -->
+    <div class="dpi-status-card glass-elevated" id="dpi-status-card">
+      <div class="dpi-status-head">
+        <div class="dpi-status-title">DPI 观察状态</div>
+        <div class="dpi-mode-badge" id="dpi-mode-badge">检测中…</div>
+      </div>
+      <div class="dpi-status-rows" id="dpi-status-rows">
+        <div class="dpi-status-row">
+          <span class="dpi-status-label">接口</span>
+          <span class="dpi-status-val" id="dpi-iface">—</span>
+        </div>
+        <div class="dpi-status-row">
+          <span class="dpi-status-label">运行时长</span>
+          <span class="dpi-status-val" id="dpi-uptime">—</span>
+        </div>
+        <div class="dpi-status-row">
+          <span class="dpi-status-label">版本</span>
+          <span class="dpi-status-val" id="dpi-version">—</span>
+        </div>
+      </div>
+      <div class="dpi-status-detail" id="dpi-status-detail" style="display:none"></div>
+    </div>
+
+    <!-- 4 计数卡 (sniff 统计) -->
+    <div class="counter-grid">
+      <div class="counter-card glass">
+        <div class="counter-num" id="dpi-cnt-pkts">0</div>
+        <div class="counter-label">已抓包</div>
+      </div>
+      <div class="counter-card glass">
+        <div class="counter-num" id="dpi-cnt-dns">0</div>
+        <div class="counter-label">DNS 事件</div>
+      </div>
+      <div class="counter-card glass">
+        <div class="counter-num" id="dpi-cnt-tls">0</div>
+        <div class="counter-label">TLS 事件</div>
+      </div>
+      <div class="counter-card glass">
+        <div class="counter-num" id="dpi-cnt-drops">0</div>
+        <div class="counter-label">内核丢包</div>
+      </div>
+    </div>
+
+    <!-- 探测能力 + 解析能力 -->
+    <div class="sec-title">能力探测</div>
+    <div class="setting-group glass-elevated" id="dpi-cap-group">
+      <div class="set-row">
+        <div class="set-icon blue"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <div class="set-body">
+          <div class="set-label">AF_PACKET 可用</div>
+          <div class="set-sub" id="dpi-cap-afpacket">—</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon blue"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+        <div class="set-body">
+          <div class="set-label">热点接口</div>
+          <div class="set-sub" id="dpi-cap-iface">—</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon orange"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="set-body">
+          <div class="set-label">BPF Tether Offload</div>
+          <div class="set-sub" id="dpi-cap-offload">—</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon green"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></div>
+        <div class="set-body">
+          <div class="set-label">Conntrack 可读</div>
+          <div class="set-sub" id="dpi-cap-conntrack">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 解析事件率 + 错误率 -->
+    <div class="sec-title">事件流</div>
+    <div class="setting-group glass-elevated">
+      <div class="dpi-flow-stats">
+        <div class="dpi-flow-row">
+          <div class="dpi-flow-label">忽略包 <span class="dpi-flow-hint">(不解析就丢掉)</span></div>
+          <div class="dpi-flow-val" id="dpi-cnt-ign">0</div>
+        </div>
+        <div class="dpi-flow-row">
+          <div class="dpi-flow-label">解析错误 <span class="dpi-flow-hint">(包格式异常)</span></div>
+          <div class="dpi-flow-val" id="dpi-cnt-perr">0</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 说明 + 配置入口 -->
+    <div class="sec-title">关于 DPI 模块</div>
+    <div class="setting-group glass-elevated">
+      <div class="dpi-about">
+        <p>HNC DPI (<code>hnc_dpid</code>) 是被动的元数据观察 daemon, 用 AF_PACKET + cBPF 抓 <b>DNS</b> 和 <b>TLS ClientHello</b> 元数据, 不做任何主动操作 (不 NFQUEUE、不 DNS 劫持、不改 iptables/tc).</p>
+        <p>当前 rc1.2-fixed 阶段只统计事件计数, 不输出每流详情. 后续 rc2+ 会扩展到流表 + 应用识别 + 规则匹配.</p>
+        <p>关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══ DPI 页面专属样式 ═══ -->
+<style>
+  .dpi-status-card { padding: 18px; margin-bottom: 14px; }
+  .dpi-status-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .dpi-status-title { font-size: 15px; font-weight: 700; }
+  .dpi-mode-badge {
+    font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
+    background: rgba(150,150,150,0.18); color: var(--text-2);
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  .dpi-mode-badge.mode-ok       { background: rgba(52,199,89,0.18); color: #34c759; border-color: rgba(52,199,89,0.32); }
+  .dpi-mode-badge.mode-blind    { background: rgba(255,149,0,0.18); color: #ff9500; border-color: rgba(255,149,0,0.32); }
+  .dpi-mode-badge.mode-waiting  { background: rgba(255,149,0,0.14); color: #ff9500; border-color: rgba(255,149,0,0.28); }
+  .dpi-mode-badge.mode-rebinding{ background: rgba(0,122,255,0.14); color: #007aff; border-color: rgba(0,122,255,0.28); }
+  .dpi-mode-badge.mode-disabled { background: rgba(150,150,150,0.18); color: var(--text-2); }
+  .dpi-mode-badge.mode-crash    { background: rgba(255,59,48,0.20); color: #ff3b30; border-color: rgba(255,59,48,0.40); }
+  .dpi-mode-badge.mode-unavail  { background: rgba(255,59,48,0.20); color: #ff3b30; border-color: rgba(255,59,48,0.40); }
+  .dpi-status-rows { display: grid; gap: 6px; }
+  .dpi-status-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    font-size: 13px;
+  }
+  .dpi-status-row:last-child { border-bottom: 0; }
+  .dpi-status-label { color: var(--text-2); }
+  .dpi-status-val   { font-weight: 600; font-feature-settings: "tnum"; }
+  .dpi-status-detail {
+    margin-top: 12px; padding: 10px 12px;
+    background: rgba(255,149,0,0.10);
+    border: 1px solid rgba(255,149,0,0.25);
+    border-radius: 10px;
+    font-size: 12px; color: rgba(255,200,100,0.95);
+    line-height: 1.5;
+  }
+  .dpi-flow-stats { display: grid; gap: 10px; padding: 4px 0; }
+  .dpi-flow-row { display: flex; align-items: baseline; justify-content: space-between; }
+  .dpi-flow-label { font-size: 13px; }
+  .dpi-flow-hint { font-size: 11px; color: var(--text-3); margin-left: 6px; }
+  .dpi-flow-val { font-size: 18px; font-weight: 700; font-feature-settings: "tnum"; }
+  .dpi-about p { font-size: 13px; line-height: 1.7; color: var(--text-2); margin: 0 0 10px; }
+  .dpi-about p:last-child { margin-bottom: 0; }
+  .dpi-about code {
+    font-family: SF Mono, Menlo, Consolas, monospace;
+    font-size: 12px; padding: 1px 6px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 6px;
+  }
+  .dpi-cap-yes { color: var(--sys-green, #34c759); font-weight: 600; }
+  .dpi-cap-no  { color: var(--sys-red, #ff3b30); font-weight: 600; }
+  .dpi-cap-warn { color: var(--sys-orange, #ff9500); font-weight: 600; }
+</style>
 
 <!-- ═══ SETTINGS (new) ═══ -->
 <div id="page-settings" class="page">
@@ -2876,6 +3038,14 @@ body.kb-open .container {
       <polyline points="14 2 14 8 20 8"/>
     </svg>
     <span>日志</span>
+  </div>
+  <div class="nav-item" data-page="dpi">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/>
+      <path d="m21 21-4.3-4.3"/>
+      <path d="M11 8v3l2 1"/>
+    </svg>
+    <span>DPI</span>
   </div>
   <div class="nav-item" data-page="settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -3657,6 +3827,12 @@ body.kb-open .container {
   async function stopAllServicesBackend() { await apiAction('cleanup_all'); return true; }
   async function manualRefreshBackend()   { await apiAction('refresh'); return true; }
   async function restartServiceBackend()  { await apiAction('restart_service'); return true; }
+  async function forceStartServicesBackend() {
+    // rc13: backend 已死亡时，/api/action 也不可用；直接走 KSU/SukiSU bridge 拉起 service.sh。
+    const script = 'H=/data/local/hnc; mkdir -p "$H/logs" "$H/run"; MOD=$(cat "$H/run/service.path" 2>/dev/null); [ -z "$MOD" ] && MOD=/data/adb/modules/hotspot_network_control; if [ -f "$MOD/service.sh" ]; then nohup sh "$MOD/service.sh" >> "$H/logs/service.log" 2>&1 & echo "started $MOD/service.sh"; else echo "service.sh not found: $MOD" >&2; exit 2; fi';
+    await kexec('sh -c ' + sq(script));
+    return true;
+  }
 
   /* 白名单 / 鉴权 toggle · 修 Bug 2 (初始回读由 fetchConfig 做) */
   async function setWhitelistBackend(enabled)  { await apiAction('whitelist_set', { enabled: String(!!enabled) }); return true; }
@@ -3860,6 +4036,148 @@ body.kb-open .container {
     const cap = await readLocal();
     await readLocalQosHints();
     return cap;
+  }
+
+  // ─── DPI (v5.3.0-rc12: passive DPI observability) ─────────────────
+  let dpiPollTimer = null;
+  function startDPIPolling() {
+    stopDPIPolling();
+    dpiPollTimer = setInterval(fetchDPI, 3000);
+  }
+  function stopDPIPolling() {
+    if (dpiPollTimer) { clearInterval(dpiPollTimer); dpiPollTimer = null; }
+  }
+  async function fetchDPI() {
+    let stateResp = null, probeResp = null;
+    try { stateResp = await apiGet('/api/dpi_state'); } catch (e) { stateResp = { available: false, error: String(e && e.message || e) }; }
+    try { probeResp = await apiGet('/api/dpi_probe'); } catch (e) { probeResp = { available: false, error: String(e && e.message || e) }; }
+    renderDPI(stateResp, probeResp);
+  }
+  function renderDPI(stateResp, probeResp) {
+    const badge = $('#dpi-mode-badge');
+    const detail = $('#dpi-status-detail');
+    const ifaceEl = $('#dpi-iface');
+    const upEl = $('#dpi-uptime');
+    const verEl = $('#dpi-version');
+
+    // 状态卡: 根据 stateResp 决定 mode badge
+    let mode = 'unavail';
+    let badgeMode = 'unavail';
+    let modeLabel = 'dpid 不可达';
+    let detailText = '';
+
+    if (stateResp && stateResp.available && stateResp.state) {
+      const st = stateResp.state || {};
+      mode = String(st.mode || 'unavail');
+      badgeMode = (mode === 'crash_loop' ? 'crash' : mode);
+      switch (mode) {
+        case 'ok':
+          modeLabel = '正常 · 抓包中';
+          detailText = '';
+          break;
+        case 'blind': {
+          const reason = String(st.blind_reason || '未知 — 可能 AF_PACKET 不可用或未探到热点接口');
+          if (/waiting for hotspot interface|interface .* to be UP|network is down/i.test(reason)) {
+            badgeMode = 'waiting';
+            modeLabel = '等待接口就绪';
+            detailText = '热点接口正在切换或刚被系统重建，DPI 会自动快速重试/事件重绑。原因: ' + reason;
+          } else if (/rebind|rebinding|iface changed/i.test(reason)) {
+            badgeMode = 'rebinding';
+            modeLabel = '重绑中';
+            detailText = '检测到热点接口变化，正在重新打开抓包。原因: ' + reason;
+          } else {
+            modeLabel = '盲模式 · 未抓包';
+            detailText = '原因: ' + reason;
+          }
+          break;
+        }
+        case 'disabled':
+          modeLabel = '已禁用';
+          detailText = '配置 disable_capture=true · 编辑 /data/local/hnc/etc/dpi_config.json 改回 false 后重启 watchdog 可恢复';
+          break;
+        case 'crash_loop':
+          modeLabel = '崩溃循环';
+          detailText = '60 秒内崩溃 ≥3 次, dpid 自我保护进入 idle · 清理 $HNC_DIR/run/dpid.crashflag 后重启可恢复';
+          break;
+        default:
+          modeLabel = '未知模式: ' + mode;
+      }
+      ifaceEl.textContent = st.interface || '—';
+      upEl.textContent = formatUptime(st.uptime_s);
+      verEl.textContent = st.version || '—';
+
+      // 计数卡
+      const stats = st.stats || {};
+      $('#dpi-cnt-pkts').textContent = fmtNum(stats.packets);
+      $('#dpi-cnt-dns').textContent = fmtNum(stats.dns_events);
+      $('#dpi-cnt-tls').textContent = fmtNum(stats.tls_events);
+      $('#dpi-cnt-drops').textContent = fmtNum(stats.kernel_drops);
+      $('#dpi-cnt-ign').textContent = fmtNum(stats.ignored_packets);
+      $('#dpi-cnt-perr').textContent = fmtNum(stats.parse_errors);
+    } else {
+      modeLabel = '加载失败';
+      const errMsg = (stateResp && stateResp.error) || '请求超时';
+      detailText = errMsg + ' · 检查 hnc_dpid 是否在运行 (logs/dpid.log)';
+      ifaceEl.textContent = '—';
+      upEl.textContent = '—';
+      verEl.textContent = '—';
+      $('#dpi-cnt-pkts').textContent = '—';
+      $('#dpi-cnt-dns').textContent = '—';
+      $('#dpi-cnt-tls').textContent = '—';
+      $('#dpi-cnt-drops').textContent = '—';
+      $('#dpi-cnt-ign').textContent = '—';
+      $('#dpi-cnt-perr').textContent = '—';
+    }
+    // 应用 badge class
+    badge.className = 'dpi-mode-badge mode-' + (badgeMode || (mode === 'crash_loop' ? 'crash' : mode));
+    badge.textContent = modeLabel;
+    if (detailText) {
+      detail.style.display = '';
+      detail.textContent = detailText;
+    } else {
+      detail.style.display = 'none';
+    }
+
+    // 能力探测卡 (来自 probe)
+    if (probeResp && probeResp.available && probeResp.probe) {
+      const pr = probeResp.probe || {};
+      setDpiCap('#dpi-cap-afpacket',
+        pr.af_packet_available, pr.af_packet_available ? '可用' : ('不可用 — ' + (pr.af_packet_error || '未知错误')));
+      setDpiCap('#dpi-cap-iface',
+        !!pr.ap_iface, pr.ap_iface ? (pr.ap_iface + ' (来源: ' + (pr.ap_iface_source || 'auto') + ')') : '未探到');
+      setDpiCap('#dpi-cap-offload',
+        !pr.offload_hint, pr.offload_hint ? ('启用 — ' + ((pr.offload_evidence || []).join('; ') || '部分流量被内核加速放行, DPI 可能漏抓')) : '未启用');
+      setDpiCap('#dpi-cap-conntrack',
+        pr.conntrack_readable, pr.conntrack_readable ? ('可读 (' + (pr.conntrack_path || '/proc/net/nf_conntrack') + ')') : '不可读');
+    } else {
+      $('#dpi-cap-afpacket').textContent = '—';
+      $('#dpi-cap-iface').textContent = '—';
+      $('#dpi-cap-offload').textContent = '—';
+      $('#dpi-cap-conntrack').textContent = '—';
+    }
+  }
+  function setDpiCap(sel, good, text) {
+    const el = $(sel);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'set-sub ' + (good === true ? 'dpi-cap-yes' : good === false ? 'dpi-cap-no' : 'dpi-cap-warn');
+  }
+  function fmtNum(v) {
+    if (v === null || v === undefined) return '—';
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  function formatUptime(s) {
+    if (s === null || s === undefined) return '—';
+    s = Number(s);
+    if (!isFinite(s) || s < 0) return '—';
+    if (s < 60) return s + ' 秒';
+    if (s < 3600) return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
+    if (s < 86400) return Math.floor(s / 3600) + ' 时 ' + Math.floor((s % 3600) / 60) + ' 分';
+    return Math.floor(s / 86400) + ' 天 ' + Math.floor((s % 86400) / 3600) + ' 时';
   }
 
 
@@ -4891,6 +5209,9 @@ body.kb-open .container {
         reloadCurrentLog();
       } else if (name === 'settings') {
         refreshLocalDiagnostics();
+      } else if (name === 'dpi') {
+        fetchDPI();
+        startDPIPolling();
       }
     }, 180);
     $$('.nav-item').forEach(n => n.classList.remove('active'));
@@ -4899,6 +5220,8 @@ body.kb-open .container {
     // 轮询省电: 离开设备页就停, 回来再起 (tickPoll 本身也会 bail, 这里提前省事件开销)
     if (name === 'devices') startPolling();
     else stopPolling();
+    // DPI 页面也有自己的轮询, 离开 DPI 页要停
+    if (name !== 'dpi') stopDPIPolling();
   }
   function moveChartTabInd(target) {
     const wrap = target.closest('.chart-tabs');
@@ -5787,6 +6110,30 @@ body.kb-open .container {
       return;
     }
 
+    /* v5.3.0-rc13 · backend 死亡时直接走 KSU bridge 拉起 service.sh */
+    if (e.target.closest('[data-action="bridge-start-service"]')) {
+      e.preventDefault();
+      showBridgeStatus('warn', '正在重新拉起 HNC 服务', '正在通过 KernelSU/SukiSU bridge 执行 service.sh。完成后会自动重试连接。');
+      forceStartServicesBackend().then(() => {
+        toast('service.sh 已触发，等待后端启动…', 'warn');
+        setTimeout(() => {
+          __hncDisableBridgeTransport();
+          __hncAutoBridgeAttempted = false;
+          apiGet('/api/health').then(() => {
+            hideBridgeStatus();
+            toast('后端已恢复', 'ok');
+            return requestForceRefresh();
+          }).catch(err => {
+            showBridgeStatus('err', '服务已拉起但后端仍未就绪', '请再等 5-10 秒后点“重试连接”。错误：' + ((err && err.message) || err || 'unknown'));
+          });
+        }, 8000);
+      }).catch(err => {
+        showBridgeStatus('err', '重新拉起服务失败', 'KSU/SukiSU bridge 执行 service.sh 失败：' + ((err && err.message) || err || 'unknown'));
+        toast('拉起失败: ' + ((err && err.message) || err), 'err');
+      });
+      return;
+    }
+
     /* v5.2-rc1.10 · advanced: 用户显式确认后立即使用 KSU bridge transport */
     if (e.target.closest('[data-action="bridge-force-retry"]')) {
       e.preventDefault();
@@ -5918,25 +6265,23 @@ body.kb-open .container {
     if (e.target.closest('[data-action="stop-all"]')) {
       confirmModal({
         icon: '⏹', iconClass: 'danger',
-        title: '释放所有资源?',
-        // rc3.1 修 N-18: rc3 之后 cleanup_all 走 runBinDetached 会杀 httpd,
-        // 原文案"WebUI 仍可访问"误导. 实际释放后 WebUI 会彻底断.
-        message: '将停止所有 HNC 进程 (包括 WebUI 后端 httpd) 并清除 tc/iptables 规则。<br>释放后 WebUI 不再可用, 需重启手机或 KSU 里 disable/enable 模块才能恢复',
-        okText: '释放', okKind: 'btn-danger',
+        title: '释放并重启资源?',
+        // v5.3.0-rc13: 用户入口不再执行纯 cleanup all，避免把 httpd/watchdog 杀死后无法重进。
+        message: '将停止 HNC 子进程并清除 tc/iptables 规则，然后自动重新拉起 service.sh。<br><b>这是危险维护操作</b>，日常清限速请用“清空所有规则”。',
+        okText: '继续', okKind: 'btn-danger',
         onOk: () => {
+          const typed = (prompt('危险操作确认：请输入 RELEASE 后继续') || '').trim();
+          if (typed !== 'RELEASE') { toast('已取消释放资源', 'warn'); return; }
           stopAllServicesBackend().then(() => {
-            // runBinDetached 异步 fork cleanup.sh, httpd 5-10s 后真被杀
-            toast('已触发释放 · WebUI 将在 10 秒内离线', 'warn');
-            // 禁用所有按钮防止用户误操作
-            document.body.style.pointerEvents = 'none';
+            toast('已触发释放并重启 · 后端约 8-15 秒恢复', 'warn');
             setTimeout(() => {
-              document.body.innerHTML =
-                '<div style="padding:40px;text-align:center;color:#666;font-family:-apple-system,sans-serif">' +
-                '<div style="font-size:48px;margin-bottom:16px">⏹</div>' +
-                '<div style="font-size:17px;margin-bottom:8px">HNC 已释放</div>' +
-                '<div style="font-size:13px;color:#999">从 KernelSU 管理器重新打开模块即可恢复</div>' +
-                '</div>';
-            }, 8000);
+              apiGet('/api/health').then(() => {
+                toast('HNC 后端已恢复，正在刷新…', 'ok');
+                return requestForceRefresh();
+              }).catch(err => {
+                showBridgeStatus('err', 'HNC 后端暂未恢复', '已执行释放并重启。请稍等后点“重试连接”或“重新拉起服务”。错误：' + ((err && err.message) || err || 'unknown'));
+              });
+            }, 10000);
           }).catch(e => toast('失败: ' + e.message, 'err'));
         }
       });
@@ -6505,6 +6850,7 @@ body.kb-open .container {
           '<div class="bridge-status-body"><div class="bridge-status-title"></div>' +
           '<div class="bridge-status-msg"></div>' +
           '<div class="bridge-status-actions"><button type="button" data-action="bridge-retry">重试连接</button>' +
+          '<button type="button" data-action="bridge-start-service">重新拉起服务</button>' +
           '<button type="button" data-action="manual-refresh">刷新设备</button>' +
           '<button type="button" data-action="bridge-force-retry">强制桥接</button>' +
           '<button type="button" data-action="bridge-reset-mode">重置连接方式</button></div></div>';
@@ -6573,7 +6919,7 @@ body.kb-open .container {
       __hncForgetBridgeTransport();
       __hncDisableBridgeTransport();
       showBridgeStatus('err', '自动 bridge 失败',
-        '已停止自动尝试，页面保持可操作。你可以点“重试连接”再试一次，或点“强制桥接”。错误：' + ((e && e.message) || e || 'unknown'));
+        '已停止自动尝试，页面保持可操作。如果刚点过“释放资源”，请先点“重新拉起服务”；也可以点“重试连接”或“强制桥接”。错误：' + ((e && e.message) || e || 'unknown'));
       toast('自动 bridge 失败', 'err');
       return false;
     }

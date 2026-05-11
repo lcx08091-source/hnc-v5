@@ -1,3 +1,11 @@
+
+## v5.3.0-rc13
+
+- WebUI「释放所有资源」改为安全释放并自动重启，避免杀死 hnc_httpd 后无法重进。
+- 新增 hnc_dpid_guard.sh：接口未就绪时快速等待，netlink 事件触发重绑，network-is-down 自动恢复。
+- bridge 失败卡片新增「重新拉起服务」按钮。
+- 新增 rc13_release_resource_selfcheck.sh 自检脚本。
+
 # v5.3.0-rc1
 
 **发布日期**: 2026-05-06  

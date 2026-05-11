@@ -244,3 +244,48 @@ if [ "$HOTSPOT_AUTO" = "true" ]; then
 else
     log "hotspot_auto=false, skipping autostart"
 fi
+
+# ─── hnc_dpid (DPI 被动观察 daemon, v5.3.0-rc12 新增) ────────────
+# hnc_dpid 是被动元数据捕获 daemon: AF_PACKET socket + cBPF filter 抓
+# DNS (53) 和 TLS ClientHello (443), 解析 SNI/ALPN/DNS query name,
+# 输出 dpi_state.json 给 WebUI 消费.
+#
+# 不做任何主动操作: 不 NFQUEUE 不 DNS 劫持 不改 iptables/tc.
+# 故意设计成 0 副作用 — 即使它崩了也只影响 WebUI 的 DPI 页面.
+#
+# disable_capture=true 时它进 disabled 模式不抓包, 仅写空 state.
+# AF_PACKET 不可用或没探到热点接口时进 blind 模式.
+# 进程 60s 内崩 3 次进 crash_loop 模式 — daemon 不再自动重启,
+# 留 dpi_state.json mode=crash_loop, 用户手动清 crashflag 才恢复.
+DPID_BIN="$HNC_DIR/bin/hnc_dpid"
+DPID_GUARD="$HNC_DIR/bin/hnc_dpid_guard.sh"
+DPID_LAUNCHER="$DPID_BIN"
+DPID_CONFIG="$HNC_DIR/etc/dpi_config.json"
+DPID_PID="$RUN/dpid.pid"
+
+if [ -x "$DPID_GUARD" ]; then
+    DPID_LAUNCHER="$DPID_GUARD"
+fi
+
+if [ ! -x "$DPID_BIN" ]; then
+    log "WARN: hnc_dpid binary missing at $DPID_BIN, DPI 功能不可用"
+else
+    # 软迁: 把模块内默认 dpi_config.json 复制到 etc/ (如果用户没有自定义)
+    mkdir -p "$HNC_DIR/etc" 2>/dev/null || true
+    if [ ! -f "$DPID_CONFIG" ] && [ -f "$MODDIR/data/dpi_config.json" ]; then
+        cp -f "$MODDIR/data/dpi_config.json" "$DPID_CONFIG" 2>/dev/null
+        chmod 644 "$DPID_CONFIG" 2>/dev/null
+        log "dpid: installed default dpi_config.json to $DPID_CONFIG"
+    fi
+
+    # rc13: 优先启动 dpid guard。guard 会在热点接口 DOWN/重建时
+    # 快速等待 + netlink 事件驱动重绑，避免 rc12 的 network-is-down 盲模式卡住。
+    log "starting hnc_dpid launcher: $DPID_LAUNCHER"
+    if [ "$DPID_LAUNCHER" = "$DPID_GUARD" ]; then
+        nohup "$DPID_LAUNCHER" >> "$HNC_DIR/logs/dpid_guard.log" 2>&1 &
+    else
+        nohup "$DPID_LAUNCHER" -config "$DPID_CONFIG" >> "$HNC_DIR/logs/dpid.log" 2>&1 &
+    fi
+    echo $! > "$DPID_PID"
+    log "hnc_dpid launcher started (PID: $(cat $DPID_PID))"
+fi

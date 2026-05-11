@@ -474,12 +474,14 @@ func actionCleanupRules(hncDir string) actionResp {
 }
 
 func actionCleanupAll(hncDir string) actionResp {
-	// rc3 修 N-15: cleanup all/restart 会杀 httpd 自己, 响应被吞.
-	// 异步 fork: setsid nohup 脱离父进程, 让 Go 立即返回响应, 再由 shell 执行清理.
-	if err := runBinDetached(hncDir, "cleanup.sh", "all"); err != nil {
+	// v5.3.0-rc13: WebUI 的“释放所有资源”不能再执行纯 all。
+	// 纯 all 会杀掉 hnc_httpd/watchdog/hotspotd，退出重进后前端仍在但后端死亡。
+	// 对用户入口改成 safe_release/restart：先清 tc/iptables + 停子进程，再由
+	// cleanup.sh 直接 fork service.sh 拉起后端。卸载/禁用模块仍可手动调用 cleanup.sh all。
+	if err := runBinDetached(hncDir, "cleanup.sh", "safe_release"); err != nil {
 		return actionResp{OK: false, Error: "spawn failed", Detail: err.Error()}
 	}
-	return actionResp{OK: true, Detail: "cleanup scheduled · 30s 内 watchdog 会自愈"}
+	return actionResp{OK: true, Detail: "safe release scheduled · service will be restarted automatically"}
 }
 
 func actionRestartService(hncDir string) actionResp {
