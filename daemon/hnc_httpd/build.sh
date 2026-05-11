@@ -38,7 +38,7 @@ go build -ldflags="-s -w -X main.version=$VERSION" -o hnc_httpd .
 echo "OK: $(ls -la hnc_httpd)"
 file hnc_httpd
 
-# v5.3.0-rc16: hard fail CI if the rebuilt backend loses DPI API routes/actions.
+# v5.3.0-rc17: hard fail CI if the rebuilt backend loses DPI API routes/actions.
 # This prevents GitHub Actions from publishing a zip whose WebUI calls
 # /api/dpi_state or /api/dpi_probe but the freshly-built hnc_httpd returns 404.
 for sym in \

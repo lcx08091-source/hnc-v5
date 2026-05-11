@@ -1,3 +1,11 @@
+## v5.3.0-rc17
+
+- DPI 页面等待接口/重绑中时自动进入 1 秒快速刷新，恢复正常后降回低频刷新。
+- 新增 DPI 进程诊断卡，区分主实例与子 shell，避免把 guard/watchdog 子进程误判成重复失控。
+- 新增 `bin/rc17_process_health.sh`，输出 hnc_httpd / hnc_dpid / hotspotd / watchdog / dpid_guard 健康 JSON。
+- service/watchdog 加强 hotspotd 单实例整理，发现重复 C daemon 时保留 pidfile 指向实例并清理多余进程。
+- 释放并重启资源后延长快速刷新窗口，减少后端恢复但页面慢半拍的问题。
+
 ## v5.3.0-rc16
 
 - DPI 页面新增“刷新状态 / 重新绑定 DPI”。

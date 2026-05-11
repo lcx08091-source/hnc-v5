@@ -33,6 +33,32 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [HNC] $1" >> $LOG
 }
 
+# rc17: keep C hotspot detector single-instance.  A manual service restart or
+# watchdog race may leave two hotspotd processes; keep the pidfile target and
+# remove extra instances before they both write devices.json.
+prune_duplicate_hotspotd() {
+    local keep p seen
+    keep=$(cat "$RUN/hotspotd.pid" 2>/dev/null)
+    if [ -z "$keep" ] || ! kill -0 "$keep" 2>/dev/null; then
+        keep=$(pidof hotspotd 2>/dev/null | awk '{print $1}')
+        [ -n "$keep" ] && echo "$keep" > "$RUN/hotspotd.pid" 2>/dev/null || true
+    fi
+    seen=0
+    for p in $(pidof hotspotd 2>/dev/null); do
+        [ -z "$p" ] && continue
+        if [ "$p" = "$keep" ] && [ "$seen" -eq 0 ]; then
+            seen=1
+            continue
+        fi
+        log "rc17: killing duplicate hotspotd pid=$p keep=$keep"
+        kill -9 "$p" 2>/dev/null || true
+    done
+}
+
+find_live_watchdog_pid() {
+    ps -ef 2>/dev/null | awk '$0 ~ /\/data\/local\/hnc\/bin\/watchdog\.sh/ && $3==1 {print $2; exit}'
+}
+
 log "=== HNC Service Starting ==="
 # hotfix16.2: best-effort repair before reading rules.json in late_start.
 [ -x "$HNC_DIR/bin/rules_repair.sh" ] && HNC=$HNC_DIR sh "$HNC_DIR/bin/rules_repair.sh" >> $LOG 2>&1 || true
@@ -203,11 +229,25 @@ else
     # shell fallback 在 daemon_shell_fallback 里自己写了 detect.pid
     log "Shell daemon fallback running (PID=$DETECT_SHELL_PID)"
 fi
+prune_duplicate_hotspotd
 
 # ─── 启动 Watchdog ──────────────────────────────────────────
 log "Starting watchdog..."
-sh $HNC_DIR/bin/watchdog.sh >> $HNC_DIR/logs/watchdog.log 2>&1 &
-echo $! > $RUN/watchdog.pid
+WPID=$(cat "$RUN/watchdog.pid" 2>/dev/null)
+if [ -n "$WPID" ] && kill -0 "$WPID" 2>/dev/null; then
+    log "watchdog already running (PID=$WPID), skip duplicate launch"
+else
+    LIVE_WD=$(find_live_watchdog_pid)
+    if [ -n "$LIVE_WD" ] && kill -0 "$LIVE_WD" 2>/dev/null; then
+        echo "$LIVE_WD" > "$RUN/watchdog.pid" 2>/dev/null || true
+        log "watchdog live without pidfile (PID=$LIVE_WD), repaired pidfile"
+    else
+        rm -f "$RUN/watchdog.pid" 2>/dev/null || true
+        sh $HNC_DIR/bin/watchdog.sh >> $HNC_DIR/logs/watchdog.log 2>&1 &
+        echo $! > $RUN/watchdog.pid
+        log "watchdog started (PID=$(cat $RUN/watchdog.pid 2>/dev/null))"
+    fi
+fi
 
 # hotfix10: 启动后延迟清理一次长期未见的离线规则,防止 rules.json 膨胀。
 if [ -x "$HNC_DIR/bin/cleanup_stale_rules.sh" ]; then

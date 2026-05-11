@@ -2550,6 +2550,39 @@ body.kb-open .container {
       </div>
     </div>
 
+    <!-- rc17: 进程诊断，只显示主实例健康，不把 guard/watchdog 子 shell 误判为重复 -->
+    <div class="sec-title">进程诊断</div>
+    <div class="setting-group glass-elevated" id="dpi-process-group">
+      <div class="set-row">
+        <div class="set-icon blue">✓</div>
+        <div class="set-body">
+          <div class="set-label">总体状态</div>
+          <div class="set-sub" id="dpi-proc-summary">检测中…</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon blue">H</div>
+        <div class="set-body">
+          <div class="set-label">后端 / DPI / 设备发现</div>
+          <div class="set-sub" id="dpi-proc-core">—</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon blue">G</div>
+        <div class="set-body">
+          <div class="set-label">watchdog / dpid_guard</div>
+          <div class="set-sub" id="dpi-proc-guard">—</div>
+        </div>
+      </div>
+      <div class="set-row">
+        <div class="set-icon blue">P</div>
+        <div class="set-body">
+          <div class="set-label">pidfile</div>
+          <div class="set-sub" id="dpi-proc-pidfile">—</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 探测能力 + 解析能力 -->
     <div class="sec-title">能力探测</div>
     <div class="setting-group glass-elevated" id="dpi-cap-group">
@@ -2670,6 +2703,9 @@ body.kb-open .container {
   .dpi-cap-yes { color: var(--sys-green, #34c759); font-weight: 600; }
   .dpi-cap-no  { color: var(--sys-red, #ff3b30); font-weight: 600; }
   .dpi-cap-warn { color: var(--sys-orange, #ff9500); font-weight: 600; }
+  .dpi-proc-ok { color: var(--sys-green, #34c759); font-weight: 600; }
+  .dpi-proc-warn { color: var(--sys-orange, #ff9500); font-weight: 600; }
+  .dpi-proc-bad { color: var(--sys-red, #ff3b30); font-weight: 600; }
 </style>
 
 <!-- ═══ SETTINGS (new) ═══ -->
@@ -3839,7 +3875,7 @@ body.kb-open .container {
   async function manualRefreshBackend()   { await apiAction('refresh'); return true; }
   async function restartServiceBackend()  { await apiAction('restart_service'); return true; }
   async function dpiRebindBackend() {
-    // rc16: prefer Go /api/action when the rebuilt backend supports it, but
+    // rc17: prefer Go /api/action when the rebuilt backend supports it, but
     // fall back to direct KSU/SukiSU bridge so older/stale httpd can still be rescued.
     try {
       await apiAction('dpi_rebind');
@@ -4066,20 +4102,86 @@ body.kb-open .container {
     return cap;
   }
 
-  // ─── DPI (v5.3.0-rc12: passive DPI observability) ─────────────────
+  // ─── DPI (v5.3.0-rc17: passive DPI observability + fast waiting poll) ─────────────────
   let dpiPollTimer = null;
+  let dpiFetchInFlight = false;
+  let dpiLastBadgeMode = 'unavail';
+  let dpiFastUntil = 0;
+  let dpiProcessHealthLastAt = 0;
+
+  function dpiShouldFastPoll() {
+    if (Date.now() < dpiFastUntil) return true;
+    return ['waiting', 'rebinding', 'unavail', 'crash'].indexOf(String(dpiLastBadgeMode || '')) >= 0;
+  }
+  function scheduleNextDPIPoll() {
+    stopDPIPolling();
+    const ms = dpiShouldFastPoll() ? 1000 : 4000;
+    dpiPollTimer = setTimeout(async () => {
+      await fetchDPI();
+      scheduleNextDPIPoll();
+    }, ms);
+  }
   function startDPIPolling() {
     stopDPIPolling();
-    dpiPollTimer = setInterval(fetchDPI, 3000);
+    fetchDPI().finally(scheduleNextDPIPoll);
   }
   function stopDPIPolling() {
-    if (dpiPollTimer) { clearInterval(dpiPollTimer); dpiPollTimer = null; }
+    if (dpiPollTimer) { clearTimeout(dpiPollTimer); dpiPollTimer = null; }
+  }
+  function boostDPIFastPoll(seconds) {
+    dpiFastUntil = Date.now() + Math.max(1, Number(seconds || 10)) * 1000;
+    stopDPIPolling();
+    fetchDPI().finally(scheduleNextDPIPoll);
   }
   async function fetchDPI() {
+    if (dpiFetchInFlight) return;
+    dpiFetchInFlight = true;
     let stateResp = null, probeResp = null;
     try { stateResp = await apiGet('/api/dpi_state'); } catch (e) { stateResp = { available: false, error: String(e && e.message || e) }; }
     try { probeResp = await apiGet('/api/dpi_probe'); } catch (e) { probeResp = { available: false, error: String(e && e.message || e) }; }
-    renderDPI(stateResp, probeResp);
+    const mode = renderDPI(stateResp, probeResp);
+    dpiLastBadgeMode = mode || dpiLastBadgeMode;
+    const processFast = dpiShouldFastPoll();
+    if (processFast || Date.now() - dpiProcessHealthLastAt > 12000) {
+      fetchDPIProcessHealth(processFast).catch(() => {});
+    }
+    dpiFetchInFlight = false;
+  }
+
+  async function fetchDPIProcessHealth(force) {
+    if (!force && Date.now() - dpiProcessHealthLastAt < 12000) return;
+    dpiProcessHealthLastAt = Date.now();
+    if (typeof window.ksu === 'undefined' || typeof window.ksu.exec !== 'function') return;
+    const cmd = 'sh /data/local/hnc/bin/rc17_process_health.sh 2>/dev/null';
+    const raw = await withTimeout(kexec(cmd), 3500, 'DPI process health');
+    let obj = null;
+    try { obj = JSON.parse(raw || '{}'); } catch (_) { obj = null; }
+    renderDPIProcessHealth(obj);
+  }
+
+  function renderDPIProcessHealth(obj) {
+    const summary = $('#dpi-proc-summary');
+    const core = $('#dpi-proc-core');
+    const guard = $('#dpi-proc-guard');
+    const pidfile = $('#dpi-proc-pidfile');
+    if (!summary || !core || !guard || !pidfile) return;
+    if (!obj || !obj.counts) {
+      summary.textContent = '暂不可读'; summary.className = 'set-sub dpi-proc-warn';
+      core.textContent = '—'; guard.textContent = '—'; pidfile.textContent = '—';
+      return;
+    }
+    const c = obj.counts || {};
+    const pf = obj.pidfiles || {};
+    const ok = obj.status === 'ok';
+    summary.textContent = ok ? '正常 · 主实例干净' : ('注意 · ' + (obj.detail || '进程数量需检查'));
+    summary.className = 'set-sub ' + (ok ? 'dpi-proc-ok' : 'dpi-proc-warn');
+    core.textContent = `httpd ${c.hnc_httpd || 0} · dpid ${c.hnc_dpid || 0} · hotspotd ${c.hotspotd || 0}`;
+    core.className = 'set-sub ' + ((c.hnc_httpd === 1 && c.hnc_dpid === 1 && c.hotspotd === 1) ? 'dpi-proc-ok' : 'dpi-proc-warn');
+    guard.textContent = `watchdog 主 ${c.watchdog_main || 0}/总 ${c.watchdog_total || 0} · guard 主 ${c.dpid_guard_main || 0}/总 ${c.dpid_guard_total || 0}`;
+    guard.className = 'set-sub ' + (((c.watchdog_main || 0) <= 1 && (c.dpid_guard_main || 0) <= 1) ? 'dpi-proc-ok' : 'dpi-proc-warn');
+    const alive = [pf.httpd, pf.hotspotd, pf.watchdog, pf.dpid_guard].filter(x => x && x.alive).length;
+    pidfile.textContent = `pidfile 存活 ${alive}/4` + ((pf.dpid_child && pf.dpid_child.alive) ? ' · dpid child OK' : '');
+    pidfile.className = 'set-sub ' + (alive >= 3 ? 'dpi-proc-ok' : 'dpi-proc-warn');
   }
   function renderDPI(stateResp, probeResp) {
     const badge = $('#dpi-mode-badge');
@@ -4183,6 +4285,7 @@ body.kb-open .container {
       $('#dpi-cap-offload').textContent = '—';
       $('#dpi-cap-conntrack').textContent = '—';
     }
+    return badgeMode || (mode === 'crash_loop' ? 'crash' : mode);
   }
   function setDpiCap(sel, good, text) {
     const el = $(sel);
@@ -6274,7 +6377,8 @@ body.kb-open .container {
       if (btn) btn.disabled = true;
       toast('正在重新绑定 DPI…', 'warn');
       dpiRebindBackend().then(() => {
-        toast('DPI 已触发重绑，稍等 2-5 秒刷新状态', 'ok');
+        toast('DPI 已触发重绑，进入快速刷新窗口', 'ok');
+        boostDPIFastPoll(12);
         setTimeout(fetchDPI, 2500);
         setTimeout(fetchDPI, 5500);
       }).catch(err => {
@@ -6316,12 +6420,13 @@ body.kb-open .container {
       confirmModal({
         icon: '⏹', iconClass: 'danger',
         title: '释放并重启资源?',
-        // v5.3.0-rc16: 保留普通二次确认，不再要求输入 RELEASE。
+        // v5.3.0-rc17: 保留普通二次确认，不再要求输入 RELEASE。
         message: '将清理 tc/iptables 临时规则，并重启 HNC 后端与 DPI 守护。<br>页面可能短暂断开 5-15 秒。<br><b>不会卸载模块，也不会删除配置。</b><br>日常只清限速/延迟/黑名单请用“清空所有规则”。',
         okText: '确认重启', okKind: 'btn-danger',
         onOk: () => {
           stopAllServicesBackend().then(() => {
             toast('已触发释放并重启 · 后端约 8-15 秒恢复', 'warn');
+            boostDPIFastPoll(18);
             setTimeout(() => {
               apiGet('/api/health').then(() => {
                 toast('HNC 后端已恢复，正在刷新…', 'ok');

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# hnc_dpid_guard.sh — HNC v5.3.0-rc16
+# hnc_dpid_guard.sh — HNC v5.3.0-rc17
 # Purpose:
 #   Keep passive DPI capture responsive when Android recreates or briefly downs
 #   the hotspot interface.  The hnc_dpid binary is intentionally side-effect
@@ -56,7 +56,7 @@ write_waiting_state() {
     esc_iface=$(json_escape "$iface")
     esc_reason=$(json_escape "$reason")
     cat > "$RUN/dpi_state.json.tmp" <<EOF_STATE
-{"schema_version":1,"timestamp":$now,"version":"0.1.0-rc1.2-fixed+rc16-guard","mode":"blind","interface":"$esc_iface","uptime_s":$up,"blind_reason":"$esc_reason","stats":{"packets":0,"dns_events":0,"tls_events":0,"kernel_drops":0,"ignored_packets":0,"parse_errors":0}}
+{"schema_version":1,"timestamp":$now,"version":"0.1.0-rc1.2-fixed+rc17-guard","mode":"blind","interface":"$esc_iface","uptime_s":$up,"blind_reason":"$esc_reason","stats":{"packets":0,"dns_events":0,"tls_events":0,"kernel_drops":0,"ignored_packets":0,"parse_errors":0}}
 EOF_STATE
     mv -f "$RUN/dpi_state.json.tmp" "$RUN/dpi_state.json" 2>/dev/null || true
 }
@@ -246,13 +246,13 @@ while true; do
         log "disable_capture=true; launching real dpid once"
     else
         if ! iface_exists "$iface"; then
-            write_waiting_state "$iface" "waiting for hotspot interface $iface to appear; rc16 guard will rebind immediately on netlink event"
+            write_waiting_state "$iface" "waiting for hotspot interface $iface to appear; rc17 guard will rebind immediately on netlink event"
             log "iface $iface missing; waiting"
             sleep_s 3
             continue
         fi
         if ! iface_ready "$iface"; then
-            write_waiting_state "$iface" "waiting for hotspot interface $iface to become usable; rc16 relaxed-ready fast retry active; $(iface_ready_reason "$iface")"
+            write_waiting_state "$iface" "waiting for hotspot interface $iface to become usable; rc17 relaxed-ready fast retry active; $(iface_ready_reason "$iface")"
             # Startup fast window, then low-frequency fallback.
             delay=$(echo "$FAST_DELAYS" | awk -v i="$fast_index" '{print $i}')
             [ -z "$delay" ] && delay=3
@@ -293,7 +293,7 @@ while true; do
             break
         fi
         if [ "$disabled" != "true" ] && ! iface_ready "$iface"; then
-            write_waiting_state "$iface" "hotspot interface $iface is not currently usable; rc16 guard is rebinding; $(iface_ready_reason "$iface")"
+            write_waiting_state "$iface" "hotspot interface $iface is not currently usable; rc17 guard is rebinding; $(iface_ready_reason "$iface")"
             log "iface $iface not ready while running; rebind when usable: $(iface_ready_reason "$iface")"
             kill "$child" 2>/dev/null || true
             break

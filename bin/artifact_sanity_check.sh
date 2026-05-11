@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC v5.3.0-rc16 · flashable artifact sanity checker
+# HNC v5.3.0-rc17 · flashable artifact sanity checker
 # Detect GitHub Actions outer ZIP wrappers and stale hnc_httpd binaries before install.
 
 set +e
@@ -24,7 +24,7 @@ EOF_USAGE
 [ -f "$ZIP" ] || { fail "artifact not found: $ZIP"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 command -v unzip >/dev/null 2>&1 || { fail "unzip not found; cannot inspect artifact"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 
-say "HNC artifact sanity check v5.3.0-rc16"
+say "HNC artifact sanity check v5.3.0-rc17"
 say "artifact=$ZIP"
 unzip -t "$ZIP" >"$TMP.unzip_test" 2>&1
 [ $? -eq 0 ] && ok "zip integrity OK" || { fail "zip integrity failed"; cat "$TMP.unzip_test"; }

@@ -43,6 +43,27 @@ log() {
     echo "[$(TZ=Asia/Shanghai date '+%H:%M:%S')] [WDG] $1" >> "$LOG" 2>/dev/null || true
 }
 
+# rc17: keep hotspotd single-instance during watchdog self-heal.  Keep the
+# pidfile target when alive; otherwise repair pidfile to the first live process.
+prune_duplicate_hotspotd() {
+    local keep p seen
+    keep=$(cat "$RUN/hotspotd.pid" 2>/dev/null)
+    if [ -z "$keep" ] || ! kill -0 "$keep" 2>/dev/null; then
+        keep=$(pidof hotspotd 2>/dev/null | awk '{print $1}')
+        [ -n "$keep" ] && echo "$keep" > "$RUN/hotspotd.pid" 2>/dev/null || true
+    fi
+    seen=0
+    for p in $(pidof hotspotd 2>/dev/null); do
+        [ -z "$p" ] && continue
+        if [ "$p" = "$keep" ] && [ "$seen" -eq 0 ]; then
+            seen=1
+            continue
+        fi
+        log "rc17: killing duplicate hotspotd pid=$p keep=$keep"
+        kill -9 "$p" 2>/dev/null || true
+    done
+}
+
 # v4.0 Patch 1.6: [ERROR] 前缀便于 grep 故障排查
 # log "foo" 普通事件 / log_error "foo" 真实错误 / log_info 已经被 log 占用就不另加
 log_error() {
@@ -443,7 +464,7 @@ ensure_dpid_running() {
         fi
     fi
 
-    # rc16: 如果 pidfile 丢了但 guard 进程真实存在，修复 pidfile，不再重复拉起。
+    # rc17: 如果 pidfile 丢了但 guard 进程真实存在，修复 pidfile，不再重复拉起。
     if [ "$dpid_launcher" = "$dpid_guard" ]; then
         local live_gp
         live_gp=$(ps -ef 2>/dev/null | grep '[h]nc_dpid_guard.sh' | awk 'NR==1{print $2}')
@@ -501,6 +522,7 @@ check_services() {
     if [ -n "$hpid" ]; then
         # hotspotd 路径
         if kill -0 "$hpid" 2>/dev/null; then
+            prune_duplicate_hotspotd
             return 0
         fi
         # hotspotd 死了,尝试重启
@@ -518,6 +540,7 @@ check_services() {
             fi
             "$HNC_DIR/bin/hotspotd" -d >> "$HNC_DIR/logs/hotspotd.log" 2>&1 &
             sleep 1
+            prune_duplicate_hotspotd
             rmdir "$spawnlock" 2>/dev/null
             HOTSPOTD_LAST_RESTART=$now
             restarted=1

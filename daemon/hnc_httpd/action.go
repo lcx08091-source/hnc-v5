@@ -701,7 +701,7 @@ func runBin(hncDir, script string, args ...string) (int, string) {
 	return rc, s
 }
 
-// actionDPIRebind · v5.3.0-rc16
+// actionDPIRebind · v5.3.0-rc17
 // Manually restart the passive DPI guard/capture path.  This is intentionally
 // low-risk: hnc_dpid is observe-only and does not touch tc/iptables.
 func actionDPIRebind(hncDir string, p map[string]string) actionResp {
