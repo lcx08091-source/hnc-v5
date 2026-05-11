@@ -85,6 +85,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("/api/metrics", s.apiMetrics)
 	mux.HandleFunc("/api/stats", s.apiStats)
 	mux.HandleFunc("/api/templates", s.apiTemplates)
+	// v5.3.0-rc12: DPI passive observability (hnc_dpid daemon)
+	mux.HandleFunc("/api/dpi_state", s.apiDPIState)
+	mux.HandleFunc("/api/dpi_probe", s.apiDPIProbe)
 	// logout: 需要已鉴权才能 revoke 自己(无鉴权也能清 cookie)
 	mux.HandleFunc("/api/logout", s.handleLogout)
 

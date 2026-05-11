@@ -193,7 +193,9 @@ func isSensitiveReadPath(p string) bool {
 		"/api/metrics",
 		"/api/iface_info",
 		"/api/offload_status",
-		"/api/sqm":
+		"/api/sqm",
+		"/api/dpi_state",
+		"/api/dpi_probe":
 		return true
 	default:
 		return false

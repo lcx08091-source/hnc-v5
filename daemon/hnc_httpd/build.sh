@@ -37,3 +37,19 @@ go build -ldflags="-s -w -X main.version=$VERSION" -o hnc_httpd .
 
 echo "OK: $(ls -la hnc_httpd)"
 file hnc_httpd
+
+# v5.3.0-rc15: hard fail CI if the rebuilt backend loses DPI API routes.
+# This prevents GitHub Actions from publishing a zip whose WebUI calls
+# /api/dpi_state or /api/dpi_probe but the freshly-built hnc_httpd returns 404.
+for sym in \
+    /api/dpi_state \
+    /api/dpi_probe \
+    apiDPIState \
+    apiDPIProbe
+do
+    if ! strings hnc_httpd | grep -F "$sym" >/dev/null 2>&1; then
+        echo "ERROR: rebuilt hnc_httpd missing required DPI API symbol/string: $sym" >&2
+        exit 1
+    fi
+done
+echo "OK: hnc_httpd includes DPI API routes"

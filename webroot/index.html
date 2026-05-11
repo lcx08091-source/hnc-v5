@@ -6266,7 +6266,7 @@ body.kb-open .container {
       confirmModal({
         icon: '⏹', iconClass: 'danger',
         title: '释放并重启资源?',
-        // v5.3.0-rc14: 保留普通二次确认，不再要求输入 RELEASE。
+        // v5.3.0-rc15: 保留普通二次确认，不再要求输入 RELEASE。
         message: '将清理 tc/iptables 临时规则，并重启 HNC 后端与 DPI 守护。<br>页面可能短暂断开 5-15 秒。<br><b>不会卸载模块，也不会删除配置。</b><br>日常只清限速/延迟/黑名单请用“清空所有规则”。',
         okText: '确认重启', okKind: 'btn-danger',
         onOk: () => {
