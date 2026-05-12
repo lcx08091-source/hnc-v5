@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC v5.3.0-rc19.0 preflight checker
+# HNC v5.3.0-rc20.0 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight v5.3.0-rc19.0"
+say "HNC preflight v5.3.0-rc20.0"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -99,7 +99,7 @@ if [ -f bin/hnc_dpid ]; then
     warn "od unavailable; cannot inspect bin/hnc_dpid architecture"
   fi
   if command -v strings >/dev/null 2>&1; then
-    DPID_MARKERS="$(strings bin/hnc_dpid 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|hnc_dpid' | head -5)"
+    DPID_MARKERS="$(strings bin/hnc_dpid 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|hnc_dpid' | head -5)"
     if [ -n "$DPID_MARKERS" ]; then ok "hnc_dpid contains expected version/name marker"; else fail "hnc_dpid missing expected version/name marker"; fi
   else
     warn "strings unavailable; cannot inspect hnc_dpid version/name marker"
@@ -266,7 +266,7 @@ if [ -n "$ARTIFACT" ]; then
           warn "od unavailable; cannot inspect artifact hnc_dpid architecture"
         fi
         if command -v strings >/dev/null 2>&1; then
-          DPID_ART_MARKERS="$(strings "$ZIPTMP.hnc_dpid" 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|hnc_dpid' | head -5)"
+          DPID_ART_MARKERS="$(strings "$ZIPTMP.hnc_dpid" 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|hnc_dpid' | head -5)"
           if [ -n "$DPID_ART_MARKERS" ]; then ok "artifact hnc_dpid contains expected version/name marker"; else fail "artifact hnc_dpid missing expected version/name marker"; fi
         fi
       else
