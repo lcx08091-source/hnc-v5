@@ -2499,7 +2499,7 @@ body.kb-open .container {
   </div>
 </div>
 
-<!-- ═══ DPI (v5.3.0-rc12: 被动 DPI 元数据观察) ═══ -->
+<!-- ═══ DPI (v5.3.0-rc19: L2 per-client DNS/SNI attribution) ═══ -->
 <div id="page-dpi" class="page">
   <div class="container">
 
@@ -2547,6 +2547,15 @@ body.kb-open .container {
       <div class="counter-card glass">
         <div class="counter-num" id="dpi-cnt-drops">0</div>
         <div class="counter-label">内核丢包</div>
+      </div>
+    </div>
+
+    <!-- rc19: L2 per-client DNS/SNI attribution -->
+    <div class="sec-title">设备域名画像 <span class="dpi-flow-hint">L2 · 只读元数据归因</span></div>
+    <div class="setting-group glass-elevated" id="dpi-l2-group">
+      <div class="dpi-l2-summary" id="dpi-client-summary">等待 DPI 事件…</div>
+      <div class="dpi-client-list" id="dpi-client-list">
+        <div class="dpi-empty">暂无设备域名/SNI 事件。让热点客户端打开网页后再刷新。</div>
       </div>
     </div>
 
@@ -2636,7 +2645,7 @@ body.kb-open .container {
     <div class="setting-group glass-elevated">
       <div class="dpi-about">
         <p>HNC DPI (<code>hnc_dpid</code>) 是被动的元数据观察 daemon, 用 AF_PACKET + cBPF 抓 <b>DNS</b> 和 <b>TLS ClientHello</b> 元数据, 不做任何主动操作 (不 NFQUEUE、不 DNS 劫持、不改 iptables/tc).</p>
-        <p>当前 rc1.2-fixed 阶段只统计事件计数, 不输出每流详情. 后续 rc2+ 会扩展到流表 + 应用识别 + 规则匹配.</p>
+        <p>当前 rc19/L2 阶段按客户端聚合 DNS 与 TLS SNI 元数据，只做域名画像，不做 App 分类、不参与限速。</p>
         <p>如果卡在“等待接口就绪”，可点上方 <b>重新绑定 DPI</b>；关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
       </div>
     </div>
@@ -2691,6 +2700,18 @@ body.kb-open .container {
   .dpi-flow-label { font-size: 13px; }
   .dpi-flow-hint { font-size: 11px; color: var(--text-3); margin-left: 6px; }
   .dpi-flow-val { font-size: 18px; font-weight: 700; font-feature-settings: "tnum"; }
+  .dpi-l2-summary { font-size: 12px; color: var(--text-2); margin: 0 0 12px; line-height: 1.5; }
+  .dpi-client-list { display: grid; gap: 10px; }
+  .dpi-client-card { padding: 12px; border-radius: 16px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08); }
+  .dpi-client-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .dpi-client-id { font-size: 13px; font-weight: 700; font-feature-settings: "tnum"; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dpi-client-meta { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+  .dpi-client-row { margin-top: 8px; }
+  .dpi-client-label { font-size: 11px; color: var(--text-3); margin-bottom: 5px; }
+  .dpi-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dpi-chip { max-width: 100%; padding: 4px 8px; border-radius: 999px; font-size: 11px; color: var(--text-2); background: rgba(0,122,255,.10); border: 1px solid rgba(0,122,255,.18); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dpi-chip.sni { background: rgba(52,199,89,.10); border-color: rgba(52,199,89,.18); }
+  .dpi-empty { color: var(--text-3); font-size: 12px; line-height: 1.6; padding: 8px 0; }
   .dpi-about p { font-size: 13px; line-height: 1.7; color: var(--text-2); margin: 0 0 10px; }
   .dpi-about p:last-child { margin-bottom: 0; }
   .dpi-about code {
@@ -4102,7 +4123,7 @@ body.kb-open .container {
     return cap;
   }
 
-  // ─── DPI (v5.3.0-rc17: passive DPI observability + fast waiting poll) ─────────────────
+  // ─── DPI (v5.3.0-rc19: passive DPI L2 per-client attribution) ─────────────────
   let dpiPollTimer = null;
   let dpiFetchInFlight = false;
   let dpiLastBadgeMode = 'unavail';
@@ -4244,6 +4265,7 @@ body.kb-open .container {
       $('#dpi-cnt-drops').textContent = fmtNum(stats.kernel_drops);
       $('#dpi-cnt-ign').textContent = fmtNum(stats.ignored_packets);
       $('#dpi-cnt-perr').textContent = fmtNum(stats.parse_errors);
+      renderDPIClients(st);
     } else {
       modeLabel = '加载失败';
       const errMsg = (stateResp && stateResp.error) || '请求超时';
@@ -4257,6 +4279,7 @@ body.kb-open .container {
       $('#dpi-cnt-drops').textContent = '—';
       $('#dpi-cnt-ign').textContent = '—';
       $('#dpi-cnt-perr').textContent = '—';
+      renderDPIClients(null);
     }
     // 应用 badge class
     badge.className = 'dpi-mode-badge mode-' + (badgeMode || (mode === 'crash_loop' ? 'crash' : mode));
@@ -4286,6 +4309,79 @@ body.kb-open .container {
       $('#dpi-cap-conntrack').textContent = '—';
     }
     return badgeMode || (mode === 'crash_loop' ? 'crash' : mode);
+  }
+  function renderDPIClients(st) {
+    const list = $('#dpi-client-list');
+    const summary = $('#dpi-client-summary');
+    if (!list || !summary) return;
+    list.innerHTML = '';
+    if (!st || !st.clients) {
+      summary.textContent = '暂无 L2 数据 · 当前只展示最近 DNS/SNI 元数据，不做 App 分类。';
+      const empty = document.createElement('div');
+      empty.className = 'dpi-empty';
+      empty.textContent = '暂无设备域名/SNI 事件。确认 DPI 为“正常 · 抓包中”，再让热点客户端打开网页。';
+      list.appendChild(empty);
+      return;
+    }
+    const clients = Object.keys(st.clients).map(k => st.clients[k]).filter(Boolean)
+      .sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))
+      .slice(0, 8);
+    const total = Number(st.client_count || clients.length || 0);
+    const dnsUnique = Number(st.unique_hostnames || 0);
+    const sniUnique = Number(st.unique_sni || 0);
+    summary.textContent = `已归因 ${total} 台设备 · DNS 域名 ${dnsUnique} 个 · SNI ${sniUnique} 个 · L2 只读观察，不代表精确 App 识别`;
+    if (!clients.length) {
+      const empty = document.createElement('div');
+      empty.className = 'dpi-empty';
+      empty.textContent = '暂无 per-client 画像。DNS/TLS 事件出现后会按客户端 IP/MAC 聚合到这里。';
+      list.appendChild(empty);
+      return;
+    }
+    clients.forEach(c => {
+      const card = document.createElement('div');
+      card.className = 'dpi-client-card';
+      const head = document.createElement('div');
+      head.className = 'dpi-client-head';
+      const id = document.createElement('div');
+      id.className = 'dpi-client-id';
+      id.textContent = c.client_ip || c.client_mac || 'unknown-client';
+      const meta = document.createElement('div');
+      meta.className = 'dpi-client-meta';
+      meta.textContent = `DNS ${fmtNum(c.dns_events)} · TLS ${fmtNum(c.tls_events)}`;
+      head.appendChild(id); head.appendChild(meta); card.appendChild(head);
+      if (c.client_mac) {
+        const mac = document.createElement('div');
+        mac.className = 'dpi-client-meta';
+        mac.textContent = c.client_mac;
+        card.appendChild(mac);
+      }
+      appendDPIChipRow(card, 'DNS Top', c.top_hostnames, 'host');
+      appendDPIChipRow(card, 'SNI Top', c.top_sni, 'sni');
+      list.appendChild(card);
+    });
+  }
+  function appendDPIChipRow(card, label, items, kind) {
+    const row = document.createElement('div');
+    row.className = 'dpi-client-row';
+    const lab = document.createElement('div');
+    lab.className = 'dpi-client-label';
+    lab.textContent = label;
+    const wrap = document.createElement('div');
+    wrap.className = 'dpi-chip-wrap';
+    (items || []).slice(0, 6).forEach(it => {
+      const chip = document.createElement('span');
+      chip.className = 'dpi-chip ' + (kind === 'sni' ? 'sni' : 'host');
+      const name = it.name || it.host || it.sni || '—';
+      chip.textContent = name + (it.count ? (' ×' + fmtNum(it.count)) : '');
+      wrap.appendChild(chip);
+    });
+    if (!wrap.childNodes.length) {
+      const empty = document.createElement('span');
+      empty.className = 'dpi-empty';
+      empty.textContent = '暂无';
+      wrap.appendChild(empty);
+    }
+    row.appendChild(lab); row.appendChild(wrap); card.appendChild(row);
   }
   function setDpiCap(sel, good, text) {
     const el = $(sel);

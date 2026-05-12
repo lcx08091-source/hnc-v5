@@ -1,7 +1,7 @@
 id=hotspot_network_control
 name=Hotspot Network Control
-version=v5.3.0-rc18.1
-versionCode=530019
+version=v5.3.0-rc19.0
+versionCode=530020
 author=Claude (Anthropic AI) + Ling
-description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc18.1 · DPI binary artifact gate / hnc_httpd version gate · KernelSU/SukiSU/Magisk
+description=Android 热点带宽/延迟/黑白名单管理 · v5.3.0-rc19.0 · DPI L2 per-client DNS/SNI attribution · KernelSU/SukiSU/Magisk
 minKernelSU=11485

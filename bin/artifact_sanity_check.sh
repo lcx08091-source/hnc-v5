@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC v5.3.0-rc18.1 · flashable artifact sanity checker
+# HNC v5.3.0-rc19.0 · flashable artifact sanity checker
 # Detect GitHub Actions outer ZIP wrappers and stale hnc_httpd binaries before install.
 
 set +e
@@ -24,7 +24,7 @@ EOF_USAGE
 [ -f "$ZIP" ] || { fail "artifact not found: $ZIP"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 command -v unzip >/dev/null 2>&1 || { fail "unzip not found; cannot inspect artifact"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 
-say "HNC artifact sanity check v5.3.0-rc18.1"
+say "HNC artifact sanity check v5.3.0-rc19.0"
 say "artifact=$ZIP"
 unzip -t "$ZIP" >"$TMP.unzip_test" 2>&1
 [ $? -eq 0 ] && ok "zip integrity OK" || { fail "zip integrity failed"; cat "$TMP.unzip_test"; }
@@ -65,7 +65,7 @@ if [ -n "$ROOT_MODULE" ]; then
   echo "$VC" | grep -Eq '^[0-9]+$' && ok "module.prop versionCode is numeric" || fail "module.prop versionCode is not numeric"
 fi
 
-# v5.3.0-rc18.1: hnc_dpid must be packaged. rc17 accidentally omitted it,
+# v5.3.0-rc19.0: hnc_dpid must be packaged. rc17 accidentally omitted it,
 # which made fresh installs lose the DPI observer even though the WebUI/API existed.
 if grep -x 'bin/hnc_dpid' "$TMP.entries" >/dev/null; then
   mkdir -p "$TMP.extract" 2>/dev/null
@@ -84,7 +84,7 @@ if grep -x 'bin/hnc_dpid' "$TMP.entries" >/dev/null; then
     fi
     if command -v strings >/dev/null 2>&1; then
       strings "$TMP.extract/hnc_dpid" > "$TMP.dpid.strings" 2>/dev/null
-      if grep -F '0.1.0-rc1.2-fixed' "$TMP.dpid.strings" >/dev/null || grep -F '0.1.0-rc1.3' "$TMP.dpid.strings" >/dev/null || grep -F 'hnc_dpid' "$TMP.dpid.strings" >/dev/null; then
+      if grep -F '0.1.0-rc1.2-fixed' "$TMP.dpid.strings" >/dev/null || grep -F '0.1.0-rc1.3' "$TMP.dpid.strings" >/dev/null || grep -F '0.2.0-l2-rc19' "$TMP.dpid.strings" >/dev/null || grep -F 'hnc_dpid' "$TMP.dpid.strings" >/dev/null; then
         ok "hnc_dpid contains expected version/name marker"
       else
         fail "hnc_dpid missing expected version/name marker; binary may be stale or wrong"
