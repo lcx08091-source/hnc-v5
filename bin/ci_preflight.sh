@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# HNC hotfix21.0 preflight checker
+# HNC v5.3.0-rc18.1 preflight checker
 # Runs in Termux/Android shell or GitHub Actions bash/sh.
 # Usage:
 #   sh bin/ci_preflight.sh                 # source tree checks
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight v5.3.0-rc5"
+say "HNC preflight v5.3.0-rc18.1"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -65,12 +65,12 @@ else
 fi
 
 # 4. Required files
-for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh; do
+for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/hnc_dpid; do
   if [ -e "$f" ]; then ok "required file exists: $f"; else warn "required file missing: $f"; fi
 done
 
 # 5. Executable bits, source tree check only.
-for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/tc_manager.sh bin/watchdog.sh daemon/hnc_httpd/build.sh; do
+for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/tc_manager.sh bin/watchdog.sh bin/hnc_dpid daemon/hnc_httpd/build.sh; do
   [ -e "$f" ] || continue
   if [ -x "$f" ]; then ok "executable: $f"; else fail "not executable: $f"; fi
 done
@@ -80,6 +80,32 @@ if [ -f daemon/hnc_httpd/hnc_httpd ]; then
   if [ -x daemon/hnc_httpd/hnc_httpd ]; then ok "hnc_httpd binary exists and executable"; else fail "hnc_httpd binary exists but is not executable"; fi
 else
   warn "daemon/hnc_httpd/hnc_httpd not present in source tree; CI must build it before packaging"
+fi
+
+
+# 6a. hnc_dpid binary sanity. DPI WebUI/API is useless on fresh installs if
+# the real observer binary is missing from the package/source tree.
+if [ -f bin/hnc_dpid ]; then
+  if [ -x bin/hnc_dpid ]; then ok "hnc_dpid binary exists and executable"; else fail "hnc_dpid binary exists but is not executable"; fi
+  if [ -s bin/hnc_dpid ]; then ok "hnc_dpid binary is non-empty"; else fail "hnc_dpid binary is empty"; fi
+  if command -v od >/dev/null 2>&1; then
+    DPID_MACHINE="$(od -An -tx1 -j18 -N2 bin/hnc_dpid 2>/dev/null | awk '{print $1 " " $2}')"
+    case "$DPID_MACHINE" in
+      "b7 00") ok "hnc_dpid is AArch64 ELF: $DPID_MACHINE" ;;
+      "28 00") warn "hnc_dpid is 32-bit ARM ELF: $DPID_MACHINE; expected arm64 package?" ;;
+      *) fail "bin/hnc_dpid is not Android ARM/AArch64 ELF: machine='$DPID_MACHINE'" ;;
+    esac
+  else
+    warn "od unavailable; cannot inspect bin/hnc_dpid architecture"
+  fi
+  if command -v strings >/dev/null 2>&1; then
+    DPID_MARKERS="$(strings bin/hnc_dpid 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|hnc_dpid' | head -5)"
+    if [ -n "$DPID_MARKERS" ]; then ok "hnc_dpid contains expected version/name marker"; else fail "hnc_dpid missing expected version/name marker"; fi
+  else
+    warn "strings unavailable; cannot inspect hnc_dpid version/name marker"
+  fi
+else
+  fail "bin/hnc_dpid missing; DPI observer will not work on fresh installs"
 fi
 
 # 6b. Optional hnc_json_c helper architecture sanity.
@@ -203,6 +229,7 @@ if [ -n "$ARTIFACT" ]; then
     echo "$LIST" | grep -E '\.rej|\.orig' >/dev/null && fail "artifact contains .rej/.orig" || ok "artifact has no .rej/.orig"
     echo "$LIST" | grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)' >/dev/null && fail "artifact may contain secrets" || ok "artifact has no obvious secrets"
     echo "$LIST" | grep -E 'daemon/hnc_httpd/hnc_httpd$' >/dev/null && ok "artifact contains hnc_httpd" || fail "artifact missing daemon/hnc_httpd/hnc_httpd"
+    echo "$LIST" | grep -E 'bin/hnc_dpid$' >/dev/null && ok "artifact contains hnc_dpid" || fail "artifact missing bin/hnc_dpid"
     echo "$LIST" | grep -E 'webroot/index.html$' >/dev/null && ok "artifact contains webroot/index.html" || fail "artifact missing webroot/index.html"
     echo "$LIST" | grep -E 'webroot/json-health.html$' >/dev/null && ok "artifact contains json-health.html" || warn "artifact missing json-health.html"
 
@@ -221,6 +248,32 @@ if [ -n "$ARTIFACT" ]; then
       [ -n "$ZIP_VC" ] && [ "$ZIP_VC" = "$SRC_VC" ] && ok "artifact versionCode matches source" || fail "artifact versionCode mismatch: source=$SRC_VC artifact=$ZIP_VC"
     else
       fail "artifact missing module.prop"
+    fi
+
+    DPID_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)bin/hnc_dpid$' | head -1)"
+    if [ -n "$DPID_ENTRY" ]; then
+      unzip -p "$CHECK_ARTIFACT" "$DPID_ENTRY" > "$ZIPTMP.hnc_dpid" 2>/dev/null
+      if [ -s "$ZIPTMP.hnc_dpid" ]; then
+        ok "artifact hnc_dpid can be extracted"
+        if command -v od >/dev/null 2>&1; then
+          DM="$(od -An -tx1 -j18 -N2 "$ZIPTMP.hnc_dpid" 2>/dev/null | awk '{print $1 " " $2}')"
+          case "$DM" in
+            "b7 00") ok "artifact hnc_dpid is AArch64 ELF: $DM" ;;
+            "28 00") warn "artifact hnc_dpid is 32-bit ARM ELF: $DM; expected arm64 package?" ;;
+            *) fail "artifact hnc_dpid is not Android ARM/AArch64 ELF: machine='$DM'" ;;
+          esac
+        else
+          warn "od unavailable; cannot inspect artifact hnc_dpid architecture"
+        fi
+        if command -v strings >/dev/null 2>&1; then
+          DPID_ART_MARKERS="$(strings "$ZIPTMP.hnc_dpid" 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|hnc_dpid' | head -5)"
+          if [ -n "$DPID_ART_MARKERS" ]; then ok "artifact hnc_dpid contains expected version/name marker"; else fail "artifact hnc_dpid missing expected version/name marker"; fi
+        fi
+      else
+        fail "artifact hnc_dpid present but extraction failed or produced empty file"
+      fi
+    else
+      fail "artifact missing bin/hnc_dpid"
     fi
 
     C_ENTRY="$(echo "$LIST" | awk '{print $4}' | grep -E '(^|/)bin/hnc_json_c$' | head -1)"
@@ -252,7 +305,7 @@ if [ -n "$ARTIFACT" ]; then
       warn "bin/artifact_sanity_check.sh missing; strict artifact sanity gate skipped"
     fi
 
-    rm -f "$ZIPTMP" "$ZIPTMP.module.prop" "$ZIPTMP.hnc_json_c" "$PICK_OUT" 2>/dev/null || true
+    rm -f "$ZIPTMP" "$ZIPTMP.module.prop" "$ZIPTMP.hnc_json_c" "$ZIPTMP.hnc_dpid" "$PICK_OUT" 2>/dev/null || true
   fi
 fi
 
