@@ -24,7 +24,7 @@ EOF_USAGE
 [ -f "$ZIP" ] || { fail "artifact not found: $ZIP"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 command -v unzip >/dev/null 2>&1 || { fail "unzip not found; cannot inspect artifact"; say "summary: failures=$FAIL warnings=$WARN"; exit 1; }
 
-say "HNC artifact sanity check v5.3.0-rc20.0"
+say "HNC artifact sanity check v5.3.0-rc25.0"
 say "artifact=$ZIP"
 unzip -t "$ZIP" >"$TMP.unzip_test" 2>&1
 [ $? -eq 0 ] && ok "zip integrity OK" || { fail "zip integrity failed"; cat "$TMP.unzip_test"; }
@@ -51,7 +51,7 @@ fi
 [ "$NESTED_COUNT" -gt 0 ] && fail "artifact contains nested ZIP(s); use the inner module ZIP or fix packaging: $(printf '%s' "$NESTED_ZIPS" | tr '\n' ' ')" || ok "artifact has no nested ZIP"
 grep -E '\.rej$|\.orig$' "$TMP.entries" >/dev/null && fail "artifact contains .rej/.orig patch residue" || ok "artifact has no .rej/.orig residue"
 grep -E '(^|/)(\.ssh|id_rsa|id_ed25519|.*_ed25519|.*_rsa|.*\.pem)$' "$TMP.entries" >/dev/null && fail "artifact may contain private key/secret files" || ok "artifact has no obvious private key/secret files"
-for req in webroot/index.html webroot/json-health.html bin/sqm_manager.sh bin/capability_probe.sh daemon/hnc_httpd/hnc_httpd bin/hnc_dpid; do
+for req in webroot/index.html webroot/json-health.html bin/sqm_manager.sh bin/capability_probe.sh daemon/hnc_httpd/hnc_httpd bin/hnc_dpid bin/dpi_rules_import.sh data/dpi_rules.json bin/ndpi_lab_probe.sh bin/ndpi_lab_status.sh bin/ndpi_lab_sample.sh data/dpi_ndpi_config.json bin/hnc_ndpi_probe; do
   grep -x "$req" "$TMP.entries" >/dev/null && ok "required file exists: $req" || fail "required file missing at ZIP root path: $req"
 done
 
@@ -84,7 +84,7 @@ if grep -x 'bin/hnc_dpid' "$TMP.entries" >/dev/null; then
     fi
     if command -v strings >/dev/null 2>&1; then
       strings "$TMP.extract/hnc_dpid" > "$TMP.dpid.strings" 2>/dev/null
-      if grep -F '0.1.0-rc1.2-fixed' "$TMP.dpid.strings" >/dev/null || grep -F '0.1.0-rc1.3' "$TMP.dpid.strings" >/dev/null || grep -F '0.2.0-l2-rc19' "$TMP.dpid.strings" >/dev/null || grep -F '0.3.0-l3-rc20' "$TMP.dpid.strings" >/dev/null || grep -F 'hnc_dpid' "$TMP.dpid.strings" >/dev/null; then
+      if grep -F '0.1.0-rc1.2-fixed' "$TMP.dpid.strings" >/dev/null || grep -F '0.1.0-rc1.3' "$TMP.dpid.strings" >/dev/null || grep -F '0.2.0-l2-rc19' "$TMP.dpid.strings" >/dev/null || grep -F '0.3.0-l3-rc20' "$TMP.dpid.strings" >/dev/null || grep -F '0.3.1-l3-rc20.1' "$TMP.dpid.strings" >/dev/null || grep -F 'hnc_dpid' "$TMP.dpid.strings" >/dev/null; then
         ok "hnc_dpid contains expected version/name marker"
       else
         fail "hnc_dpid missing expected version/name marker; binary may be stale or wrong"

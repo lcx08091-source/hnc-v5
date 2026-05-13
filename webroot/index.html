@@ -2503,6 +2503,156 @@ body.kb-open .container {
 <div id="page-dpi" class="page">
   <div class="container">
 
+    <!-- ═══ v0.4.0-rc23: 截图风格头部 — 状态条 + 运行卡 + 4 计数卡 + 当前活跃区 ═══ -->
+
+    <!-- 状态条: 接口 / DPI 状态 / 在线设备数 -->
+    <div class="dpi-statusbar" id="dpi-statusbar">
+      <div class="dpi-pill" id="dpi-sb-iface">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        <span class="dpi-pill-label">接口</span>
+        <span class="dpi-pill-val" id="dpi-sb-iface-val">—</span>
+        <span class="dpi-dot" id="dpi-sb-iface-dot"></span>
+      </div>
+      <div class="dpi-pill" id="dpi-sb-mode">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span class="dpi-pill-label">DPI</span>
+        <span class="dpi-pill-val" id="dpi-sb-mode-val">检测中</span>
+      </div>
+      <div class="dpi-pill" id="dpi-sb-clients">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="dpi-pill-label">在线设备</span>
+        <span class="dpi-pill-val" id="dpi-sb-clients-val">0</span>
+      </div>
+    </div>
+
+    <!-- 运行卡: 运行时长 / 版本 / 刷新 + 重新绑定 -->
+    <div class="dpi-runcard glass">
+      <div class="dpi-runcard-info">
+        <div class="dpi-runcard-cell">
+          <div class="dpi-runcard-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            运行时长
+          </div>
+          <div class="dpi-runcard-val" id="dpi-rc-uptime">—</div>
+        </div>
+        <div class="dpi-runcard-cell">
+          <div class="dpi-runcard-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            版本
+          </div>
+          <div class="dpi-runcard-val" id="dpi-rc-version">—</div>
+        </div>
+      </div>
+      <div class="dpi-runcard-actions">
+        <button class="dpi-btn-secondary" id="btn-dpi-refresh" data-action="dpi-refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+          刷新状态
+        </button>
+        <button class="dpi-btn-primary" id="btn-dpi-rebind-new" data-action="dpi-rebind">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          重新绑定 DPI
+        </button>
+      </div>
+    </div>
+
+    <!-- 4 计数卡 -->
+    <div class="dpi-bigcounter-grid">
+      <div class="dpi-bigcounter glass" id="dpi-bc-pkts">
+        <div class="dpi-bigcounter-icon ico-pkts">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div>
+          <div class="dpi-bigcounter-num" id="dpi-bc-pkts-val">0</div>
+          <div class="dpi-bigcounter-lbl">已抓包</div>
+        </div>
+      </div>
+      <div class="dpi-bigcounter glass" id="dpi-bc-dns">
+        <div class="dpi-bigcounter-icon ico-dns">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        </div>
+        <div>
+          <div class="dpi-bigcounter-num" id="dpi-bc-dns-val">0</div>
+          <div class="dpi-bigcounter-lbl">DNS 事件</div>
+        </div>
+      </div>
+      <div class="dpi-bigcounter glass" id="dpi-bc-tls">
+        <div class="dpi-bigcounter-icon ico-tls">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <div>
+          <div class="dpi-bigcounter-num" id="dpi-bc-tls-val">0</div>
+          <div class="dpi-bigcounter-lbl">TLS 事件</div>
+        </div>
+      </div>
+      <div class="dpi-bigcounter glass" id="dpi-bc-drops">
+        <div class="dpi-bigcounter-icon ico-drops">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div>
+          <div class="dpi-bigcounter-num" id="dpi-bc-drops-val">0</div>
+          <div class="dpi-bigcounter-lbl">内核丢包</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 当前活跃设备 / 应用 - 截图核心区 -->
+    <div class="dpi-active-section">
+      <div class="dpi-active-head">
+        <div class="dpi-active-title">
+          <span class="dpi-active-bar"></span>
+          当前活跃设备 / 应用
+        </div>
+        <div class="dpi-active-filter" id="dpi-active-filter">
+          <button class="dpi-flt-btn active" data-flt="all">全部</button>
+          <button class="dpi-flt-btn" data-flt="active">活跃中</button>
+          <button class="dpi-flt-btn" data-flt="high">高置信</button>
+          <button class="dpi-flt-btn" data-flt="low">低置信</button>
+        </div>
+      </div>
+      <div class="dpi-active-list" id="dpi-active-list">
+        <div class="dpi-empty" style="text-align:center;padding:30px">加载中…</div>
+      </div>
+    </div>
+
+    <!-- 识别总览 + 流量分布 双列 -->
+    <div class="dpi-2col">
+      <div class="dpi-col-card glass">
+        <div class="dpi-col-head">
+          <span class="dpi-col-title">识别总览</span>
+          <span class="dpi-col-sub">(按当前活跃)</span>
+        </div>
+        <div class="dpi-rank-list" id="dpi-rank-list">
+          <div class="dpi-empty">暂无识别结果</div>
+        </div>
+      </div>
+      <div class="dpi-col-card glass">
+        <div class="dpi-col-head">
+          <span class="dpi-col-title">流量分布</span>
+          <span class="dpi-col-sub">(累计字节)</span>
+        </div>
+        <div class="dpi-donut-wrap">
+          <svg id="dpi-donut" viewBox="0 0 100 100" width="120" height="120" aria-hidden="true">
+            <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="14"/>
+          </svg>
+          <div class="dpi-donut-legend" id="dpi-donut-legend">
+            <div class="dpi-empty">暂无流量数据</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 最近识别事件 timeline -->
+    <div class="dpi-timeline-card glass">
+      <div class="dpi-timeline-head">
+        <span class="dpi-col-title">最近识别事件</span>
+      </div>
+      <div class="dpi-timeline-body" id="dpi-timeline-body">
+        <div class="dpi-empty">暂无事件</div>
+      </div>
+    </div>
+
+    <!-- ═══ 以下保留原有内容: 老状态卡 / 能力探测 / 流量画像 Top 20 / 关于 ═══ -->
+
     <!-- 状态卡: dpid 模式 + 接口 + offload 提示 -->
     <div class="dpi-status-card glass-elevated" id="dpi-status-card">
       <div class="dpi-status-head">
@@ -2527,6 +2677,10 @@ body.kb-open .container {
       <div class="dpi-action-row">
         <button type="button" class="btn btn-ghost dpi-action-btn" data-action="dpi-refresh">刷新状态</button>
         <button type="button" class="btn btn-primary dpi-action-btn" data-action="dpi-rebind">重新绑定 DPI</button>
+      </div>
+      <div class="dpi-action-row">
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="ndpi-probe">探测 nDPI</button>
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="ndpi-open">打开 nDPI Lab</button>
       </div>
     </div>
 
@@ -2557,6 +2711,67 @@ body.kb-open .container {
       <div class="dpi-client-list" id="dpi-client-list">
         <div class="dpi-empty">暂无设备域名/SNI 事件。让热点客户端打开网页后再刷新。</div>
       </div>
+    </div>
+
+
+    <!-- rc25: unknown domain/SNI rule assistant -->
+    <div class="sec-title">未识别域名助手 <span class="dpi-flow-hint">补库线索 · 本地生成规则模板</span></div>
+    <div class="setting-group glass-elevated" id="dpi-unknown-group">
+      <div class="set-row">
+        <div class="set-icon blue">U</div>
+        <div class="set-body">
+          <div class="set-label">待补库 DNS/SNI Top</div>
+          <div class="set-sub" id="dpi-unknown-status">从当前 DPI 画像中提取高频域名，帮助生成可编辑规则模板。</div>
+        </div>
+      </div>
+      <div class="dpi-action-row dpi-rules-actions">
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="dpi-unknown-refresh">刷新线索</button>
+        <button type="button" class="btn btn-primary dpi-action-btn" data-action="dpi-unknown-template-all">生成模板到规则编辑框</button>
+      </div>
+      <div id="dpi-unknown-list" class="dpi-unknown-list"><div class="dpi-empty">等待 DPI 域名/SNI 数据…</div></div>
+      <div class="dpi-rule-help">这里只做补库辅助：不会自动判定 App，也不会修改限速、iptables、tc 或 DNS。生成后请先编辑 App/类别，再点击“导入规则库”。</div>
+    </div>
+
+
+    <!-- rc20.1/rc25: importable DPI L3 domain rules -->
+    <div class="sec-title">DPI 规则库 <span class="dpi-flow-hint">可导入 · 无需重新刷包</span></div>
+    <div class="setting-group glass-elevated" id="dpi-rules-group">
+      <div class="set-row">
+        <div class="set-icon blue">R</div>
+        <div class="set-body">
+          <div class="set-label">域名规则库</div>
+          <div class="set-sub" id="dpi-rules-status">读取后可编辑 JSON，再导入到 <code>/data/local/hnc/etc/dpi_rules.json</code>。</div>
+        </div>
+      </div>
+      <textarea id="dpi-rules-text" class="dpi-rules-text" spellcheck="false" placeholder='{"schema_version":"1.0","rules_version":"my-rules","rules":[{"id":"mihoyo","app":"米哈游 / HoYoverse","category":"game","suffixes":["mihoyo.com","mhystatic.com"]}]}'></textarea>
+      <div class="dpi-action-row dpi-rules-actions">
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="dpi-rules-export">读取当前规则</button>
+        <button type="button" class="btn btn-primary dpi-action-btn" data-action="dpi-rules-import">导入规则库</button>
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="dpi-rules-reset">恢复内置规则</button>
+      </div>
+      <div class="dpi-rule-help">规则导入后会自动重绑 DPI。导入内容只影响只读标签/分类，不会修改限速、iptables、tc 或 DNS。</div>
+    </div>
+
+    <!-- rc24.4/rc25: nDPI-lab quick controls + rules assistant -->
+    <div class="sec-title">nDPI Lab <span class="dpi-flow-hint">可选实验引擎 · 默认不影响主 DPI</span></div>
+    <div class="setting-group glass-elevated" id="ndpi-lab-group">
+      <div class="set-row">
+        <div class="set-icon blue">N</div>
+        <div class="set-body">
+          <div class="set-label">nDPI 实验采样</div>
+          <div class="set-sub" id="ndpi-lab-status">可一键探测并短时采样；nDPI 与 HNC 内置 L2/L3 结果并排对比。</div>
+        </div>
+      </div>
+      <div class="dpi-action-row dpi-rules-actions">
+        <button type="button" class="btn btn-primary dpi-action-btn" data-action="ndpi-probe">一键探测 nDPI</button>
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="ndpi-sample">采样 10 秒</button>
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="ndpi-sample-read">读取采样结果</button>
+        <button type="button" class="btn btn-ghost dpi-action-btn" data-action="ndpi-open">打开实验页</button>
+      </div>
+      <div id="ndpi-lab-cards" class="ndpi-lab-cards"></div>
+      <div id="ndpi-compare-cards" class="ndpi-compare-cards"></div>
+      <pre id="ndpi-lab-output" class="ndpi-lab-output">等待操作…</pre>
+      <div class="dpi-rule-help">nDPI Lab 是可选实验桥接，不替代当前 Go DPI 主线；采样为短时一次性抓包测试，不会改 tc、iptables、DNS 或 offload。</div>
     </div>
 
     <!-- rc17: 进程诊断，只显示主实例健康，不把 guard/watchdog 子 shell 误判为重复 -->
@@ -2644,9 +2859,9 @@ body.kb-open .container {
     <div class="sec-title">关于 DPI 模块</div>
     <div class="setting-group glass-elevated">
       <div class="dpi-about">
-        <p>HNC DPI (<code>hnc_dpid</code>) 是被动的元数据观察 daemon, 用 AF_PACKET + cBPF 抓 <b>DNS</b> 和 <b>TLS ClientHello</b> 元数据，并用内置规则做只读 L3 标签/分类，不做任何主动操作 (不 NFQUEUE、不 DNS 劫持、不改 iptables/tc).</p>
+        <p>HNC DPI (<code>hnc_dpid</code>) 是被动的元数据观察 daemon, 用 AF_PACKET + cBPF 抓 <b>DNS</b> 和 <b>TLS ClientHello</b> 元数据，并用内置/导入规则做只读 L3 标签/分类，不做任何主动操作 (不 NFQUEUE、不 DNS 劫持、不改 iptables/tc).</p>
         <p>当前 rc19/L2 阶段按客户端聚合 DNS 与 TLS SNI 元数据，只做域名画像，不做 App 分类、不参与限速。</p>
-        <p>如果卡在“等待接口就绪”，可点上方 <b>重新绑定 DPI</b>；关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
+        <p>如果卡在“等待接口就绪”，可点上方 <b>重新绑定 DPI</b>；规则库可在本页导入到 <code>/data/local/hnc/etc/dpi_rules.json</code>；关闭抓包: 修改 <code>/data/local/hnc/etc/dpi_config.json</code> 设 <code>"disable_capture": true</code> 后重启 watchdog.</p>
       </div>
     </div>
 
@@ -2655,6 +2870,334 @@ body.kb-open .container {
 
 <!-- ═══ DPI 页面专属样式 ═══ -->
 <style>
+  /* ─── v0.4.0-rc23 截图风格新样式 ─── */
+
+  /* 状态条 (3 pill 水平排列) */
+  .dpi-statusbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .dpi-pill {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border-radius: 14px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.10);
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+  }
+  .dpi-pill svg { color: var(--text-2); flex-shrink: 0; }
+  .dpi-pill-label { color: var(--text-2); font-weight: 500; }
+  .dpi-pill-val { color: var(--text-1); font-weight: 700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dpi-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--sys-green, #34c759);
+    box-shadow: 0 0 6px var(--sys-green, #34c759);
+    margin-left: auto;
+  }
+  .dpi-dot.warn { background: var(--sys-orange,#ff9500); box-shadow: 0 0 6px var(--sys-orange,#ff9500); }
+  .dpi-dot.bad { background: var(--sys-red,#ff3b30); box-shadow: 0 0 6px var(--sys-red,#ff3b30); }
+
+  /* 运行卡 */
+  .dpi-runcard {
+    padding: 14px;
+    margin-bottom: 14px;
+    display: flex; align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .dpi-runcard-info { display: flex; gap: 24px; flex: 1; min-width: 200px; }
+  .dpi-runcard-cell { display: flex; flex-direction: column; gap: 3px; }
+  .dpi-runcard-label {
+    font-size: 11px; color: var(--text-3);
+    font-weight: 600; display: flex; align-items: center; gap: 5px;
+  }
+  .dpi-runcard-label svg { color: var(--text-3); }
+  .dpi-runcard-val { font-size: 15px; font-weight: 700; font-feature-settings: "tnum"; }
+  .dpi-runcard-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .dpi-btn-secondary, .dpi-btn-primary {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13px; font-weight: 600;
+    border: 0; cursor: pointer; font-family: inherit;
+    display: flex; align-items: center; gap: 6px;
+    transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .dpi-btn-secondary {
+    background: rgba(255,255,255,.10);
+    border: 1px solid rgba(255,255,255,.15);
+    color: var(--text-1);
+  }
+  .dpi-btn-primary {
+    background: linear-gradient(135deg, var(--sys-blue, #007aff), var(--sys-indigo, #5856d6));
+    color: #fff;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 4px 12px rgba(0,122,255,.35);
+  }
+  .dpi-btn-secondary:active, .dpi-btn-primary:active { transform: scale(0.96); }
+
+  /* 4 大计数卡 (替代旧 counter-grid) */
+  .dpi-bigcounter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .dpi-bigcounter {
+    padding: 14px 12px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .dpi-bigcounter-icon {
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.20);
+  }
+  .ico-pkts { background: linear-gradient(135deg, rgba(0,122,255,.25), rgba(88,86,214,.25)); color: var(--sys-blue,#007aff); }
+  .ico-dns  { background: linear-gradient(135deg, rgba(52,199,89,.25), rgba(48,176,189,.25)); color: var(--sys-green,#34c759); }
+  .ico-tls  { background: linear-gradient(135deg, rgba(175,82,222,.25), rgba(255,55,95,.20)); color: var(--sys-purple,#af52de); }
+  .ico-drops { background: linear-gradient(135deg, rgba(255,149,0,.25), rgba(255,59,48,.20)); color: var(--sys-orange,#ff9500); }
+  .dpi-bigcounter-num {
+    font-size: 22px; font-weight: 700; line-height: 1.15;
+    font-feature-settings: "tnum";
+  }
+  .dpi-bigcounter-lbl {
+    font-size: 11px; color: var(--text-2);
+    font-weight: 500;
+  }
+
+  /* 当前活跃区 */
+  .dpi-active-section { margin-bottom: 18px; }
+  .dpi-active-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; flex-wrap: wrap; gap: 10px;
+  }
+  .dpi-active-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px; font-weight: 700;
+  }
+  .dpi-active-bar {
+    width: 3px; height: 16px;
+    background: var(--sys-blue,#007aff);
+    border-radius: 2px;
+  }
+  .dpi-active-filter {
+    display: flex; gap: 4px; padding: 3px;
+    border-radius: 11px;
+    background: rgba(0,0,0,.22);
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .dpi-flt-btn {
+    padding: 6px 11px; border-radius: 8px;
+    background: transparent; border: 0;
+    color: var(--text-2); font-size: 12px; font-weight: 600;
+    font-family: inherit; cursor: pointer;
+    transition: all 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .dpi-flt-btn:active { transform: scale(0.95); }
+  .dpi-flt-btn.active {
+    background: linear-gradient(135deg, var(--sys-blue,#007aff), var(--sys-indigo,#5856d6));
+    color: #fff;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 8px rgba(0,122,255,.28);
+  }
+  .dpi-active-list { display: flex; flex-direction: column; gap: 10px; }
+
+  /* 活跃设备卡 - 截图主体 */
+  .dpi-active-card {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 0.7fr;
+    gap: 12px;
+    align-items: center;
+  }
+  .dpi-active-card.no-app { grid-template-columns: 1fr 0.6fr; }
+  .dpi-ac-left {
+    display: flex; align-items: center; gap: 10px;
+    min-width: 0;
+  }
+  .dpi-ac-avatar {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: linear-gradient(135deg, rgba(120,200,255,.32), rgba(80,80,200,.32));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+    position: relative; flex-shrink: 0;
+  }
+  .dpi-ac-avatar .dot {
+    position: absolute; bottom: -2px; right: -2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid rgba(0,0,0,.55);
+  }
+  .dpi-ac-avatar .dot.online  { background: var(--sys-green,#34c759); box-shadow: 0 0 6px rgba(52,199,89,.6); }
+  .dpi-ac-avatar .dot.offline { background: #8e8e93; }
+  .dpi-ac-name {
+    font-size: 14px; font-weight: 700; line-height: 1.2;
+    color: var(--text-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dpi-ac-meta {
+    font-size: 11px; color: var(--text-3);
+    font-feature-settings: "tnum";
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-top: 1px;
+  }
+  .dpi-ac-mid {
+    display: flex; flex-direction: column; gap: 4px;
+    min-width: 0;
+  }
+  .dpi-ac-app {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 2px;
+  }
+  .dpi-ac-app-icon {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: linear-gradient(135deg, rgba(255,149,0,.32), rgba(255,59,48,.22));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+    flex-shrink: 0;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+  }
+  .dpi-ac-app-text {
+    display: flex; flex-direction: column;
+    min-width: 0; flex: 1;
+  }
+  .dpi-ac-app-name {
+    font-size: 13px; font-weight: 700;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dpi-ac-app-cat {
+    font-size: 10px; color: var(--text-3); margin-top: 1px;
+  }
+  .dpi-ac-conf {
+    font-size: 11px; font-weight: 700;
+    padding: 3px 8px; border-radius: 999px;
+    font-feature-settings: "tnum";
+    flex-shrink: 0;
+  }
+  .dpi-ac-conf.high { background: rgba(0,122,255,.18); color: #4ab1ff; border: 1px solid rgba(0,122,255,.30); }
+  .dpi-ac-conf.mid  { background: rgba(175,82,222,.18); color: #c478ff; border: 1px solid rgba(175,82,222,.30); }
+  .dpi-ac-conf.low  { background: rgba(255,149,0,.18); color: #ffaa3a; border: 1px solid rgba(255,149,0,.30); }
+  .dpi-ac-recents {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    margin-top: 4px;
+  }
+  .dpi-ac-recent {
+    font-size: 10px;
+    padding: 2px 6px; border-radius: 6px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.08);
+    color: var(--text-2);
+    font-family: "SF Mono", Menlo, monospace;
+    max-width: 130px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dpi-ac-right {
+    text-align: right;
+    font-size: 11px;
+    font-feature-settings: "tnum";
+    flex-shrink: 0;
+  }
+  .dpi-ac-rate {
+    display: flex; align-items: center; gap: 3px;
+    justify-content: flex-end;
+    margin-bottom: 2px;
+  }
+  .dpi-ac-rate.down { color: #4ab1ff; }
+  .dpi-ac-rate.up   { color: #c478ff; }
+  .dpi-ac-rate-val { font-weight: 700; }
+  .dpi-ac-recent-time {
+    color: var(--text-3); font-size: 10px;
+    margin-top: 6px;
+  }
+
+  /* 双列 */
+  .dpi-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .dpi-col-card { padding: 14px; }
+  .dpi-col-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+  .dpi-col-title { font-size: 14px; font-weight: 700; }
+  .dpi-col-sub { font-size: 10px; color: var(--text-3); }
+
+  /* 识别总览条形图 */
+  .dpi-rank-list { display: flex; flex-direction: column; gap: 8px; }
+  .dpi-rank-row {
+    display: grid;
+    grid-template-columns: 16px 24px 1fr 38px;
+    gap: 8px; align-items: center;
+    font-size: 12px;
+  }
+  .dpi-rank-num { color: var(--text-3); font-weight: 700; text-align: right; font-feature-settings: "tnum"; }
+  .dpi-rank-icon { width: 18px; height: 18px; border-radius: 4px; background: rgba(255,255,255,.10); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .dpi-rank-bar-wrap {
+    height: 10px; border-radius: 5px;
+    background: rgba(255,255,255,.06);
+    overflow: hidden;
+    position: relative;
+  }
+  .dpi-rank-bar-name { position: absolute; left: 6px; top: -2px; font-size: 11px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: calc(100% - 12px); pointer-events: none; }
+  .dpi-rank-bar {
+    height: 100%;
+    border-radius: 5px;
+    background: linear-gradient(90deg, var(--sys-blue,#007aff), var(--sys-indigo,#5856d6));
+    transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .dpi-rank-bar.cat-video    { background: linear-gradient(90deg, #ff3b30, #ff9500); }
+  .dpi-rank-bar.cat-social   { background: linear-gradient(90deg, #5856d6, #af52de); }
+  .dpi-rank-bar.cat-shopping { background: linear-gradient(90deg, #ff9500, #ffcc00); }
+  .dpi-rank-bar.cat-game     { background: linear-gradient(90deg, #34c759, #30b0bd); }
+  .dpi-rank-bar.cat-system   { background: linear-gradient(90deg, #8e8e93, #c7c7cc); }
+  .dpi-rank-bar.cat-music    { background: linear-gradient(90deg, #ff2d55, #af52de); }
+  .dpi-rank-pct { text-align: right; font-weight: 700; font-feature-settings: "tnum"; color: var(--text-1); }
+
+  /* 流量分布环图 */
+  .dpi-donut-wrap { display: flex; align-items: center; gap: 14px; }
+  .dpi-donut-legend { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .dpi-donut-row {
+    display: grid;
+    grid-template-columns: 10px 1fr auto;
+    gap: 6px; align-items: center;
+    font-size: 11px;
+  }
+  .dpi-donut-swatch { width: 10px; height: 10px; border-radius: 3px; }
+  .dpi-donut-name { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dpi-donut-val { font-weight: 700; color: var(--text-1); font-feature-settings: "tnum"; }
+
+  /* 时间线 */
+  .dpi-timeline-card { padding: 14px; margin-bottom: 14px; }
+  .dpi-timeline-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .dpi-timeline-body { display: flex; flex-direction: column; gap: 6px; }
+  .dpi-tl-row {
+    display: grid;
+    grid-template-columns: 8px 56px 1fr auto;
+    gap: 8px; align-items: center;
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+  }
+  .dpi-tl-row:last-child { border-bottom: 0; }
+  .dpi-tl-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--sys-blue,#007aff);
+  }
+  .dpi-tl-time { color: var(--text-3); font-feature-settings: "tnum"; font-size: 11px; }
+  .dpi-tl-text { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dpi-tl-text b { color: var(--sys-blue,#4ab1ff); font-weight: 600; }
+  .dpi-tl-conf { color: var(--text-3); font-size: 10px; }
+
+
+  /* ─── 旧 DPI 页面专属样式 (保留) ─── */
   .dpi-status-card { padding: 18px; margin-bottom: 14px; }
   .dpi-status-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .dpi-status-title { font-size: 15px; font-weight: 700; }
@@ -2698,22 +3241,201 @@ body.kb-open .container {
   .dpi-flow-stats { display: grid; gap: 10px; padding: 4px 0; }
   .dpi-flow-row { display: flex; align-items: baseline; justify-content: space-between; }
   .dpi-flow-label { font-size: 13px; }
+
+  .dpi-rules-text {
+    width: 100%;
+    min-height: 180px;
+    resize: vertical;
+    box-sizing: border-box;
+    margin: 8px 0 10px;
+    padding: 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(120,120,128,.22);
+    background: rgba(255,255,255,.58);
+    color: var(--text);
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    outline: none;
+  }
+  .dpi-rules-text:focus { border-color: rgba(45,115,255,.55); box-shadow: 0 0 0 3px rgba(45,115,255,.12); }
+
+  .ndpi-lab-cards { display: grid; gap: 10px; margin: 10px 0 8px; }
+  .ndpi-card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  @media (max-width: 720px) { .ndpi-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .ndpi-metric-card {
+    padding: 10px; border-radius: 16px; border: 1px solid rgba(120,120,128,.18);
+    background: rgba(255,255,255,.50); box-shadow: 0 8px 20px rgba(0,0,0,.04);
+  }
+  .ndpi-metric-label { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+  .ndpi-metric-value { font-size: 17px; font-weight: 800; color: var(--text); font-feature-settings: "tnum"; }
+  .ndpi-section-title { font-size: 12px; font-weight: 800; color: var(--text-2); margin: 8px 2px 6px; }
+  .ndpi-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ndpi-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 6px 8px; border-radius: 999px; font-size: 12px;
+    background: rgba(45,115,255,.09); border: 1px solid rgba(45,115,255,.16); color: var(--text);
+  }
+  .ndpi-chip small { color: var(--text-3); font-size: 11px; }
+  .ndpi-risk-note { font-size: 12px; color: var(--text-3); line-height: 1.45; margin: 6px 2px 0; }
+  .ndpi-compare-cards { display: grid; gap: 10px; margin: 10px 0 8px; }
+  .ndpi-compare-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 720px) { .ndpi-compare-grid { grid-template-columns: 1fr; } }
+  .ndpi-compare-card {
+    padding: 12px; border-radius: 18px; border: 1px solid rgba(120,120,128,.18);
+    background: rgba(255,255,255,.52); box-shadow: 0 8px 20px rgba(0,0,0,.035);
+  }
+  .ndpi-compare-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .ndpi-compare-title { font-size:13px; font-weight:900; color:var(--text); }
+  .ndpi-compare-sub { font-size:11px; color:var(--text-3); }
+  .ndpi-compare-list { display:flex; flex-wrap:wrap; gap:6px; }
+  .ndpi-compare-chip { display:inline-flex; align-items:center; gap:5px; max-width:100%; padding:6px 8px; border-radius:999px; font-size:12px; border:1px solid rgba(52,199,89,.18); background:rgba(52,199,89,.09); color:var(--text); }
+  .ndpi-compare-chip.ndpi { border-color:rgba(45,115,255,.16); background:rgba(45,115,255,.09); }
+  .ndpi-compare-chip.warn { border-color:rgba(255,149,0,.22); background:rgba(255,149,0,.10); }
+  .ndpi-compare-chip small { color:var(--text-3); font-size:11px; }
+  .ndpi-compare-note { font-size:12px; color:var(--text-3); line-height:1.45; margin-top:8px; }
+
+  .ndpi-lab-output {
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 220px; overflow: auto;
+    box-sizing: border-box; margin: 10px 0 8px; padding: 12px;
+    border-radius: 16px; border: 1px solid rgba(120,120,128,.18);
+    background: rgba(255,255,255,.50); color: var(--text);
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .dpi-rule-help { margin: 6px 2px 0; color: var(--sub); font-size: 12px; line-height: 1.45; }
+  .dpi-rules-actions { margin-top: 6px; }
+
+  .dpi-unknown-list { display:grid; gap:8px; margin-top:10px; }
+  .dpi-unknown-item { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:16px; background:rgba(255,255,255,.45); }
+  .dpi-unknown-main { min-width:0; }
+  .dpi-unknown-host { font-size:13px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dpi-unknown-meta { margin-top:3px; font-size:11px; color:var(--text-3); }
+  .dpi-unknown-actions { display:flex; gap:6px; flex-shrink:0; }
+  .dpi-mini-btn { border:1px solid var(--border); border-radius:999px; padding:6px 9px; font-size:11px; font-weight:800; color:var(--text-2); background:rgba(255,255,255,.72); }
+  .dpi-mini-btn.primary { color:#fff; border-color:rgba(45,115,255,.25); background:linear-gradient(135deg,#0a84ff,#5e5ce6); }
+
   .dpi-flow-hint { font-size: 11px; color: var(--text-3); margin-left: 6px; }
   .dpi-flow-val { font-size: 18px; font-weight: 700; font-feature-settings: "tnum"; }
-  .dpi-l2-summary { font-size: 12px; color: var(--text-2); margin: 0 0 12px; line-height: 1.5; }
-  .dpi-client-list { display: grid; gap: 10px; }
-  .dpi-client-card { padding: 12px; border-radius: 16px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08); }
-  .dpi-client-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-  .dpi-client-id { font-size: 13px; font-weight: 700; font-feature-settings: "tnum"; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dpi-client-meta { font-size: 11px; color: var(--text-3); white-space: nowrap; }
-  .dpi-client-row { margin-top: 8px; }
-  .dpi-client-label { font-size: 11px; color: var(--text-3); margin-bottom: 5px; }
-  .dpi-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
-  .dpi-chip { max-width: 100%; padding: 4px 8px; border-radius: 999px; font-size: 11px; color: var(--text-2); background: rgba(0,122,255,.10); border: 1px solid rgba(0,122,255,.18); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dpi-chip.sni { background: rgba(52,199,89,.10); border-color: rgba(52,199,89,.18); }
-  .dpi-chip.app { background: rgba(255,149,0,.12); border-color: rgba(255,149,0,.22); }
-  .dpi-chip.cat { background: rgba(175,82,222,.12); border-color: rgba(175,82,222,.22); }
-  .dpi-empty { color: var(--text-3); font-size: 12px; line-height: 1.6; padding: 8px 0; }
+
+  /* ─── DPI L2 设备卡 — 与主页设备卡视觉对齐 ─── */
+  .dpi-l2-summary {
+    font-size: 12px; color: var(--text-2);
+    margin: 0 0 14px; line-height: 1.55;
+  }
+  .dpi-client-list { display: grid; gap: 12px; }
+
+  /* L2 卡用与主页 device-card 一致的圆角、border、阴影；玻璃质感稍弱以低成本 */
+  .dpi-client-card {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.18);
+  }
+
+  /* 卡头：emoji avatar + 设备名 + 状态点 + 右上 DNS/TLS 计数 pill */
+  .dpi-client-head {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 10px;
+  }
+  .dpi-client-avatar {
+    flex-shrink: 0;
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(120,200,255,.32), rgba(80,80,200,.32));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 19px;
+    position: relative;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+  }
+  .dpi-client-avatar.privacy { background: linear-gradient(135deg, rgba(255,200,80,.32), rgba(255,140,40,.32)); }
+  .dpi-client-avatar.unknown { background: linear-gradient(135deg, rgba(160,160,170,.30), rgba(110,110,120,.30)); }
+  .dpi-client-avatar .dot {
+    position: absolute; bottom: -2px; right: -2px;
+    width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid rgba(0,0,0,.55);
+  }
+  .dpi-client-avatar .dot.online  { background: var(--sys-green, #34c759); box-shadow: 0 0 6px rgba(52,199,89,.6); }
+  .dpi-client-avatar .dot.offline { background: #8e8e93; }
+  .dpi-client-avatar .dot.blocked { background: var(--sys-red, #ff3b30); }
+  .dpi-client-info {
+    flex: 1; min-width: 0;
+  }
+  .dpi-client-name {
+    font-size: 15px; font-weight: 700;
+    color: var(--text-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    letter-spacing: -0.01em;
+  }
+  .dpi-client-meta {
+    font-size: 11px; color: var(--text-2);
+    font-feature-settings: "tnum";
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-top: 2px;
+  }
+  .dpi-client-counter {
+    flex-shrink: 0;
+    font-size: 11px; font-weight: 700;
+    color: var(--text-1);
+    background: rgba(255,255,255,.10);
+    border: 1px solid rgba(255,255,255,.12);
+    padding: 4px 9px; border-radius: 999px;
+    font-feature-settings: "tnum";
+    white-space: nowrap;
+  }
+
+  /* chip 行 — label 在左, chips 在右, 不同种类颜色分明 */
+  .dpi-client-row {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,.05);
+  }
+  .dpi-client-row:first-of-type {
+    border-top: 0;
+    margin-top: 4px;
+    padding-top: 0;
+  }
+  .dpi-client-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-2);
+    margin-bottom: 6px;
+    letter-spacing: 0.2px;
+  }
+  .dpi-chip-wrap {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  /* chip 统一字号到 12px (从 11px 提一档), 颜色加 contrast */
+  .dpi-chip {
+    max-width: 100%;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    line-height: 1.3;
+  }
+  .dpi-chip.host { background: rgba(0,122,255,.15);  border: 1px solid rgba(0,122,255,.30); }
+  .dpi-chip.sni  { background: rgba(52,199,89,.15);  border: 1px solid rgba(52,199,89,.30); }
+  .dpi-chip.app  { background: rgba(255,149,0,.18);  border: 1px solid rgba(255,149,0,.32); }
+  .dpi-chip.cat  { background: rgba(175,82,222,.18); border: 1px solid rgba(175,82,222,.32); }
+  /* v0.3.0-dfp: known fingerprint = teal/cyan (区别于上面 4 种); unknown = mono 灰 */
+  .dpi-chip.fp-known   { background: rgba(0,180,200,.18); border: 1px solid rgba(0,180,200,.35); }
+  .dpi-chip.fp-unknown {
+    background: rgba(140,140,150,.14);
+    border: 1px solid rgba(140,140,150,.28);
+    color: var(--text-2);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+  }
+
+  /* host 和 sni 的数字 ×N 用稍弱颜色, 让域名本身更突出 */
+  .dpi-chip .x { opacity: .65; font-weight: 500; margin-left: 3px; font-feature-settings: "tnum"; }
+
+  .dpi-empty {
+    color: var(--text-3); font-size: 12px;
+    line-height: 1.6; padding: 8px 0;
+  }
   .dpi-about p { font-size: 13px; line-height: 1.7; color: var(--text-2); margin: 0 0 10px; }
   .dpi-about p:last-child { margin-bottom: 0; }
   .dpi-about code {
@@ -3914,6 +4636,202 @@ body.kb-open .container {
       return true;
     }
   }
+
+  function utf8Base64(s) {
+    return btoa(unescape(encodeURIComponent(String(s || ''))));
+  }
+  async function dpiRulesExportBackend() {
+    const script = 'H=/data/local/hnc; MOD=$(cat "$H/run/service.path" 2>/dev/null); [ -z "$MOD" ] && MOD=/data/adb/modules/hotspot_network_control; if [ -f "$H/etc/dpi_rules.json" ]; then cat "$H/etc/dpi_rules.json"; elif [ -f "$MOD/data/dpi_rules.json" ]; then cat "$MOD/data/dpi_rules.json"; else echo "{\"schema_version\":\"1.0\",\"rules_version\":\"empty\",\"rules\":[]}"; fi';
+    return await kexec('sh -c ' + sq(script));
+  }
+  async function dpiRulesImportBackend(text) {
+    const raw = String(text || '').trim();
+    if (!raw) throw new Error('规则库内容为空');
+    try { JSON.parse(raw); } catch (e) { throw new Error('JSON 格式错误: ' + e.message); }
+    if (raw.length > 512 * 1024) throw new Error('规则库太大，超过 512KB');
+    const b64 = utf8Base64(raw);
+    const script = 'H=/data/local/hnc; mkdir -p "$H/etc" "$H/run"; printf %s ' + sq(b64) + ' | base64 -d | sh "$H/bin/dpi_rules_import.sh" --stdin';
+    await kexec('sh -c ' + sq(script));
+    return true;
+  }
+  async function dpiRulesResetBackend() {
+    const script = 'H=/data/local/hnc; if [ -x "$H/bin/dpi_rules_import.sh" ]; then sh "$H/bin/dpi_rules_import.sh" --reset; else rm -f "$H/etc/dpi_rules.json"; fi';
+    await kexec('sh -c ' + sq(script));
+    return true;
+  }
+
+  async function ndpiLabProbeBackend() {
+    const script = 'H=/data/local/hnc; if [ -x "$H/bin/ndpi_lab_probe.sh" ]; then sh "$H/bin/ndpi_lab_probe.sh"; cat "$H/run/ndpi_lab_state.json" 2>/dev/null || true; else echo "ndpi_lab_probe.sh missing"; exit 2; fi';
+    return await kexec('sh -c ' + sq(script));
+  }
+  async function ndpiLabStatusBackend() {
+    const script = 'H=/data/local/hnc; if [ -x "$H/bin/ndpi_lab_status.sh" ]; then sh "$H/bin/ndpi_lab_status.sh"; elif [ -f "$H/run/ndpi_lab_state.json" ]; then cat "$H/run/ndpi_lab_state.json"; else echo "nDPI Lab 状态不存在，请先点一键探测"; fi';
+    return await kexec('sh -c ' + sq(script));
+  }
+  async function ndpiLabSampleBackend() {
+    const script = 'H=/data/local/hnc; mkdir -p "$H/run"; if [ -x "$H/bin/ndpi_lab_sample.sh" ]; then sh "$H/bin/ndpi_lab_sample.sh" 10; else echo "ndpi_lab_sample.sh missing"; exit 2; fi';
+    return await kexec('sh -c ' + sq(script));
+  }
+  async function ndpiLabSampleReadBackend() {
+    const script = 'H=/data/local/hnc; if [ -f "$H/run/ndpi_lab_sample.txt" ]; then cat "$H/run/ndpi_lab_sample.txt"; echo; echo "--- sample_state ---"; cat "$H/run/ndpi_lab_sample_state.json" 2>/dev/null || true; echo; echo "--- sample_structured ---"; cat "$H/run/ndpi_lab_sample_structured.json" 2>/dev/null || true; else echo "nDPI 采样结果不存在，请先点采样 10 秒"; fi';
+    return await kexec('sh -c ' + sq(script));
+  }
+  function ndpiExtractJSONLine(txt, marker, requiredKey) {
+    const idx = txt.indexOf(marker);
+    const part = idx >= 0 ? txt.slice(idx + marker.length) : txt;
+    const lines = part.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (!line.startsWith('{') || !line.endsWith('}')) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (!requiredKey || Object.prototype.hasOwnProperty.call(obj, requiredKey)) return obj;
+      } catch (_) {}
+    }
+    return null;
+  }
+  function ndpiFmtNum(v, suffix) {
+    const n = Number(v || 0);
+    if (!Number.isFinite(n)) return '0' + (suffix || '');
+    const s = Math.abs(n) >= 100 ? String(Math.round(n)) : (Math.round(n * 100) / 100).toString();
+    return s + (suffix || '');
+  }
+  function ndpiFmtPct(part, total) {
+    const p = Number(part || 0), t = Number(total || 0);
+    if (!Number.isFinite(p) || !Number.isFinite(t) || t <= 0) return '0.0%';
+    return (Math.round((p * 1000) / t) / 10).toFixed(1) + '%';
+  }
+  function ndpiSafeMbps(m) {
+    const mbps = Number((m || {}).traffic_mbps || (m || {}).ndpi_mbps || 0);
+    const pps = Number((m || {}).traffic_pps || (m || {}).ndpi_pps || 0);
+    // Guard against older rc24.3 structured files where pps was accidentally
+    // stored in traffic_mbps. Real cellular hotspot throughput should not equal pps.
+    if (mbps > 100 && Math.abs(mbps - pps) < 0.01) return Number((m || {}).ndpi_mbps || 0);
+    return mbps;
+  }
+  function ndpiTopListFromClientArray(arr, keyName) {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(x => ({
+      name: String(x.name || x.app || x[keyName || 'name'] || ''),
+      count: Number(x.count || x.flows || x.packets || 0),
+      category: String(x.category || '')
+    })).filter(x => x.name).sort((a,b) => (b.count||0)-(a.count||0));
+  }
+  function collectBuiltinDPIForCompare() {
+    const raw = window.__lastDPIStateRaw;
+    const st = raw && raw.state ? raw.state : null;
+    if (!st) return null;
+    const clientsObj = st.clients || {};
+    const clients = Object.keys(clientsObj).map(k => clientsObj[k]).filter(Boolean);
+    const appsMap = new Map(), catMap = new Map(), hostMap = new Map(), sniMap = new Map();
+    function add(map, name, count, category) {
+      name = String(name || '').trim(); if (!name) return;
+      const old = map.get(name) || { name, count: 0, category: category || '' };
+      old.count += Number(count || 1);
+      if (!old.category && category) old.category = category;
+      map.set(name, old);
+    }
+    ndpiTopListFromClientArray(st.top_apps).forEach(x => add(appsMap, x.name, x.count, x.category));
+    ndpiTopListFromClientArray(st.top_categories).forEach(x => add(catMap, x.name, x.count, x.category));
+    clients.forEach(c => {
+      ndpiTopListFromClientArray(c.top_apps).forEach(x => add(appsMap, x.name, x.count, x.category));
+      ndpiTopListFromClientArray(c.top_categories).forEach(x => add(catMap, x.name, x.count, x.category));
+      ndpiTopListFromClientArray(c.top_hostnames).forEach(x => add(hostMap, x.name, x.count, 'dns'));
+      ndpiTopListFromClientArray(c.top_sni).forEach(x => add(sniMap, x.name, x.count, 'sni'));
+    });
+    const sortTop = map => Array.from(map.values()).sort((a,b) => (b.count||0)-(a.count||0));
+    return {
+      mode: st.mode || '',
+      version: st.version || '',
+      iface: st.interface || '',
+      clientCount: Number(st.client_count || clients.length || 0),
+      ruleVersion: st.l3_rule_version || '—',
+      apps: sortTop(appsMap),
+      categories: sortTop(catMap),
+      hostnames: sortTop(hostMap),
+      sni: sortTop(sniMap),
+      dnsEvents: Number((st.stats || {}).dns_events || 0),
+      tlsEvents: Number((st.stats || {}).tls_events || 0)
+    };
+  }
+  function chipHTML(list, cls, emptyText, limit) {
+    const top = (Array.isArray(list) ? list : []).slice(0, limit || 8);
+    if (!top.length) return '<span class="ndpi-compare-chip warn">' + esc(emptyText || '暂无') + '</span>';
+    return top.map(x => '<span class="ndpi-compare-chip ' + esc(cls || '') + '"><b>' + esc(x.name || 'Unknown') + '</b><small>' + esc(String(x.count || x.flows || 0)) + '</small></span>').join('');
+  }
+  function renderNDPICompareCards(ndpiObj) {
+    const wrap = $('#ndpi-compare-cards');
+    if (!wrap) return;
+    const builtin = collectBuiltinDPIForCompare();
+    if (!ndpiObj || !ndpiObj.metrics || !builtin) { wrap.innerHTML = ''; return; }
+    window.__lastNDPIObj = ndpiObj;
+    const protocols = Array.isArray(ndpiObj.protocols) ? ndpiObj.protocols.slice().sort((a,b) => (b.flows||0)-(a.flows||0)) : [];
+    const risks = Array.isArray(ndpiObj.risks) ? ndpiObj.risks.slice().sort((a,b) => (b.flows||0)-(a.flows||0)) : [];
+    const totalFlows = Number(ndpiObj.metrics.unique_flows || 0);
+    const unknownFlows = Number(ndpiObj.metrics.unknown_flows || 0);
+    const unknownPct = ndpiFmtPct(unknownFlows, totalFlows);
+    const hncMain = builtin.apps.length ? builtin.apps : (builtin.sni.length ? builtin.sni : builtin.hostnames);
+    let note = 'HNC 内置 DPI 更擅长用 DNS/SNI/规则库解释“应用”，nDPI 更擅长看协议/风险/流量特征；两者互补，结果仅供观察。';
+    if (Number(String(unknownPct).replace('%','')) >= 70 && (builtin.apps.length || builtin.sni.length)) note = '本次 nDPI Unknown 占比较高，但 HNC 已有 DNS/SNI 或规则命中；这种场景应优先参考内置 L2/L3 域名证据。';
+    else if (protocols.some(p => /QUIC|STUN|QQ|Xiaomi|Sina/i.test(p.name || ''))) note = 'nDPI 捕获到内置域名库之外的协议/应用线索，可作为补规则库和排查异常流量的参考。';
+    wrap.innerHTML =
+      '<div class="ndpi-section-title">HNC 内置 DPI vs nDPI 对比</div>' +
+      '<div class="ndpi-compare-grid">' +
+        '<div class="ndpi-compare-card"><div class="ndpi-compare-head"><div class="ndpi-compare-title">HNC 内置 L2/L3</div><div class="ndpi-compare-sub">客户端 ' + esc(String(builtin.clientCount)) + ' · 规则 ' + esc(String(builtin.ruleVersion)) + '</div></div>' +
+          '<div class="ndpi-compare-list">' + chipHTML(hncMain, '', '暂无 App/域名命中', 8) + '</div>' +
+          '<div class="ndpi-compare-note">DNS ' + esc(String(builtin.dnsEvents)) + ' · TLS/SNI ' + esc(String(builtin.tlsEvents)) + ' · 接口 ' + esc(String(builtin.iface || '—')) + '</div></div>' +
+        '<div class="ndpi-compare-card"><div class="ndpi-compare-head"><div class="ndpi-compare-title">nDPI 协议采样</div><div class="ndpi-compare-sub">Flow ' + esc(String(totalFlows)) + ' · Unknown ' + esc(String(unknownPct)) + '%</div></div>' +
+          '<div class="ndpi-compare-list">' + chipHTML(protocols.map(p => ({name:p.name, count:(p.flows||0) + ' flows'})), 'ndpi', '暂无协议输出', 8) + '</div>' +
+          '<div class="ndpi-compare-note">风险提示 Top：' + (risks.length ? esc(risks.slice(0,3).map(r => (r.name || 'Risk') + ' ' + (r.flows || 0)).join(' · ')) : '暂无') + '</div></div>' +
+      '</div>' +
+      '<div class="ndpi-compare-note">' + esc(note) + '</div>';
+  }
+
+  function renderNDPILabCards(raw) {
+    const wrap = $('#ndpi-lab-cards');
+    if (!wrap) return;
+    const txt = String(raw || '');
+    const obj = ndpiExtractJSONLine(txt, '--- sample_structured ---', 'protocols');
+    if (!obj || !obj.metrics) { wrap.innerHTML = ''; const cmp=$('#ndpi-compare-cards'); if(cmp) cmp.innerHTML=''; return; }
+    const m = obj.metrics || {};
+    const protocols = Array.isArray(obj.protocols) ? obj.protocols.slice().sort((a,b) => (b.flows||0)-(a.flows||0)).slice(0, 10) : [];
+    const risks = Array.isArray(obj.risks) ? obj.risks.slice().sort((a,b) => (b.flows||0)-(a.flows||0)).slice(0, 6) : [];
+    const unknownPct = ndpiFmtPct(m.unknown_flows, m.unique_flows);
+    const metricsHTML = [
+      ['流量', ndpiFmtNum(ndpiSafeMbps(m), ' Mb/s')],
+      ['PPS', ndpiFmtNum(m.traffic_pps || m.ndpi_pps, ' pps')],
+      ['Flow', ndpiFmtNum(m.unique_flows, '')],
+      ['内存', ndpiFmtNum(m.actual_memory_mb, ' MB')],
+      ['Unknown', ndpiFmtNum(m.unknown_flows, ' flows')],
+      ['Unknown占比', unknownPct]
+    ].map(x => '<div class="ndpi-metric-card"><div class="ndpi-metric-label">' + esc(x[0]) + '</div><div class="ndpi-metric-value">' + esc(x[1]) + '</div></div>').join('');
+    const protoHTML = protocols.length ? '<div class="ndpi-section-title">协议 Top</div><div class="ndpi-chip-wrap">' + protocols.map(p => '<span class="ndpi-chip"><b>' + esc(p.name || 'Unknown') + '</b><small>' + esc(String(p.flows || 0)) + ' flows · ' + esc(String(p.packets || 0)) + ' pkts</small></span>').join('') + '</div>' : '';
+    const riskHTML = risks.length ? '<div class="ndpi-section-title">风险提示 Top <span class="muted">· 仅供参考</span></div><div class="ndpi-chip-wrap">' + risks.map(r => '<span class="ndpi-chip"><b>' + esc(r.name || 'Risk') + '</b><small>' + esc(String(r.flows || 0)) + ' flows</small></span>').join('') + '</div><div class="ndpi-risk-note">风险提示仅供观察，不会触发封禁、限速或 tc/iptables 操作。</div>' : '';
+    wrap.innerHTML = '<div class="ndpi-card-grid">' + metricsHTML + '</div>' + protoHTML + riskHTML;
+    renderNDPICompareCards(obj);
+  }
+  function renderNDPILabOutput(raw) {
+    const box = $('#ndpi-lab-output');
+    const status = $('#ndpi-lab-status');
+    const txt = String(raw || '').trim() || '(empty)';
+    if (box) box.textContent = txt;
+    renderNDPILabCards(txt);
+    if (!status) return;
+    let mode = '';
+    let sampled = false;
+    try {
+      const sample = ndpiExtractJSONLine(txt, '--- sample_structured ---', 'protocols');
+      if (sample && sample.mode) { mode = sample.mode; sampled = true; }
+      if (!mode) {
+        const st = ndpiExtractJSONLine(txt, '--- sample_state ---', 'mode') || ndpiExtractJSONLine(txt, '', 'mode');
+        if (st) mode = st.mode || '';
+      }
+    } catch (_) {}
+    if (sampled || txt.indexOf('Detected protocols:') >= 0) status.innerHTML = 'nDPI 采样完成 · 已生成结构化卡片与内置 DPI 对比';
+    else if (mode === 'available') status.innerHTML = 'nDPI 实验引擎可用 · <code>mode=available</code>';
+    else if (mode) status.innerHTML = 'nDPI Lab 状态: <code>' + esc(mode) + '</code>';
+    else status.textContent = '已读取 nDPI Lab 输出';
+  }
+
   async function forceStartServicesBackend() {
     // rc13: backend 已死亡时，/api/action 也不可用；直接走 KSU/SukiSU bridge 拉起 service.sh。
     const script = 'H=/data/local/hnc; mkdir -p "$H/logs" "$H/run"; MOD=$(cat "$H/run/service.path" 2>/dev/null); [ -z "$MOD" ] && MOD=/data/adb/modules/hotspot_network_control; if [ -f "$MOD/service.sh" ]; then nohup sh "$MOD/service.sh" >> "$H/logs/service.log" 2>&1 & echo "started $MOD/service.sh"; else echo "service.sh not found: $MOD" >&2; exit 2; fi';
@@ -4162,6 +5080,8 @@ body.kb-open .container {
     let stateResp = null, probeResp = null;
     try { stateResp = await apiGet('/api/dpi_state'); } catch (e) { stateResp = { available: false, error: String(e && e.message || e) }; }
     try { probeResp = await apiGet('/api/dpi_probe'); } catch (e) { probeResp = { available: false, error: String(e && e.message || e) }; }
+    // v0.4.0-rc23: 缓存原始 state, 让 filter 切换不用重新请求 API
+    window.__lastDPIStateRaw = stateResp;
     const mode = renderDPI(stateResp, probeResp);
     dpiLastBadgeMode = mode || dpiLastBadgeMode;
     const processFast = dpiShouldFastPoll();
@@ -4259,7 +5179,7 @@ body.kb-open .container {
       upEl.textContent = formatUptime(st.uptime_s);
       verEl.textContent = st.version || '—';
 
-      // 计数卡
+      // 计数卡 (旧)
       const stats = st.stats || {};
       $('#dpi-cnt-pkts').textContent = fmtNum(stats.packets);
       $('#dpi-cnt-dns').textContent = fmtNum(stats.dns_events);
@@ -4267,7 +5187,35 @@ body.kb-open .container {
       $('#dpi-cnt-drops').textContent = fmtNum(stats.kernel_drops);
       $('#dpi-cnt-ign').textContent = fmtNum(stats.ignored_packets);
       $('#dpi-cnt-perr').textContent = fmtNum(stats.parse_errors);
+      // 计数卡 (新, 大版)
+      $('#dpi-bc-pkts-val').textContent = fmtNum(stats.packets);
+      $('#dpi-bc-dns-val').textContent  = fmtNum(stats.dns_events);
+      $('#dpi-bc-tls-val').textContent  = fmtNum(stats.tls_events);
+      $('#dpi-bc-drops-val').textContent = fmtNum(stats.kernel_drops);
+
+      // 状态条 (新)
+      const sbIface = $('#dpi-sb-iface-val');
+      const sbIfaceDot = $('#dpi-sb-iface-dot');
+      const sbMode = $('#dpi-sb-mode-val');
+      const sbClients = $('#dpi-sb-clients-val');
+      if (sbIface) sbIface.textContent = st.interface || '—';
+      if (sbIfaceDot) sbIfaceDot.className = 'dpi-dot' + (mode === 'ok' ? '' : (mode === 'blind' || mode === 'waiting' || mode === 'rebinding' ? ' warn' : ' bad'));
+      if (sbMode) sbMode.textContent = (mode === 'ok') ? '运行中' : (mode === 'disabled' ? '已禁用' : (mode === 'crash_loop' ? '崩溃' : '等待中'));
+      if (sbClients) sbClients.textContent = String(st.client_count || (st.clients ? Object.keys(st.clients).length : 0));
+
+      // 运行卡 (新)
+      $('#dpi-rc-uptime').textContent = formatUptime(st.uptime_s);
+      $('#dpi-rc-version').textContent = st.version || '—';
+
+      // 截图风格新区块
+      renderDPIActiveSection(st);
+      renderDPIRankList(st);
+      renderDPIDonut(st);
+      renderDPITimeline(st);
+
       renderDPIClients(st);
+      renderDPIRulesStatus(st);
+      if (window.__lastNDPIObj) renderNDPICompareCards(window.__lastNDPIObj);
     } else {
       modeLabel = '加载失败';
       const errMsg = (stateResp && stateResp.error) || '请求超时';
@@ -4282,6 +5230,7 @@ body.kb-open .container {
       $('#dpi-cnt-ign').textContent = '—';
       $('#dpi-cnt-perr').textContent = '—';
       renderDPIClients(null);
+      renderDPIRulesStatus(null);
     }
     // 应用 badge class
     badge.className = 'dpi-mode-badge mode-' + (badgeMode || (mode === 'crash_loop' ? 'crash' : mode));
@@ -4312,12 +5261,474 @@ body.kb-open .container {
     }
     return badgeMode || (mode === 'crash_loop' ? 'crash' : mode);
   }
+  function renderDPIRulesStatus(st) {
+    const el = $('#dpi-rules-status');
+    if (!el) return;
+    const ver = st && st.l3_rule_version ? String(st.l3_rule_version) : '—';
+    const enabled = st && st.l3_enabled;
+    el.textContent = 'L3 ' + (enabled ? '已启用' : '未启用') + ' · 规则版本: ' + ver + ' · rc25 支持未识别域名生成模板，可导入 /data/local/hnc/etc/dpi_rules.json。';
+  }
+
+  // ─── v0.4.0-rc23: 截图风格新区块 render ─────────────────────────
+  // 当前活跃 filter 状态 (持久在内存里, 不刷新)
+  let dpiActiveFilter = 'all';
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.dpi-flt-btn');
+    if (!btn) return;
+    dpiActiveFilter = btn.dataset.flt || 'all';
+    document.querySelectorAll('.dpi-flt-btn').forEach(b => b.classList.toggle('active', b === btn));
+    // 立刻重渲一次
+    const stateRaw = window.__lastDPIStateRaw;
+    if (stateRaw && stateRaw.state) renderDPIActiveSection(stateRaw.state);
+  });
+
+  // 格式化字节 → 人类可读 (B/KB/MB/GB)
+  function fmtBytes(b) {
+    if (b === null || b === undefined) return '—';
+    b = Number(b);
+    if (!isFinite(b) || b <= 0) return '0';
+    if (b < 1024) return b + ' B';
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+    return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+  // 格式化 bps → Mbps / Kbps
+  function fmtBps(bps) {
+    if (bps === null || bps === undefined) return '—';
+    bps = Number(bps);
+    if (!isFinite(bps) || bps <= 0) return '0 bps';
+    if (bps < 1024) return bps + ' bps';
+    if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + ' Kbps';
+    if (bps < 1024 * 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' Mbps';
+    return (bps / 1024 / 1024 / 1024).toFixed(2) + ' Gbps';
+  }
+  // 显示时间为 HH:MM:SS (本地)
+  function fmtClock(ts) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    const pad = n => (n < 10 ? '0' + n : '' + n);
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  // 按 category 给个 emoji
+  function dpiCategoryEmoji(cat) {
+    return ({video:'📺',social:'💬',music:'🎵',shopping:'🛒',game:'🎮',system:'⚙️',
+            office:'📋',navigation:'🧭',download:'💾',ai:'🤖',ads:'📢',
+            news:'📰',dev:'💻'})[cat] || '📦';
+  }
+
+  // ── 当前活跃设备 / 应用 区块 ──
+  function renderDPIActiveSection(st) {
+    const listEl = $('#dpi-active-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    const clientsObj = st.clients || {};
+    let clients = Object.keys(clientsObj).map(k => clientsObj[k]).filter(Boolean);
+    if (clients.length === 0) {
+      listEl.innerHTML = '<div class="dpi-empty" style="text-align:center;padding:24px">暂无活跃设备 · 等热点上有 TLS/DNS 流量后会在这里显示</div>';
+      return;
+    }
+
+    // 当前时间用来判断"活跃中"
+    const now = Math.floor(Date.now() / 1000);
+
+    // 过滤
+    clients = clients.filter(c => {
+      const topApp = (c.top_apps && c.top_apps[0]) || null;
+      const conf = topApp ? Number(topApp.confidence || 0) : 0;
+      const lastSeen = Number(c.last_seen || 0);
+      switch (dpiActiveFilter) {
+        case 'active': return (now - lastSeen) <= 60;
+        case 'high':   return conf >= 70;
+        case 'low':    return topApp != null && conf < 50;
+        default:       return true;
+      }
+    });
+
+    // 按 last_seen desc 排序
+    clients.sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
+    clients = clients.slice(0, 12);
+
+    if (clients.length === 0) {
+      listEl.innerHTML = '<div class="dpi-empty" style="text-align:center;padding:24px">当前过滤条件下无设备</div>';
+      return;
+    }
+
+    clients.forEach(c => {
+      const card = renderDPIActiveCard(c);
+      listEl.appendChild(card);
+    });
+  }
+
+  function renderDPIActiveCard(c) {
+    const cMac = String(c.client_mac || '').toLowerCase();
+    const cIp = String(c.client_ip || '');
+    let matched = null;
+    if (cMac) matched = (state.devices || []).find(d => String(d.mac || '').toLowerCase() === cMac);
+    if (!matched && cIp) matched = (state.devices || []).find(d => String(d.ip || '') === cIp);
+
+    let displayName, emoji, statusCls;
+    if (matched) {
+      displayName = matched.hostname || matched.name || cIp || cMac || 'unknown';
+      emoji = matched.emoji || '📱';
+      statusCls = matched.status || (matched.online ? 'online' : 'offline');
+    } else {
+      displayName = cIp || cMac || 'unknown';
+      emoji = '❓';
+      statusCls = 'offline';
+    }
+
+    const topApp = (c.top_apps && c.top_apps[0]) || null;
+    const card = document.createElement('div');
+    card.className = 'dpi-active-card' + (topApp ? '' : ' no-app');
+
+    // 左: 头像 + 名字 + IP·MAC
+    const left = document.createElement('div');
+    left.className = 'dpi-ac-left';
+    const av = document.createElement('div'); av.className = 'dpi-ac-avatar';
+    av.textContent = emoji;
+    const dot = document.createElement('span'); dot.className = 'dot ' + statusCls;
+    av.appendChild(dot);
+    left.appendChild(av);
+    const li = document.createElement('div'); li.style.minWidth = '0'; li.style.flex = '1';
+    const nm = document.createElement('div'); nm.className = 'dpi-ac-name'; nm.textContent = displayName;
+    const mt = document.createElement('div'); mt.className = 'dpi-ac-meta';
+    mt.textContent = (cIp ? cIp : '') + (cMac ? ' · ' + cMac : '');
+    li.appendChild(nm); li.appendChild(mt);
+    left.appendChild(li);
+    card.appendChild(left);
+
+    // 中: 当前 top app + 置信度 + recent SNI chips
+    if (topApp) {
+      const mid = document.createElement('div');
+      mid.className = 'dpi-ac-mid';
+
+      const appRow = document.createElement('div');
+      appRow.className = 'dpi-ac-app';
+      const appIc = document.createElement('div'); appIc.className = 'dpi-ac-app-icon';
+      appIc.textContent = dpiCategoryEmoji(topApp.category);
+      const appText = document.createElement('div'); appText.className = 'dpi-ac-app-text';
+      const appName = document.createElement('div'); appName.className = 'dpi-ac-app-name';
+      appName.textContent = topApp.name || topApp.app || '?';
+      const appCat = document.createElement('div'); appCat.className = 'dpi-ac-app-cat';
+      appCat.textContent = dpiCategoryLabel(topApp.category) + ' · 共 ' + fmtNum(topApp.count) + ' 次事件';
+      appText.appendChild(appName); appText.appendChild(appCat);
+      const conf = Number(topApp.confidence || 0);
+      const confBadge = document.createElement('div');
+      const confCls = conf >= 70 ? 'high' : (conf >= 40 ? 'mid' : 'low');
+      confBadge.className = 'dpi-ac-conf ' + confCls;
+      const confLabel = conf >= 70 ? '高置信' : (conf >= 40 ? '中置信' : '低置信');
+      confBadge.textContent = confLabel + ' ' + conf + '%';
+      appRow.appendChild(appIc); appRow.appendChild(appText); appRow.appendChild(confBadge);
+      mid.appendChild(appRow);
+
+      // 最近域名 / SNI chips (前 3)
+      const sni = Array.isArray(c.top_sni) ? c.top_sni : [];
+      const hosts = Array.isArray(c.top_hostnames) ? c.top_hostnames : [];
+      const recents = (sni.length ? sni : hosts).slice(0, 3);
+      if (recents.length) {
+        const wrap = document.createElement('div');
+        wrap.className = 'dpi-ac-recents';
+        recents.forEach(r => {
+          const tag = document.createElement('span');
+          tag.className = 'dpi-ac-recent';
+          tag.title = r.host || r.name || '';
+          tag.textContent = r.host || r.name || '';
+          wrap.appendChild(tag);
+        });
+        if ((sni.length + hosts.length) > 3) {
+          const more = document.createElement('span');
+          more.className = 'dpi-ac-recent';
+          more.textContent = '+' + ((sni.length + hosts.length) - 3);
+          wrap.appendChild(more);
+        }
+        mid.appendChild(wrap);
+      }
+
+      card.appendChild(mid);
+    }
+
+    // 右: 实时速率 (从 state.devices 找) + 最近识别时间
+    const right = document.createElement('div');
+    right.className = 'dpi-ac-right';
+    // rx/tx 优先用 dpid 自己算的 bps (conntrack), fallback 用主页 state.devices
+    let rxbps = Number(c.rx_bps || 0);
+    let txbps = Number(c.tx_bps || 0);
+    if ((rxbps === 0 && txbps === 0) && matched) {
+      rxbps = Number(matched.rxbps || matched.rx_bps || 0);
+      txbps = Number(matched.txbps || matched.tx_bps || 0);
+    }
+    if (rxbps > 0 || txbps > 0) {
+      const down = document.createElement('div'); down.className = 'dpi-ac-rate down';
+      down.innerHTML = '<span>↓</span><span class="dpi-ac-rate-val">' + fmtBps(rxbps) + '</span>';
+      const up = document.createElement('div'); up.className = 'dpi-ac-rate up';
+      up.innerHTML = '<span>↑</span><span class="dpi-ac-rate-val">' + fmtBps(txbps) + '</span>';
+      right.appendChild(down); right.appendChild(up);
+    } else {
+      right.innerHTML = '<div style="color:var(--text-3);font-size:11px">— Mbps</div>';
+    }
+    const recentTime = document.createElement('div');
+    recentTime.className = 'dpi-ac-recent-time';
+    recentTime.textContent = '最近识别 ' + fmtClock(c.last_seen);
+    right.appendChild(recentTime);
+    card.appendChild(right);
+
+    return card;
+  }
+
+  // ── 识别总览 (左下条形图) ──
+  function renderDPIRankList(st) {
+    const el = $('#dpi-rank-list');
+    if (!el) return;
+    const apps = Array.isArray(st.top_apps) ? st.top_apps : [];
+    if (apps.length === 0) {
+      el.innerHTML = '<div class="dpi-empty">暂无识别结果</div>';
+      return;
+    }
+    const top = apps.slice(0, 5);
+    const maxCount = Math.max(...top.map(a => Number(a.count) || 0), 1);
+    el.innerHTML = '';
+    top.forEach((a, idx) => {
+      const row = document.createElement('div');
+      row.className = 'dpi-rank-row';
+      const num = document.createElement('div'); num.className = 'dpi-rank-num'; num.textContent = (idx + 1);
+      const ic = document.createElement('div'); ic.className = 'dpi-rank-icon'; ic.textContent = dpiCategoryEmoji(a.category);
+      const bw = document.createElement('div'); bw.className = 'dpi-rank-bar-wrap';
+      const bar = document.createElement('div'); bar.className = 'dpi-rank-bar cat-' + (a.category || 'system');
+      const pct = (Number(a.count) || 0) * 100 / maxCount;
+      bar.style.width = pct.toFixed(1) + '%';
+      const nm = document.createElement('div'); nm.className = 'dpi-rank-bar-name'; nm.textContent = a.name || a.app || '?';
+      bw.appendChild(bar); bw.appendChild(nm);
+      const pctEl = document.createElement('div'); pctEl.className = 'dpi-rank-pct';
+      pctEl.textContent = (Number(a.confidence) || Math.round(pct)) + '%';
+      row.appendChild(num); row.appendChild(ic); row.appendChild(bw); row.appendChild(pctEl);
+      el.appendChild(row);
+    });
+  }
+
+  // ── 流量分布环形图 ──
+  function renderDPIDonut(st) {
+    const svg = $('#dpi-donut');
+    const legend = $('#dpi-donut-legend');
+    if (!svg || !legend) return;
+    // 清空 svg
+    while (svg.lastChild && svg.children.length > 1) svg.removeChild(svg.lastChild);
+    legend.innerHTML = '';
+
+    const apps = Array.isArray(st.top_apps) ? st.top_apps : [];
+    // 用 bytes 排序 (conntrack 算的); 没 bytes 就退回 count
+    let useBytes = apps.some(a => Number(a.bytes) > 0);
+    let data = apps
+      .map(a => ({
+        name: a.name || a.app || '?',
+        cat: a.category || 'system',
+        val: useBytes ? Number(a.bytes || 0) : Number(a.count || 0)
+      }))
+      .filter(a => a.val > 0)
+      .sort((a, b) => b.val - a.val)
+      .slice(0, 5);
+
+    if (data.length === 0) {
+      legend.innerHTML = '<div class="dpi-empty">暂无' + (useBytes ? '流量' : '识别') + '数据</div>';
+      return;
+    }
+    const total = data.reduce((s, d) => s + d.val, 0);
+
+    // 给"其他"分一类
+    const seenTotal = total;
+    let otherVal = 0;
+    if (apps.length > 5) {
+      otherVal = apps.slice(5)
+        .map(a => useBytes ? Number(a.bytes || 0) : Number(a.count || 0))
+        .reduce((s, v) => s + v, 0);
+    }
+    if (otherVal > 0) {
+      data.push({ name: '其他', cat: 'other', val: otherVal });
+    }
+    const grand = data.reduce((s, d) => s + d.val, 0);
+
+    // 类别 -> 颜色
+    const catColor = {
+      video: '#ff6b3a', social: '#7d72f0', shopping: '#ffb33a',
+      game: '#34c759', system: '#8e8e93', music: '#ff2d55',
+      ai: '#30b0bd', dev: '#5856d6', news: '#5ac8fa', other: '#aaaaaa'
+    };
+
+    // 画环 - 用 stroke-dasharray
+    let acc = 0;
+    const circ = 2 * Math.PI * 40; // r=40
+    data.forEach(d => {
+      const frac = d.val / grand;
+      const seg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      seg.setAttribute('cx', '50');
+      seg.setAttribute('cy', '50');
+      seg.setAttribute('r', '40');
+      seg.setAttribute('fill', 'none');
+      seg.setAttribute('stroke', catColor[d.cat] || '#8e8e93');
+      seg.setAttribute('stroke-width', '14');
+      seg.setAttribute('stroke-dasharray', (circ * frac) + ' ' + circ);
+      seg.setAttribute('stroke-dashoffset', (-circ * acc).toFixed(3));
+      seg.setAttribute('transform', 'rotate(-90 50 50)');
+      svg.appendChild(seg);
+      acc += frac;
+    });
+
+    // legend
+    data.forEach(d => {
+      const r = document.createElement('div');
+      r.className = 'dpi-donut-row';
+      const sw = document.createElement('span'); sw.className = 'dpi-donut-swatch';
+      sw.style.background = catColor[d.cat] || '#8e8e93';
+      const nm = document.createElement('span'); nm.className = 'dpi-donut-name'; nm.textContent = d.name;
+      const val = document.createElement('span'); val.className = 'dpi-donut-val';
+      const pct = (d.val * 100 / grand).toFixed(0) + '%';
+      val.textContent = pct + (useBytes ? ' (' + fmtBytes(d.val) + ')' : '');
+      r.appendChild(sw); r.appendChild(nm); r.appendChild(val);
+      legend.appendChild(r);
+    });
+  }
+
+  // ── 最近识别事件 timeline ──
+  function renderDPITimeline(st) {
+    const el = $('#dpi-timeline-body');
+    if (!el) return;
+    el.innerHTML = '';
+    const clientsObj = st.clients || {};
+    const events = [];
+    Object.keys(clientsObj).forEach(k => {
+      const c = clientsObj[k];
+      const top = c && c.top_apps && c.top_apps[0];
+      if (!top) return;
+      events.push({
+        clientID: c.client_mac || c.client_ip || k,
+        clientIP: c.client_ip || '',
+        clientMAC: c.client_mac || '',
+        appName: top.name || top.app || '?',
+        category: top.category || 'system',
+        confidence: Number(top.confidence || 0),
+        time: Number(c.last_seen || 0)
+      });
+    });
+    events.sort((a, b) => b.time - a.time);
+    const top10 = events.slice(0, 10);
+    if (top10.length === 0) {
+      el.innerHTML = '<div class="dpi-empty">暂无事件</div>';
+      return;
+    }
+    top10.forEach(ev => {
+      const row = document.createElement('div');
+      row.className = 'dpi-tl-row';
+      const dot = document.createElement('span');
+      dot.className = 'dpi-tl-dot';
+      const catColor = {video:'#ff6b3a',social:'#7d72f0',shopping:'#ffb33a',game:'#34c759',music:'#ff2d55',ai:'#30b0bd'};
+      dot.style.background = catColor[ev.category] || '#007aff';
+      const tm = document.createElement('span'); tm.className = 'dpi-tl-time'; tm.textContent = fmtClock(ev.time);
+
+      // 找设备名
+      let nm = ev.clientIP || ev.clientMAC || '?';
+      const mac = String(ev.clientMAC || '').toLowerCase();
+      if (mac) {
+        const m = (state.devices || []).find(d => String(d.mac || '').toLowerCase() === mac);
+        if (m && m.hostname) nm = m.hostname;
+      }
+      const txt = document.createElement('span'); txt.className = 'dpi-tl-text';
+      txt.innerHTML = nm + ' 当前活跃应用更新为 <b>' + (ev.appName || '?') + '</b>';
+      const conf = document.createElement('span'); conf.className = 'dpi-tl-conf';
+      conf.textContent = '置信度 ' + ev.confidence + '%';
+      row.appendChild(dot); row.appendChild(tm); row.appendChild(txt); row.appendChild(conf);
+      el.appendChild(row);
+    });
+  }
+
+
+  function dpiHostName(it) { return String((it && (it.name || it.host || it.sni || it.domain)) || '').trim().toLowerCase(); }
+  function dpiGuessRuleSuffix(host) {
+    host = String(host || '').toLowerCase().replace(/^\*\.?/, '').replace(/:\d+$/, '').replace(/\.$/, '');
+    if (!host || host.indexOf('.') < 0) return host;
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length <= 2) return host;
+    const two = parts.slice(-2).join('.');
+    const sld = new Set(['com.cn','net.cn','org.cn','gov.cn','edu.cn','co.uk','com.au','com.br','com.hk','com.tw','co.jp','ne.jp','or.jp']);
+    if (sld.has(two) && parts.length >= 3) return parts.slice(-3).join('.');
+    return two;
+  }
+  function dpiCollectUnknownHints(st) {
+    const map = new Map();
+    function add(host, count, kind, client) {
+      host = dpiHostName({name:host});
+      if (!host || host === '—' || host === '-') return;
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return;
+      const k = host;
+      const cur = map.get(k) || {host:k,count:0,kinds:new Set(),clients:new Set(),suffix:dpiGuessRuleSuffix(k)};
+      cur.count += Number(count || 1) || 1;
+      if (kind) cur.kinds.add(kind);
+      if (client) cur.clients.add(client);
+      map.set(k, cur);
+    }
+    if (st && st.clients) {
+      Object.keys(st.clients).forEach(ip => {
+        const c = st.clients[ip] || {};
+        (c.top_hostnames || []).forEach(it => add(dpiHostName(it), it.count, 'DNS', c.client_ip || ip));
+        (c.top_sni || []).forEach(it => add(dpiHostName(it), it.count, 'SNI', c.client_ip || ip));
+      });
+    }
+    return Array.from(map.values()).sort((a,b)=>(b.count||0)-(a.count||0)).slice(0,12).map(x => ({host:x.host,count:x.count,kinds:Array.from(x.kinds),clients:Array.from(x.clients),suffix:x.suffix}));
+  }
+  function dpiTemplateFromHints(hints) {
+    hints = (hints || []).filter(Boolean);
+    const suffixes = [];
+    hints.forEach(h => { const s = dpiGuessRuleSuffix(h.suffix || h.host); if (s && !suffixes.includes(s)) suffixes.push(s); });
+    const first = suffixes[0] || 'example.com';
+    const id = ('user_' + first.replace(/[^a-z0-9]+/g, '_')).replace(/_+$/,'').slice(0,48) || 'user_rule';
+    return {
+      schema_version: '1.0',
+      rules_version: 'user-rc25-' + new Date().toISOString().slice(0,10),
+      rules: [{
+        id,
+        app: '待确认应用',
+        category: 'unknown',
+        confidence: 'user',
+        suffixes
+      }]
+    };
+  }
+  function dpiAppendRuleTemplate(hints) {
+    const ta = $('#dpi-rules-text');
+    if (!ta) return;
+    const tpl = dpiTemplateFromHints(hints);
+    ta.value = JSON.stringify(tpl, null, 2);
+    ta.scrollIntoView({behavior:'smooth', block:'center'});
+    toast('已生成规则模板，请修改 App/类别后导入', 'ok');
+  }
+  function renderDPIUnknownAssistant(st) {
+    const box = $('#dpi-unknown-list');
+    const status = $('#dpi-unknown-status');
+    if (!box) return;
+    const hints = dpiCollectUnknownHints(st || {});
+    window.__lastDPIUnknownHints = hints;
+    if (status) status.textContent = hints.length ? ('发现 ' + hints.length + ' 条 DNS/SNI 补库线索；点击“模板”可生成可编辑规则。') : '暂无补库线索；让热点客户端打开 App/网页后再刷新。';
+    box.innerHTML = '';
+    if (!hints.length) { box.innerHTML = '<div class="dpi-empty">暂无 DNS/SNI 线索。</div>'; return; }
+    hints.forEach((h, idx) => {
+      const row = document.createElement('div'); row.className = 'dpi-unknown-item';
+      const main = document.createElement('div'); main.className = 'dpi-unknown-main';
+      const host = document.createElement('div'); host.className = 'dpi-unknown-host'; host.textContent = h.host;
+      const meta = document.createElement('div'); meta.className = 'dpi-unknown-meta'; meta.textContent = (h.kinds.join('/') || '域名') + ' ×' + fmtNum(h.count) + ' · 建议后缀 ' + h.suffix + (h.clients.length ? ' · 设备 ' + h.clients.slice(0,2).join(',') : '');
+      main.appendChild(host); main.appendChild(meta);
+      const actions = document.createElement('div'); actions.className = 'dpi-unknown-actions';
+      const b1 = document.createElement('button'); b1.type='button'; b1.className='dpi-mini-btn primary'; b1.textContent='模板'; b1.dataset.unknownIdx=String(idx); b1.dataset.action='dpi-unknown-template-one';
+      const b2 = document.createElement('button'); b2.type='button'; b2.className='dpi-mini-btn'; b2.textContent='复制'; b2.dataset.copyHost=h.host; b2.dataset.action='dpi-unknown-copy-host';
+      actions.appendChild(b1); actions.appendChild(b2);
+      row.appendChild(main); row.appendChild(actions); box.appendChild(row);
+    });
+  }
+
   function renderDPIClients(st) {
     const list = $('#dpi-client-list');
     const summary = $('#dpi-client-summary');
     if (!list || !summary) return;
     list.innerHTML = '';
     if (!st || !st.clients) {
+      renderDPIUnknownAssistant(st);
       summary.textContent = '暂无 L2/L3 数据 · 当前只读展示 DNS/SNI 元数据和内置规则标签。';
       const empty = document.createElement('div');
       empty.className = 'dpi-empty';
@@ -4325,13 +5736,19 @@ body.kb-open .container {
       list.appendChild(empty);
       return;
     }
+    renderDPIUnknownAssistant(st);
     const clients = Object.keys(st.clients).map(k => st.clients[k]).filter(Boolean)
       .sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))
       .slice(0, 8);
     const total = Number(st.client_count || clients.length || 0);
     const dnsUnique = Number(st.unique_hostnames || 0);
     const sniUnique = Number(st.unique_sni || 0);
-    summary.textContent = `已归因 ${total} 台设备 · DNS 域名 ${dnsUnique} 个 · SNI ${sniUnique} 个 · L3 ${(st.l3_enabled ? '已启用' : '未启用')} · 只读观察，不代表精确 App 识别`;
+    const ja4Unique = Number(st.unique_ja4 || 0);
+    summary.innerHTML =
+      `<b>已归因 ${total} 台设备</b> · DNS 域名 ${dnsUnique} 个 · SNI ${sniUnique} 个 · JA4 指纹 ${ja4Unique} 个 · ` +
+      `L3 ${(st.l3_enabled ? '已启用' : '未启用')} · ` +
+      `DFP ${(st.dfp_enabled ? '已启用' : '未启用')}<br>` +
+      `<span style="color:var(--text-3);font-size:11px">只读观察，不代表精确 App 识别；MAC 关联后会显示主页一致的设备名</span>`;
     if (!clients.length) {
       const empty = document.createElement('div');
       empty.className = 'dpi-empty';
@@ -4342,28 +5759,144 @@ body.kb-open .container {
     clients.forEach(c => {
       const card = document.createElement('div');
       card.className = 'dpi-client-card';
+
+      // ─── 与主页 state.devices 关联: 优先按 MAC 匹配, 退化按 IP ───
+      const cMac = String(c.client_mac || '').toLowerCase();
+      const cIp  = String(c.client_ip  || '');
+      let matched = null;
+      if (cMac) {
+        matched = (state.devices || []).find(d => String(d.mac || '').toLowerCase() === cMac);
+      }
+      if (!matched && cIp) {
+        matched = (state.devices || []).find(d => String(d.ip || '') === cIp);
+      }
+
+      // 取主页一致的 hostname / emoji / cls / status; 没匹配上就 fallback 到 IP
+      let displayName, emoji, avatarCls, statusCls;
+      if (matched) {
+        displayName = matched.hostname || matched.name || cIp || cMac || 'unknown';
+        emoji = matched.emoji || '📱';
+        avatarCls = matched.cls === 'privacy' ? 'privacy' : '';
+        statusCls = matched.status || (matched.online ? 'online' : 'offline');
+      } else {
+        // 没有匹配 = dpid 看到了但主页设备列表没有 (可能 ARP 表已过期, 或 MAC 是上游路由)
+        displayName = cIp || cMac || 'unknown-client';
+        emoji = '❓';
+        avatarCls = 'unknown';
+        statusCls = 'offline';
+      }
+
+      // ── 卡头: avatar + 名字+副标题 + 右上计数 pill ──
       const head = document.createElement('div');
       head.className = 'dpi-client-head';
-      const id = document.createElement('div');
-      id.className = 'dpi-client-id';
-      id.textContent = c.client_ip || c.client_mac || 'unknown-client';
-      const meta = document.createElement('div');
-      meta.className = 'dpi-client-meta';
-      meta.textContent = `DNS ${fmtNum(c.dns_events)} · TLS ${fmtNum(c.tls_events)}`;
-      head.appendChild(id); head.appendChild(meta); card.appendChild(head);
-      if (c.client_mac) {
-        const mac = document.createElement('div');
-        mac.className = 'dpi-client-meta';
-        mac.textContent = c.client_mac;
-        card.appendChild(mac);
-      }
-      appendDPIChipRow(card, '应用标签 Top', c.top_apps, 'app');
-      appendDPIChipRow(card, '类别 Top', c.top_categories, 'cat');
-      appendDPIChipRow(card, 'DNS Top', c.top_hostnames, 'host');
-      appendDPIChipRow(card, 'SNI Top', c.top_sni, 'sni');
+
+      const avatar = document.createElement('div');
+      avatar.className = 'dpi-client-avatar ' + avatarCls;
+      avatar.textContent = emoji;
+      const dot = document.createElement('span');
+      dot.className = 'dot ' + statusCls;
+      avatar.appendChild(dot);
+      head.appendChild(avatar);
+
+      const info = document.createElement('div');
+      info.className = 'dpi-client-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'dpi-client-name';
+      nameEl.textContent = displayName;
+      info.appendChild(nameEl);
+      // 副标题: IP · MAC (单行, 省略号, 跟主页 .ip-mac 一致)
+      const metaEl = document.createElement('div');
+      metaEl.className = 'dpi-client-meta';
+      const parts = [];
+      if (cIp) parts.push(cIp);
+      if (cMac) parts.push(cMac);
+      metaEl.textContent = parts.length ? parts.join(' · ') : '元数据未知';
+      info.appendChild(metaEl);
+      head.appendChild(info);
+
+      const counter = document.createElement('div');
+      counter.className = 'dpi-client-counter';
+      counter.textContent = 'DNS ' + fmtNum(c.dns_events) + ' · TLS ' + fmtNum(c.tls_events);
+      head.appendChild(counter);
+
+      card.appendChild(head);
+
+      // ── chip 行: 应用 / 类别 / DNS / SNI ──
+      // chip 行: 应用 / 类别 / 指纹 / DNS / SNI
+      appendDPIChipRow(card, '应用标签', c.top_apps, 'app');
+      appendDPIChipRow(card, '类别',     c.top_categories, 'cat');
+      // v0.3.0-dfp: TLS 客户端指纹 (JA4)
+      // 优先显示识别出的 client 名 (top_fingerprints), 没识别上的 fallback 到原始 JA4 (top_ja4)
+      appendDPIFingerprintRow(card, c);
+      appendDPIChipRow(card, 'DNS Top',  c.top_hostnames, 'host');
+      appendDPIChipRow(card, 'SNI Top',  c.top_sni, 'sni');
       list.appendChild(card);
     });
   }
+  // v0.3.0-dfp: 设备指纹行 — 显示识别出的 client (绿) 和未识别 raw JA4 (灰)
+  function appendDPIFingerprintRow(card, c) {
+    const fps = Array.isArray(c.top_fingerprints) ? c.top_fingerprints : [];
+    const rawJA4s = Array.isArray(c.top_ja4) ? c.top_ja4 : [];
+
+    // 只有当至少有一个 JA4 数据时才显示这一行
+    if (fps.length === 0 && rawJA4s.length === 0) return;
+
+    const row = document.createElement('div');
+    row.className = 'dpi-client-row';
+    const lab = document.createElement('div');
+    lab.className = 'dpi-client-label';
+    lab.textContent = '设备指纹 (JA4)';
+    const wrap = document.createElement('div');
+    wrap.className = 'dpi-chip-wrap';
+
+    // 优先显示已识别的客户端 (TopFingerprints)
+    fps.slice(0, 4).forEach(it => {
+      const chip = document.createElement('span');
+      chip.className = 'dpi-chip fp-known';
+      const safeName = String(it.name || it.label || '?');
+      chip.textContent = safeName;
+      if (it.count) {
+        const x = document.createElement('span');
+        x.className = 'x';
+        x.textContent = ' ×' + fmtNum(it.count);
+        chip.appendChild(x);
+      }
+      wrap.appendChild(chip);
+    });
+
+    // 再显示未识别的原始 JA4 — 这些是"我们的库还不认识的指纹"
+    // 用截短版本 (前 10 字符) + count, 避免 UI 撑爆
+    const knownIDs = new Set(fps.map(f => f.id || f.host || ''));
+    rawJA4s.slice(0, 6).forEach(it => {
+      const ja4 = String(it.name || it.host || '');
+      if (!ja4) return;
+      if (knownIDs.has(ja4)) return; // 已经被 known 显示了
+      const chip = document.createElement('span');
+      chip.className = 'dpi-chip fp-unknown';
+      // 截短: t13d1517h2 + _XXX...
+      const short = ja4.length > 14 ? (ja4.slice(0, 10) + '…') : ja4;
+      chip.title = ja4; // hover 显示完整
+      chip.textContent = short;
+      if (it.count) {
+        const x = document.createElement('span');
+        x.className = 'x';
+        x.textContent = ' ×' + fmtNum(it.count);
+        chip.appendChild(x);
+      }
+      wrap.appendChild(chip);
+    });
+
+    if (!wrap.childNodes.length) {
+      const empty = document.createElement('span');
+      empty.className = 'dpi-empty';
+      empty.textContent = '暂无 TLS 握手数据';
+      wrap.appendChild(empty);
+    }
+    row.appendChild(lab);
+    row.appendChild(wrap);
+    card.appendChild(row);
+  }
+
   function appendDPIChipRow(card, label, items, kind) {
     const row = document.createElement('div');
     row.className = 'dpi-client-row';
@@ -4377,7 +5910,15 @@ body.kb-open .container {
       chip.className = 'dpi-chip ' + (kind === 'sni' ? 'sni' : (kind === 'app' ? 'app' : (kind === 'cat' ? 'cat' : 'host')));
       const name = it.name || it.host || it.sni || it.category || '—';
       const extra = (kind === 'app' && it.category) ? (' · ' + dpiCategoryLabel(it.category)) : '';
-      chip.textContent = name + extra + (it.count ? (' ×' + fmtNum(it.count)) : '');
+      // 名字主体
+      chip.textContent = name + extra;
+      // ×N 计数用更弱颜色分开
+      if (it.count) {
+        const x = document.createElement('span');
+        x.className = 'x';
+        x.textContent = ' ×' + fmtNum(it.count);
+        chip.appendChild(x);
+      }
       wrap.appendChild(chip);
     });
     if (!wrap.childNodes.length) {
@@ -6493,6 +8034,140 @@ body.kb-open .container {
       }).finally(() => {
         if (btn) setTimeout(() => { btn.disabled = false; }, 3000);
       });
+      return;
+    }
+
+    if (e.target.closest('[data-action="ndpi-open"]')) {
+      try { window.location.href = 'ndpi-lab.html'; }
+      catch (_) { location.assign('ndpi-lab.html'); }
+      return;
+    }
+    if (e.target.closest('[data-action="ndpi-probe"]')) {
+      const btn = e.target.closest('[data-action="ndpi-probe"]');
+      if (btn) btn.disabled = true;
+      toast('正在探测 nDPI 实验引擎…', 'warn');
+      const out = $('#ndpi-lab-output');
+      if (out) out.textContent = 'running…';
+      ndpiLabProbeBackend().then(raw => {
+        renderNDPILabOutput(raw);
+        toast('nDPI 探测完成', 'ok');
+      }).catch(err => {
+        if (out) out.textContent = String((err && err.message) || err);
+        toast('nDPI 探测失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) setTimeout(() => { btn.disabled = false; }, 1500); });
+      return;
+    }
+    if (e.target.closest('[data-action="ndpi-sample"]')) {
+      const btn = e.target.closest('[data-action="ndpi-sample"]');
+      if (btn) btn.disabled = true;
+      toast('正在进行 nDPI 10 秒采样，请让热点客户端产生流量…', 'warn');
+      const out = $('#ndpi-lab-output');
+      if (out) out.textContent = 'sampling 10s on hotspot iface…';
+      ndpiLabSampleBackend().then(raw => {
+        renderNDPILabOutput(raw);
+        toast('nDPI 采样完成', 'ok');
+      }).catch(err => {
+        if (out) out.textContent = String((err && err.message) || err);
+        toast('nDPI 采样失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) setTimeout(() => { btn.disabled = false; }, 1500); });
+      return;
+    }
+    if (e.target.closest('[data-action="ndpi-sample-read"]')) {
+      const btn = e.target.closest('[data-action="ndpi-sample-read"]');
+      if (btn) btn.disabled = true;
+      const out = $('#ndpi-lab-output');
+      ndpiLabSampleReadBackend().then(raw => {
+        renderNDPILabOutput(raw);
+        toast('已读取 nDPI 采样结果', 'ok');
+      }).catch(err => {
+        if (out) out.textContent = String((err && err.message) || err);
+        toast('读取 nDPI 采样失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) btn.disabled = false; });
+      return;
+    }
+
+    if (e.target.closest('[data-action="ndpi-status"]')) {
+      const btn = e.target.closest('[data-action="ndpi-status"]');
+      if (btn) btn.disabled = true;
+      const out = $('#ndpi-lab-output');
+      ndpiLabStatusBackend().then(raw => {
+        renderNDPILabOutput(raw);
+        toast('已读取 nDPI 状态', 'ok');
+      }).catch(err => {
+        if (out) out.textContent = String((err && err.message) || err);
+        toast('读取 nDPI 状态失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) btn.disabled = false; });
+      return;
+    }
+
+
+    if (e.target.closest('[data-action="dpi-unknown-refresh"]')) {
+      const st = window.__lastDPIStateRaw && window.__lastDPIStateRaw.state;
+      renderDPIUnknownAssistant(st || null);
+      toast('已刷新补库线索', 'ok');
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-unknown-template-all"]')) {
+      const hints = window.__lastDPIUnknownHints || [];
+      if (!hints.length) { toast('暂无可生成的域名线索', 'warn'); return; }
+      dpiAppendRuleTemplate(hints.slice(0,8));
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-unknown-template-one"]')) {
+      const btn = e.target.closest('[data-action="dpi-unknown-template-one"]');
+      const idx = Number(btn && btn.dataset.unknownIdx || 0);
+      const h = (window.__lastDPIUnknownHints || [])[idx];
+      if (!h) { toast('线索不存在，请刷新', 'warn'); return; }
+      dpiAppendRuleTemplate([h]);
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-unknown-copy-host"]')) {
+      const btn = e.target.closest('[data-action="dpi-unknown-copy-host"]');
+      const v = (btn && btn.dataset.copyHost) || '';
+      try { navigator.clipboard && navigator.clipboard.writeText(v); toast('已复制域名: ' + v, 'ok'); }
+      catch (_) { toast('域名: ' + v, 'ok'); }
+      return;
+    }
+
+    if (e.target.closest('[data-action="dpi-rules-export"]')) {
+      const btn = e.target.closest('[data-action="dpi-rules-export"]');
+      if (btn) btn.disabled = true;
+      toast('正在读取 DPI 规则库…', 'ok');
+      dpiRulesExportBackend().then(txt => {
+        const ta = $('#dpi-rules-text');
+        if (ta) ta.value = txt || '';
+        toast('已读取当前 DPI 规则库', 'ok');
+      }).catch(err => {
+        toast('读取规则库失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) btn.disabled = false; });
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-rules-import"]')) {
+      const btn = e.target.closest('[data-action="dpi-rules-import"]');
+      const ta = $('#dpi-rules-text');
+      if (btn) btn.disabled = true;
+      toast('正在导入 DPI 规则库…', 'warn');
+      dpiRulesImportBackend(ta ? ta.value : '').then(() => {
+        toast('DPI 规则库已导入，正在重绑刷新', 'ok');
+        boostDPIFastPoll(15);
+        setTimeout(fetchDPI, 2500);
+        setTimeout(fetchDPI, 6000);
+      }).catch(err => {
+        toast('导入规则库失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) setTimeout(() => { btn.disabled = false; }, 2500); });
+      return;
+    }
+    if (e.target.closest('[data-action="dpi-rules-reset"]')) {
+      const btn = e.target.closest('[data-action="dpi-rules-reset"]');
+      if (btn) btn.disabled = true;
+      toast('正在恢复内置 DPI 规则…', 'warn');
+      dpiRulesResetBackend().then(() => {
+        toast('已恢复内置 DPI 规则', 'ok');
+        boostDPIFastPoll(12);
+        setTimeout(fetchDPI, 2500);
+      }).catch(err => {
+        toast('恢复规则失败: ' + ((err && err.message) || err), 'err');
+      }).finally(() => { if (btn) setTimeout(() => { btn.disabled = false; }, 2500); });
       return;
     }
 

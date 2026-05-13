@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-say "HNC preflight v5.3.0-rc20.0"
+say "HNC preflight v5.3.0-rc25.0"
 say "root=$ROOT"
 
 # 1. Patch residue check
@@ -65,12 +65,12 @@ else
 fi
 
 # 4. Required files
-for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/hnc_dpid; do
+for f in webroot/index.html webroot/json-health.html bin/json_guard.sh bin/json_set.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/hnc_dpid bin/dpi_rules_import.sh data/dpi_rules.json bin/ndpi_lab_probe.sh bin/ndpi_lab_status.sh bin/ndpi_lab_sample.sh data/dpi_ndpi_config.json bin/hnc_ndpi_probe; do
   if [ -e "$f" ]; then ok "required file exists: $f"; else warn "required file missing: $f"; fi
 done
 
 # 5. Executable bits, source tree check only.
-for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/tc_manager.sh bin/watchdog.sh bin/hnc_dpid daemon/hnc_httpd/build.sh; do
+for f in service.sh post-fs-data.sh bin/json_set.sh bin/json_set_batch.sh bin/json_guard.sh bin/json_doctor.sh bin/json_diag_bundle.sh bin/stats_diag.sh bin/stats_identity_diag.sh bin/stats_retention_diag.sh bin/stats_shadow_sample.sh bin/stats_shadow_rollup.sh bin/stats_shadow_diag.sh bin/stats_shadow_control.sh bin/stats_source_diag.sh bin/stats_compare.sh bin/stats_health_summary.sh bin/stats_migration_readiness.sh bin/stats_v52_rc_control.sh bin/stats_v52_rc_smoke.sh bin/stats_v52_diag_bundle.sh bin/stats_v52_device_check.sh bin/stats_v52_rc1_switch.sh bin/stats_v52_web_status.sh bin/stats_v52_install_selfcheck.sh bin/stats_v52_gray_report.sh bin/stats_v52_review_bundle.sh bin/tc_manager.sh bin/watchdog.sh bin/hnc_dpid bin/dpi_rules_import.sh bin/ndpi_lab_probe.sh bin/ndpi_lab_status.sh bin/ndpi_lab_sample.sh bin/hnc_ndpi_probe daemon/hnc_httpd/build.sh; do
   [ -e "$f" ] || continue
   if [ -x "$f" ]; then ok "executable: $f"; else fail "not executable: $f"; fi
 done
@@ -99,7 +99,7 @@ if [ -f bin/hnc_dpid ]; then
     warn "od unavailable; cannot inspect bin/hnc_dpid architecture"
   fi
   if command -v strings >/dev/null 2>&1; then
-    DPID_MARKERS="$(strings bin/hnc_dpid 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|hnc_dpid' | head -5)"
+    DPID_MARKERS="$(strings bin/hnc_dpid 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|0\.3\.1-l3-rc20\.1|0\.4\.0-rc23|hnc_dpid' | head -5)"
     if [ -n "$DPID_MARKERS" ]; then ok "hnc_dpid contains expected version/name marker"; else fail "hnc_dpid missing expected version/name marker"; fi
   else
     warn "strings unavailable; cannot inspect hnc_dpid version/name marker"
@@ -266,7 +266,7 @@ if [ -n "$ARTIFACT" ]; then
           warn "od unavailable; cannot inspect artifact hnc_dpid architecture"
         fi
         if command -v strings >/dev/null 2>&1; then
-          DPID_ART_MARKERS="$(strings "$ZIPTMP.hnc_dpid" 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|hnc_dpid' | head -5)"
+          DPID_ART_MARKERS="$(strings "$ZIPTMP.hnc_dpid" 2>/dev/null | grep -E '0\.1\.0-rc1\.2-fixed|0\.1\.0-rc1\.3|0\.2\.0-l2-rc19|0\.3\.0-l3-rc20|0\.3\.1-l3-rc20\.1|0\.4\.0-rc23|hnc_dpid' | head -5)"
           if [ -n "$DPID_ART_MARKERS" ]; then ok "artifact hnc_dpid contains expected version/name marker"; else fail "artifact hnc_dpid missing expected version/name marker"; fi
         fi
       else
